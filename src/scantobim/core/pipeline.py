@@ -31,6 +31,8 @@ from scantobim.core.transform import apply_alignment, compute_alignment
 from scantobim.core.preprocess import (
     estimate_normals,
     estimate_point_spacing,
+    local_point_spacing,
+    remove_edge_artifacts,
     remove_statistical_outliers,
     voxel_downsample,
 )
@@ -51,6 +53,11 @@ class PipelineConfig:
     sor_neighbors: int = 16
     sor_std_ratio: float = 2.5
     normal_neighbors: int = 16
+
+    # --- real-world scan hardening ---
+    edge_artifact_filter: bool = True  # remove mixed-pixel strings at silhouettes
+    ghost_offset_tol: float = 0.0  # merge registration ghosts within this offset (m)
+    adaptive_density: bool = True  # per-surface tolerances from local point spacing
 
     # --- plane detection ---
     distance_threshold: float | None = None  # None = auto (3x spacing)
@@ -84,6 +91,7 @@ class PipelineConfig:
     orient: str = "outward"  # "outward" | "inward" | "none"
     weld_factor: float = 0.25  # x spacing
     color_surfaces: bool = True
+    watertight: bool = False  # global PolyFit optimization (closes scan shadows)
 
     # --- output coordinate system ---
     align_axes: bool = False  # rotate dominant directions onto X/Y/Z, floor at Z=0
@@ -147,6 +155,12 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
     voxel = cfg.voxel_size if cfg.voxel_size is not None else 2.0 * raw_spacing
     work = voxel_downsample(cloud, voxel) if voxel and voxel > 0 else cloud
     work, _ = remove_statistical_outliers(work, cfg.sor_neighbors, cfg.sor_std_ratio)
+    if cfg.edge_artifact_filter and len(work) > 100:
+        n_before = len(work)
+        # Buildings have no legitimate string-like geometry — filter dense
+        # mixed-pixel strings too (linearity-only criterion).
+        work, _ = remove_edge_artifacts(work, require_sparse=False)
+        report["edge_artifacts_removed"] = n_before - len(work)
     if len(work) < 16:
         raise ValueError(
             f"Too few points after preprocessing ({len(work)}); "
@@ -188,10 +202,16 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
             parallel_tol_deg=cfg.parallel_tol_deg,
             ortho_tol_deg=cfg.ortho_tol_deg,
             merge_offset_tol=cfg.merge_offset_factor * dist_thresh,
+            ghost_offset_tol=cfg.ghost_offset_tol,
         )
     _orient_planes(planes, work.points, cfg.orient)
     report["planes"] = len(planes)
     report["plane_angles"] = snapped_angles_report(planes)
+
+    # ---- 4a. global watertight optimization (PolyFit) — replaces the
+    # greedy per-plane polygonization when requested.
+    if cfg.watertight:
+        return _reconstruct_watertight(work, planes, spacing, cfg, report, t0)
 
     # ---- 4. exact edge geometry ---------------------------------------------
     contact_radius = cfg.contact_factor * spacing
@@ -213,6 +233,14 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
         for p in corner.planes:
             corners_by_plane.setdefault(p, []).append(corner)
 
+    # Local density map: near/far scanner resolution varies, so each surface
+    # gets tolerances from ITS spacing instead of one global number.
+    plane_spacing: dict[int, float] = {}
+    if cfg.adaptive_density:
+        local_sp = local_point_spacing(work.points)
+        for pi, plane in enumerate(planes):
+            plane_spacing[pi] = float(np.median(local_sp[plane.inliers]))
+
     palette = _make_palette(len(planes))
     parts: list[Mesh] = []
     geometries: list[SurfaceGeometry] = []
@@ -222,7 +250,7 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
             plane,
             pi,
             work.points,
-            spacing,
+            plane_spacing.get(pi, spacing),
             cfg,
             lines_by_plane.get(pi, []),
             corners_by_plane.get(pi, []),
@@ -287,9 +315,137 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
             geo.surface_class = class_of[geo.plane_index]
             geo.name = mesh.group_names[geo.plane_index]
     report["quantities"] = quantity_takeoff(mesh, class_of, surf_area)
+    # Volume uncertainty: shifting face g by its σ changes V by A_g·σ_g;
+    # root-sum-square over all faces (first order).
+    sigma_by_plane = {
+        info["plane"]: info.get("sigma_offset", 0.0)
+        for info in plane_reports
+        if info.get("status") == "ok"
+    }
+    if "volume" in report["quantities"]:
+        vol_sigma = float(
+            np.sqrt(
+                sum(
+                    (surf_area.get(g, 0.0) * sigma_by_plane.get(g, 0.0)) ** 2
+                    for g in surface_ids
+                )
+            )
+        )
+        report["quantities"]["volume_sigma"] = round(vol_sigma, 5)
     report["storeys"] = detect_storeys(
         [mean_z[g] for g in surface_ids if class_of[g] in ("floor", "slab", "ceiling")]
     )
+
+    report["mesh"] = {
+        "vertices": len(mesh.vertices),
+        "triangles": len(mesh.faces),
+        "surface_area": round(mesh.area(), 4),
+        **mesh.edge_stats(),
+    }
+    report["residual_points"] = len(residual)
+    report["runtime_seconds"] = round(time.perf_counter() - t0, 3)
+    return ReconstructionResult(
+        mesh=mesh, residual=residual, surfaces=geometries, report=report
+    )
+
+
+def _reconstruct_watertight(work, planes, spacing, cfg, report, t0):
+    """Watertight branch: global cell selection instead of greedy polygons."""
+    from scantobim.core.watertight import make_watertight
+
+    mesh, cell_geometries, wt_info = make_watertight(planes, work.points, spacing)
+    report["watertight_optimization"] = wt_info
+
+    palette = _make_palette(len(planes))
+    colors = np.empty((len(mesh.vertices), 3), dtype=np.uint8)
+    colors[:] = (200, 200, 200)
+    # Color vertices by the group of the first face using them.
+    for face, group in zip(mesh.faces, mesh.face_groups):
+        colors[face] = palette[int(group) % len(palette)]
+    mesh.vertex_colors = colors if cfg.color_surfaces else None
+
+    geometries = [
+        SurfaceGeometry(
+            plane_index=pi,
+            normal=planes[pi].normal.copy(),
+            outer=poly3,
+            holes=[],
+        )
+        for pi, poly3 in cell_geometries
+    ]
+    selected_planes = {g.plane_index for g in geometries}
+    plane_reports = [
+        {
+            "plane": pi,
+            "points": int(len(planes[pi].inliers)),
+            "rms": round(planes[pi].rms, 6),
+            "sigma_offset": round(
+                planes[pi].rms / max(np.sqrt(len(planes[pi].inliers)), 1.0), 7
+            ),
+            "normal": [round(float(x), 6) for x in planes[pi].normal],
+            "status": "ok" if pi in selected_planes else "rejected: not selected",
+        }
+        for pi in range(len(planes))
+    ]
+    report["surfaces"] = plane_reports
+
+    residual_mask = np.ones(len(work.points), dtype=bool)
+    for p in planes:
+        residual_mask[p.inliers] = False
+    residual = work.select(residual_mask)
+
+    # ---- world alignment + semantics (same as the greedy path) -------------
+    plane_normals = {pi: planes[pi].normal.copy() for pi in range(len(planes))}
+    if cfg.align_axes:
+        alignment = compute_alignment(planes)
+        mesh, res_pts, final_t = apply_alignment(mesh, residual.points, alignment)
+        residual.points = res_pts
+        plane_normals = {pi: alignment[:3, :3] @ n for pi, n in plane_normals.items()}
+        rot, trans = final_t[:3, :3], final_t[:3, 3]
+        for geo in geometries:
+            geo.outer = geo.outer @ rot.T + trans
+            geo.normal = rot @ geo.normal
+        report["alignment"] = [[round(float(v), 8) for v in row] for row in final_t]
+
+    surface_ids = sorted({int(g) for g in mesh.face_groups})
+    mean_z: dict[int, float] = {}
+    surf_area: dict[int, float] = {}
+    for gid in surface_ids:
+        sel = mesh.face_groups == gid
+        tri = mesh.vertices[mesh.faces[sel]]
+        areas = 0.5 * np.linalg.norm(
+            np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1
+        )
+        surf_area[gid] = float(areas.sum())
+        mean_z[gid] = float(tri[:, :, 2].mean())
+    classes = classify_surfaces(
+        [plane_normals[g] for g in surface_ids], [mean_z[g] for g in surface_ids]
+    )
+    class_of = dict(zip(surface_ids, classes))
+    mesh.group_names = {g: f"{class_of[g]}_{g:03d}" for g in surface_ids}
+    for geo in geometries:
+        if geo.plane_index in class_of:
+            geo.surface_class = class_of[geo.plane_index]
+            geo.name = mesh.group_names[geo.plane_index]
+    report["quantities"] = quantity_takeoff(mesh, class_of, surf_area)
+    report["storeys"] = detect_storeys(
+        [mean_z[g] for g in surface_ids if class_of[g] in ("floor", "slab", "ceiling")]
+    )
+    if "volume" in report["quantities"]:
+        sigma_by_plane = {
+            info["plane"]: info.get("sigma_offset", 0.0) for info in plane_reports
+        }
+        report["quantities"]["volume_sigma"] = round(
+            float(
+                np.sqrt(
+                    sum(
+                        (surf_area.get(g, 0.0) * sigma_by_plane.get(g, 0.0)) ** 2
+                        for g in surface_ids
+                    )
+                )
+            ),
+            5,
+        )
 
     report["mesh"] = {
         "vertices": len(mesh.vertices),
@@ -318,6 +474,8 @@ def _reconstruct_plane(
         "plane": plane_index,
         "points": int(len(plane.inliers)),
         "rms": round(plane.rms, 6),
+        # Standard error of the plane position along its normal.
+        "sigma_offset": round(plane.rms / max(np.sqrt(len(plane.inliers)), 1.0), 7),
         "normal": [round(float(x), 6) for x in plane.normal],
     }
 
@@ -386,6 +544,14 @@ def _reconstruct_plane(
     info["area"] = round(
         polygon_area(uv_final) - sum(polygon_area(h) for h in holes), 4
     )
+    # Area uncertainty from boundary sampling: every outline edge is known
+    # to about half the local point spacing (snapped edges are better; this
+    # is the conservative bound).
+    perimeter = float(
+        np.linalg.norm(np.roll(uv_final, -1, axis=0) - uv_final, axis=1).sum()
+    )
+    info["area_sigma"] = round(perimeter * 0.5 * spacing, 4)
+    info["dimension_sigma"] = round(float(np.sqrt(2.0)) * 0.5 * spacing, 5)
     info["openings"] = len(holes)
     if holes:
         info["opening_areas"] = [round(polygon_area(h), 4) for h in holes]

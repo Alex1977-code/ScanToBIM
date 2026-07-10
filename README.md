@@ -74,6 +74,37 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 
 ![Viewer](docs/images/viewer.png)
 
+## Wasserdicht garantiert: globale Optimierung (`--watertight`)
+
+Scanschatten (verdeckte Decken, verstellte Wandstreifen) hinterlassen im
+Greedy-Verfahren Löcher. `--watertight` löst die Rekonstruktion **global**
+(PolyFit-Ansatz): Alle Ebenen werden durch ihre Schnittgeraden in
+Kandidaten-Flächen zerlegt, und ein ganzzahliges Optimierungsproblem
+(HiGHS-Solver) wählt die Teilmenge, die die Messpunkte maximal erklärt —
+unter der harten Nebenbedingung, dass an jeder Kante **genau 0 oder 2**
+Flächen anliegen. Ergebnis: ein geschlossener Volumenkörper, bei dem
+Verdeckungen mit der geometrisch exakten Fläche gefüllt sind (Testbox mit
+halb verdeckter Decke: wasserdicht, Volumen 29,995 von 30,000 m³; L-Raum
+auf 0,006 % genau). Der STEP-Export wird dann immer ein echter
+`MANIFOLD_SOLID_BREP`.
+
+## Realdaten-Härtung & Messunsicherheiten
+
+- **Kantenartefakt-Filter**: Mixed-Pixel-Punktschnüre an Silhouettenkanten
+  (Scanner-Artefakte genau dort, wo Kanten rekonstruiert werden) werden
+  über ihr Linearitäts-Signaturprofil entfernt — Flächen- und Kantenpunkte
+  bleiben unberührt.
+- **Doppelwand-Merge** (`--ghost-tol`): Registrierungs-Geister (dieselbe
+  Wand aus zwei schlecht registrierten Standpunkten) verschmelzen zur
+  Mittelfläche; getrennte koplanare Flächen bleiben dank
+  Überlappungs-Kriterium getrennt.
+- **Adaptive Dichte**: Jede Fläche bekommt ihre Toleranzen aus ihrem
+  lokalen Punktabstand (nah/fern-Scans).
+- **Messunsicherheiten (±)** in allen Berichten: Ebenenlage σ, Flächen- und
+  Maßunsicherheit je Fläche, **Volumen ±** (Fehlerfortpflanzung über alle
+  Flächen), Blechdicken ±, Wellendurchmesser ±, Zahnrad-Modul ± — die
+  Zahlen, die ein Aufmaß belastbar machen.
+
 ## Fotorealistische Darstellung
 
 Die Fotodaten landen nicht nur in der Geometrie, sondern auch auf ihr:
@@ -176,6 +207,12 @@ Rahmen, Schurren) und liefert die Fertigungsdaten für Nachbau und Kalkulation:
 - **Brennschnitt-DXF** (`--dxf zuschnitt.dxf`): alle Blechkonturen 1:1
   nebeneinander, beschriftet mit Nummer und Dicke – direkt in die
   Verschachtelungs-Software oder auf den Laser/Plasma-Tisch.
+- **Abwicklung** (`--unfold`): Kant-Verbindungen (Stoß Kante-an-Kante,
+  gleiche Dicke) werden als Biegungen abgewickelt — Biegeverkürzung über
+  die neutrale Faser (`BA = θ·(r + k·t)`, k-Faktor einstellbar, Standard
+  0,44) — und als **flacher Zuschnitt mit Biegelinien** (Layer
+  `BIEGELINIE`) exportiert. T-Stöße werden automatisch als reine
+  Schweißverbindungen klassifiziert und nicht abgewickelt.
 
 ```bash
 scantobim sheetmetal behaelter.e57 -o bleche.json --dxf zuschnitt.dxf
@@ -323,7 +360,7 @@ Ausrichtungs-Transformation und Laufzeit.
 
 ```bash
 pip install -e .[dev]
-pytest          # 137 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
+pytest          # 151 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
 python examples/demo.py   # erzeugt Beispiel-Scan + Modell + Viewer in demo_output/
 ```
 
@@ -392,7 +429,14 @@ become plates with measured thickness (matched to stock sizes), outline,
 area and weight; plate junctions become weld seams with length and angle
 (summed for costing); `--dxf` exports all cutting outlines 1:1 for
 laser/plasma. Multi-storey scans are detected and exported as separate
-IfcBuildingStoreys. **Bridge recognition** (`scantobim bridge`): deck
+IfcBuildingStoreys. `--watertight` runs a PolyFit-style global optimization
+(integer program over candidate faces with an exact 0-or-2-faces-per-edge
+constraint) that closes scan shadows with the geometrically exact faces;
+`--unfold` flattens bent sheet metal chains with neutral-axis bend
+allowances into cutting patterns with bend lines; every report now carries
+propagated measurement uncertainties (plane σ, dimensions ±, volume ±,
+thickness ±, module ±); mixed-pixel edge artifacts are filtered and
+registration ghosts merged (`--ghost-tol`). **Bridge recognition** (`scantobim bridge`): deck
 (axis/length/width), piers with stations and bearing points, span layout,
 abutments, arches (radius/rise), pylons and stay cables/hangers via line
 RANSAC — classified into beam/arch/cable-stayed/suspension types.
@@ -401,7 +445,7 @@ is generated (node positions, member profiles, angles, eccentricity,
 assigned gusset plates). A synthetic 74k-point room scan with 4 mm
 noise reconstructs to its minimal exact representation — 18 vertices, all
 angles exactly 90°, window included. Pure Python (numpy/scipy/laspy),
-137 tests, MIT license. CLI:
+151 tests, MIT license. CLI:
 `scantobim reconstruct scan.laz -o model.stp --preset indoor`.
 
 ## Lizenz

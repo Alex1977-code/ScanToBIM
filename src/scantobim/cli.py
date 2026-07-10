@@ -91,6 +91,12 @@ def main(argv: list[str] | None = None) -> int:
     p_rec.add_argument("--texel", type=float, default=None,
                        help="texture resolution: texel edge length in input "
                        "units (default: auto)")
+    p_rec.add_argument("--watertight", action="store_true",
+                       help="globally optimized watertight model (PolyFit): "
+                       "closes scan shadows with the geometrically exact faces")
+    p_rec.add_argument("--ghost-tol", type=float, default=None, metavar="M",
+                       help="merge registration ghosts (double walls) within "
+                       "this offset in input units")
     p_rec.add_argument("--no-openings", action="store_true",
                        help="do not reconstruct window/door openings as holes")
     p_rec.add_argument("--align", action="store_true",
@@ -160,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
                       help="plane RANSAC distance threshold (default: auto)")
     p_sm.add_argument("--max-thickness", type=float, default=0.05,
                       help="maximum plate thickness in input units (default: 0.05)")
+    p_sm.add_argument("--unfold", action="store_true",
+                      help="treat edge-to-edge corner junctions as bends and "
+                      "export unfolded flat patterns with bend lines")
+    p_sm.add_argument("--k-factor", type=float, default=0.44,
+                      help="neutral axis k-factor for the bend allowance "
+                      "(default: 0.44)")
 
     p_photos = sub.add_parser(
         "photos", help="photos → dense point cloud via COLMAP (must be installed)"
@@ -256,6 +268,10 @@ def _cmd_reconstruct(args) -> int:
         cfg.color_surfaces = False
     if args.no_openings:
         cfg.detect_openings = False
+    if args.watertight:
+        cfg.watertight = True
+    if args.ghost_tol is not None:
+        cfg.ghost_offset_tol = args.ghost_tol
     if args.align:
         cfg.align_axes = True
     if args.seed is not None:
@@ -476,15 +492,49 @@ def _cmd_sheetmetal(args) -> int:
         f"weld length {tot['weld_length'] * 1000:.0f} mm"
     )
 
+    from scantobim.core.unfold import classify_junctions
+
+    kinds = classify_junctions(objects["plates"], objects["seams"])
+    for entry, kind in zip(report["weld_seams"], kinds):
+        entry["junction"] = kind
+
+    parts = None
+    if args.unfold:
+        from scantobim.core.unfold import unfold_parts
+
+        parts = unfold_parts(objects["plates"], objects["seams"], k_factor=args.k_factor)
+        report["flat_parts"] = [
+            {
+                "plates": p.plate_ids,
+                "bends": len(p.bend_lines),
+                "bend_angles_deg": p.bend_angles_deg,
+                "size": [round(s, 4) for s in p.size],
+                "thickness": p.catalog_thickness or round(p.thickness, 5),
+                "flat_area": round(p.outline_area, 4),
+            }
+            for p in parts
+        ]
+        for fp in report["flat_parts"]:
+            print(
+                f"  part {fp['plates']}: {fp['bends']} Kantungen, "
+                f"{fp['size'][0] * 1000:.0f} x {fp['size'][1] * 1000:.0f} mm flach"
+            )
+
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2, default=_json_default))
         print(f"wrote {args.output}")
     if args.dxf is not None:
-        from scantobim.io.dxf import write_cutting_dxf
+        if parts is not None:
+            from scantobim.io.dxf import write_flat_pattern_dxf
 
-        out = write_cutting_dxf(objects["plates"], args.dxf)
-        print(f"wrote {out} (Zuschnittkonturen 1:1)")
+            out = write_flat_pattern_dxf(parts, args.dxf)
+            print(f"wrote {out} (Abwicklungen 1:1 mit Biegelinien)")
+        else:
+            from scantobim.io.dxf import write_cutting_dxf
+
+            out = write_cutting_dxf(objects["plates"], args.dxf)
+            print(f"wrote {out} (Zuschnittkonturen 1:1)")
     return 0
 
 

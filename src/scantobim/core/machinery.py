@@ -69,6 +69,7 @@ class Gear:
     teeth: int
     module: float
     tip_diameter: float
+    tip_sigma: float
     root_diameter: float
     pitch_diameter: float
     width: float
@@ -624,6 +625,8 @@ def _measure_gear_axis(
 
     teeth = peak
     tip_r = float(np.quantile(profile, 0.90))
+    tip_band = profile[profile >= np.quantile(profile, 0.85)]
+    tip_sigma = float(np.std(tip_band) / max(np.sqrt(len(tip_band)), 1.0))
     # Root circle from the valleys of the profile.
     root_r = float(np.quantile(profile, 0.08))
     if tip_r - root_r < 1e-6 or root_r <= 0:
@@ -642,6 +645,7 @@ def _measure_gear_axis(
         teeth=teeth,
         module=module,
         tip_diameter=2 * tip_r,
+        tip_sigma=tip_sigma,
         root_diameter=2 * root_r,
         pitch_diameter=module * teeth,
         width=width,
@@ -822,6 +826,7 @@ def analyze_machinery(
                 "center": [round(float(x), 5) for x in c.center],
                 "axis": [round(float(x), 5) for x in c.axis],
                 "diameter": round(2 * c.radius, 5),
+                "diameter_sigma": round(2 * c.rms / max(np.sqrt(len(c.inliers)), 1.0), 6),
                 "length": round(c.length, 5),
                 "rms": round(c.rms, 6),
                 "points": int(len(c.inliers)),
@@ -851,7 +856,9 @@ def analyze_machinery(
                 "axis": [round(float(x), 5) for x in g.axis],
                 "teeth": g.teeth,
                 "module": round(g.module, 6),
+                "module_sigma": round(2 * g.tip_sigma / (g.teeth + 2), 7),
                 "tip_diameter": round(g.tip_diameter, 5),
+                "tip_diameter_sigma": round(2 * g.tip_sigma, 6),
                 "root_diameter": round(g.root_diameter, 5),
                 "pitch_diameter": round(g.pitch_diameter, 5),
                 "width": round(g.width, 5),

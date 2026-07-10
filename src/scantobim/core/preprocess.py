@@ -72,6 +72,70 @@ def remove_statistical_outliers(
     return cloud.select(keep), keep
 
 
+def remove_edge_artifacts(
+    cloud: PointCloud,
+    k_neighbors: int = 12,
+    linearity_threshold: float = 0.95,
+    sparsity_ratio: float = 2.5,
+    require_sparse: bool = True,
+) -> tuple[PointCloud, np.ndarray]:
+    """Remove mixed-pixel edge artifacts (Kantenartefakte).
+
+    Laser scanners produce phantom points along silhouette edges where the
+    beam hits two surfaces at once: thin, *sparse* strings of points hanging
+    between foreground and background. Those strings are exactly where clean
+    edges are reconstructed, so they must go.
+
+    A point is dropped when its neighbourhood is strongly LINEAR
+    (``(λ₁-λ₂)/λ₁ > linearity_threshold``) and — with ``require_sparse`` —
+    also SPARSE (mean neighbour distance > ``sparsity_ratio`` x the cloud
+    median). Real surface points are planar (λ₁≈λ₂), crease points see both
+    faces (planar too). ``require_sparse=True`` protects dense thin
+    structures such as bridge cables; for building reconstruction, where no
+    legitimate string-like geometry exists, ``require_sparse=False`` also
+    removes dense mixed-pixel strings that survive the outlier filter.
+
+    Returns the filtered cloud and the boolean keep-mask.
+    """
+    pts = cloud.points
+    n = len(pts)
+    k = min(k_neighbors + 1, n)
+    if n < k_neighbors * 3:
+        return cloud, np.ones(n, dtype=bool)
+    tree = cKDTree(pts)
+    dists, idx = tree.query(pts, k=k, workers=-1)
+    mean_d = dists[:, 1:].mean(axis=1)
+    median_d = float(np.median(mean_d))
+
+    if require_sparse:
+        candidates = mean_d > sparsity_ratio * median_d
+    else:
+        candidates = np.ones(n, dtype=bool)
+    keep = np.ones(n, dtype=bool)
+    check = np.flatnonzero(candidates)
+    if len(check):
+        neigh = pts[idx[check]]
+        centered = neigh - neigh.mean(axis=1, keepdims=True)
+        cov = np.einsum("nki,nkj->nij", centered, centered)
+        eig = np.linalg.eigvalsh(cov)  # ascending
+        lam1 = eig[:, 2]
+        lam2 = eig[:, 1]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            linearity = np.where(lam1 > 0, (lam1 - lam2) / lam1, 0.0)
+        keep[check[linearity > linearity_threshold]] = False
+    return cloud.select(keep), keep
+
+
+def local_point_spacing(points: np.ndarray, k: int = 8) -> np.ndarray:
+    """Per-point local spacing (mean kNN distance) — the density map that
+    lets downstream stages adapt to near/far scanner resolution."""
+    n = len(points)
+    k = min(k + 1, n)
+    tree = cKDTree(points)
+    dists, _ = tree.query(points, k=k, workers=-1)
+    return dists[:, 1:].mean(axis=1)
+
+
 def estimate_normals(
     cloud: PointCloud,
     k_neighbors: int = 16,

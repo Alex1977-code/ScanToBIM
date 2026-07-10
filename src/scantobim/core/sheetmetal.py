@@ -43,6 +43,7 @@ class Plate:
     normal: np.ndarray  # mid-plane unit normal
     d: float  # mid-plane offset (n·x + d = 0)
     thickness: float
+    thickness_sigma: float
     catalog_thickness: float | None
     outline_2d: np.ndarray  # (N, 2) in the plate frame, straightened
     origin: np.ndarray  # frame origin (on the mid-plane)
@@ -180,6 +181,7 @@ def _build_plate(
     normal = a.normal
     dists_b = a.distance(points[b.inliers])
     thickness = float(np.abs(np.median(dists_b)))
+    thickness_sigma = float(np.std(np.abs(dists_b)) / max(np.sqrt(len(dists_b)), 1.0))
     # Mid-plane between the two faces.
     d_mid = a.d - float(np.median(dists_b)) / 2.0
 
@@ -211,6 +213,7 @@ def _build_plate(
         normal=normal,
         d=d_mid,
         thickness=thickness,
+        thickness_sigma=thickness_sigma,
         catalog_thickness=match_thickness(thickness),
         outline_2d=outline,
         origin=origin,
@@ -325,6 +328,7 @@ def analyze_sheet_metal(
             {
                 "id": k,
                 "thickness_measured": round(p.thickness, 5),
+                "thickness_sigma": round(p.thickness_sigma, 8),
                 "thickness_catalog": p.catalog_thickness,
                 "size": [round(p.size[0], 4), round(p.size[1], 4)],
                 "area": round(p.area, 4),

@@ -127,6 +127,53 @@ def write_cutting_dxf(plates, path: str | Path, gap: float = 0.05) -> Path:
     return path
 
 
+def write_flat_pattern_dxf(parts, path: str | Path, gap: float = 0.05) -> Path:
+    """Cutting layout of unfolded parts: outlines on ``ZUSCHNITT``, bend
+    lines on ``BIEGELINIE``, one label per part."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not parts:
+        raise ValueError("no parts to export")
+
+    lines = ["0", "SECTION", "2", "ENTITIES"]
+    cursor_x = 0.0
+    for k, part in enumerate(parts):
+        pts = np.vstack(part.loops)
+        offset = np.array([cursor_x, 0.0]) - pts.min(axis=0)
+        for loop in part.loops:
+            poly = loop + offset
+            lines += ["0", "POLYLINE", "8", "ZUSCHNITT", "66", "1", "70", "1"]
+            for x, y in poly:
+                lines += [
+                    "0", "VERTEX", "8", "ZUSCHNITT",
+                    "10", f"{x:.6f}", "20", f"{y:.6f}", "30", "0.0",
+                ]
+            lines += ["0", "SEQEND"]
+        for a, b in part.bend_lines:
+            a2, b2 = a + offset, b + offset
+            lines += [
+                "0", "LINE", "8", "BIEGELINIE",
+                "10", f"{a2[0]:.6f}", "20", f"{a2[1]:.6f}", "30", "0.0",
+                "11", f"{b2[0]:.6f}", "21", f"{b2[1]:.6f}", "31", "0.0",
+            ]
+        t = part.catalog_thickness or part.thickness
+        n_bends = len(part.bend_lines)
+        label = f"Teil {k} t={t * 1000:.0f}mm"
+        if n_bends:
+            label += f" ({n_bends} Kantung{'en' if n_bends > 1 else ''})"
+        top = float((pts + offset).max(axis=0)[1])
+        height = max(0.02, 0.05 * (top - float((pts + offset).min(axis=0)[1])))
+        lines += [
+            "0", "TEXT", "8", "BESCHRIFTUNG",
+            "10", f"{cursor_x:.6f}", "20", f"{top + height:.6f}", "30", "0.0",
+            "40", f"{height:.4f}", "1", label,
+        ]
+        cursor_x = float((pts + offset).max(axis=0)[0]) + gap
+    lines += ["0", "ENDSEC", "0", "EOF"]
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def _axis_align_2d(poly: np.ndarray) -> np.ndarray:
     """Rotate a 2D outline so its dominant edge direction runs along +X."""
     segs = np.roll(poly, -1, axis=0) - poly

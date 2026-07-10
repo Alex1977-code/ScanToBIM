@@ -470,6 +470,68 @@ def make_cable_stayed_bridge_scan(
     return PointCloud(points=np.vstack(parts), source="synthetic cable-stayed bridge")
 
 
+def make_bent_plate_scan(
+    base_size=(0.3, 0.2),
+    flange_height: float = 0.15,
+    second_flange: bool = False,
+    thickness: float = 0.003,
+    density: float = 800000.0,
+    noise: float = 0.0001,
+    seed: int = 51,
+) -> PointCloud:
+    """A bent sheet metal part (Kantteil): base plate + flange(s) at 90°.
+
+    Base mid-plane at z=0 (faces z=±t/2); flange bent up at y=b (mid-plane
+    y=b, faces y=b±t/2). ``second_flange`` adds one at y=0 (U-channel).
+    """
+    rng = np.random.default_rng(seed)
+    a, b = base_size
+    t = thickness
+    x, y, z = np.eye(3)
+    parts = [
+        sample_rect((0, 0, -t / 2), x, y, a, b, density, noise, rng),
+        sample_rect((0, 0, t / 2), x, y, a, b, density, noise, rng),
+        sample_rect((0, b - t / 2, 0), x, z, a, flange_height, density, noise, rng),
+        sample_rect((0, b + t / 2, 0), x, z, a, flange_height, density, noise, rng),
+    ]
+    if second_flange:
+        parts.append(sample_rect((0, -t / 2, 0), x, z, a, flange_height, density, noise, rng))
+        parts.append(sample_rect((0, t / 2, 0), x, z, a, flange_height, density, noise, rng))
+    return PointCloud(points=np.vstack(parts), source="synthetic bent part")
+
+
+def add_registration_ghost(
+    cloud: PointCloud, offset=(0.008, 0.0, 0.0), seed: int = 53
+) -> PointCloud:
+    """Simulate a poorly registered second station: the full cloud again,
+    shifted by ``offset`` (planes ⊥ offset become double walls)."""
+    shifted = cloud.points + np.asarray(offset, dtype=np.float64)
+    return PointCloud(points=np.vstack([cloud.points, shifted]), source=cloud.source)
+
+
+def add_mixed_pixel_strings(
+    cloud: PointCloud, n_strings: int = 6, points_per_string: int 	= 40, seed: int = 57
+) -> PointCloud:
+    """Simulate mixed-pixel edge artifacts: sparse strings of points hanging
+    off silhouette edges into space."""
+    rng = np.random.default_rng(seed)
+    lo, hi = cloud.aabb
+    span = float(np.linalg.norm(hi - lo))
+    strings = []
+    for _ in range(n_strings):
+        anchor = cloud.points[rng.integers(len(cloud.points))]
+        direction = rng.normal(size=3)
+        direction /= np.linalg.norm(direction)
+        length = rng.uniform(0.1, 0.25) * span
+        ts = np.sort(rng.uniform(0, length, points_per_string))
+        pts = anchor + np.outer(ts, direction)
+        pts += rng.normal(0, 0.001 * span, pts.shape)
+        strings.append(pts)
+    return PointCloud(
+        points=np.vstack([cloud.points, *strings]), source=cloud.source
+    )
+
+
 def add_outliers(cloud: PointCloud, fraction: float = 0.01, seed: int = 9) -> PointCloud:
     """Scatter uniform noise points around the cloud's bounding box."""
     rng = np.random.default_rng(seed)

@@ -29,8 +29,21 @@ def regularize_planes(
     parallel_tol_deg: float = 8.0,
     ortho_tol_deg: float = 8.0,
     merge_offset_tol: float = 0.05,
+    ghost_offset_tol: float = 0.0,
 ) -> list[Plane]:
-    """Regularize plane orientations in place and merge coplanar duplicates."""
+    """Regularize plane orientations in place and merge coplanar duplicates.
+
+    ``ghost_offset_tol`` additionally merges *registration ghosts*: the same
+    physical surface scanned from two poorly registered stations appears as
+    two parallel planes a few millimetres apart with strongly overlapping
+    footprints. Set it to the expected registration error (e.g. 0.01 m);
+    0 disables ghost merging. Ghosts closer than the normal-estimation
+    radius (~4x point spacing) never appear as two planes in the first
+    place — detection absorbs them into one slightly thicker plane whose
+    RMS then reflects the registration error. Coplanar merging always requires overlapping
+    footprints so that separate surfaces on the same infinite plane (e.g.
+    window sills on one wall line) stay separate surfaces.
+    """
     if not planes:
         return planes
 
@@ -99,7 +112,8 @@ def regularize_planes(
         plane.rms = float(np.sqrt(np.mean(residuals**2)))
         plane.make_basis()
 
-    # ---- 4. merge coplanar duplicates -------------------------------------
+    # ---- 4. merge coplanar duplicates and registration ghosts -------------
+    effective_tol = max(merge_offset_tol, ghost_offset_tol)
     merged: list[Plane] = []
     used = np.zeros(len(planes), dtype=bool)
     for i in range(len(planes)):
@@ -111,8 +125,14 @@ def regularize_planes(
                 continue
             same_side = float(planes[i].normal @ planes[j].normal) > 0
             dj = planes[j].d if same_side else -planes[j].d
-            if abs(planes[i].d - dj) < merge_offset_tol:
-                group.append(j)
+            offset = abs(planes[i].d - dj)
+            if offset >= effective_tol:
+                continue
+            # Beyond the base tolerance only ghost pairs merge, and ghosts
+            # (like all coplanar duplicates worth merging) must overlap.
+            if not _footprints_overlap(planes[i], planes[j], points):
+                continue
+            group.append(j)
         if len(group) == 1:
             merged.append(planes[i])
             used[i] = True
@@ -133,6 +153,22 @@ def regularize_planes(
         merged.append(plane)
 
     return merged
+
+
+def _footprints_overlap(a: Plane, b: Plane, points: np.ndarray, min_ratio: float = 0.3) -> bool:
+    """Do the two planes' supports overlap when projected onto plane a?"""
+    if a.basis is None:
+        a.make_basis()
+    ua = a.project_to_2d(points[a.inliers])
+    ub = a.project_to_2d(points[b.inliers])
+    lo = np.maximum(ua.min(axis=0), ub.min(axis=0))
+    hi = np.minimum(ua.max(axis=0), ub.max(axis=0))
+    if np.any(hi <= lo):
+        return False
+    inter = float(np.prod(hi - lo))
+    area_a = float(np.prod(ua.max(axis=0) - ua.min(axis=0)))
+    area_b = float(np.prod(ub.max(axis=0) - ub.min(axis=0)))
+    return inter >= min_ratio * max(min(area_a, area_b), 1e-12)
 
 
 def snapped_angles_report(planes: list[Plane]) -> dict:

@@ -76,11 +76,11 @@ def test_coplanar_merge():
     )
     # Connectivity filter must split the patches …
     assert len(planes) == 2
-    # … and the coplanar merge must NOT rejoin them unless offsets match —
-    # here they do match, but merging is only applied for same direction
-    # group; verify merge tolerance behaviour explicitly:
+    # … and since v1.6 the coplanar merge requires overlapping footprints:
+    # two distant patches on the same infinite plane stay separate surfaces
+    # (each gets its own boundary polygon instead of one swallowing the other).
     merged = regularize_planes(planes, cloud.points, merge_offset_tol=0.05)
-    assert len(merged) == 1  # same infinite plane → one logical surface
+    assert len(merged) == 2
 
 
 def test_adjacency_box():
