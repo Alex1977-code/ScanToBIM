@@ -78,6 +78,19 @@ def main(argv: list[str] | None = None) -> int:
                        help="disable boundary straightening")
     p_rec.add_argument("--no-color", action="store_true",
                        help="do not color surfaces in the output mesh")
+    p_rec.add_argument("--texture", action="store_true",
+                       help="bake a photo-realistic texture from the cloud's "
+                       "RGB colors (photogrammetry / RGB scanner)")
+    p_rec.add_argument("--texture-photos", type=Path, default=None, metavar="IMAGE_DIR",
+                       help="project the original photos onto the model "
+                       "(sharpest result; needs --colmap-model and Pillow)")
+    p_rec.add_argument("--colmap-model", type=Path, default=None, metavar="MODEL_DIR",
+                       help="COLMAP text model with camera poses "
+                       "(cameras.txt/images.txt; `scantobim photos` writes it "
+                       "to <work_dir>/model_txt)")
+    p_rec.add_argument("--texel", type=float, default=None,
+                       help="texture resolution: texel edge length in input "
+                       "units (default: auto)")
     p_rec.add_argument("--no-openings", action="store_true",
                        help="do not reconstruct window/door openings as holes")
     p_rec.add_argument("--align", action="store_true",
@@ -236,6 +249,36 @@ def _cmd_reconstruct(args) -> int:
     print(f"  runtime:   {rep['runtime_seconds']} s")
 
     ext = args.output.suffix.lower()
+    output_mesh = result.mesh
+    wants_texture = args.texture or args.texture_photos is not None
+    if wants_texture:
+        if ext in (".stp", ".step", ".ifc", ".ply", ".stl"):
+            print(f"note: {ext} carries no texture — texturing skipped "
+                  "(use .glb/.html/.obj)")
+        else:
+            transform = None
+            if "alignment" in result.report:
+                transform = np.array(result.report["alignment"])
+            if args.texture_photos is not None:
+                if args.colmap_model is None:
+                    raise ValueError("--texture-photos requires --colmap-model")
+                from scantobim.core.texture import bake_texture_from_photos
+
+                print("projecting photos onto the model …")
+                output_mesh = bake_texture_from_photos(
+                    result, args.colmap_model, args.texture_photos,
+                    texel_size=args.texel, transform=transform,
+                )
+            else:
+                from scantobim.core.texture import bake_texture_from_cloud
+
+                print("baking texture from cloud colors …")
+                output_mesh = bake_texture_from_cloud(
+                    result, cloud, texel_size=args.texel, transform=transform
+                )
+            th, tw = output_mesh.texture.shape[:2]
+            print(f"  texture atlas: {tw} x {th} px")
+
     if ext in (".stp", ".step"):
         from scantobim.io.step import write_step
 
@@ -247,7 +290,7 @@ def _cmd_reconstruct(args) -> int:
         out = write_ifc(result.surfaces, args.output)
         print(f"wrote {out} (IFC4)")
     else:
-        out = write_mesh(result.mesh, args.output)
+        out = write_mesh(output_mesh, args.output)
         print(f"wrote {out}")
 
     if args.floorplan is not None:

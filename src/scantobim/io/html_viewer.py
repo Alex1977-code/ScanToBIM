@@ -70,6 +70,18 @@ def write_html_viewer(mesh: Mesh, path: str | Path, title: str = "ScanToBIM Mode
     indices = mesh.faces.astype(np.uint32)
     creases = extract_crease_edges(mesh).astype(np.uint32)
 
+    textured = mesh.texture is not None and mesh.uvs is not None
+    if textured:
+        uvs = mesh.uvs.astype(np.float32)
+        from scantobim.io.png import encode_png
+
+        texture_uri = "data:image/png;base64," + base64.b64encode(
+            encode_png(mesh.texture)
+        ).decode("ascii")
+    else:
+        uvs = np.zeros((len(positions), 2), dtype=np.float32)
+        texture_uri = ""
+
     center = (positions.min(axis=0) + positions.max(axis=0)) / 2.0 if len(positions) else np.zeros(3)
     radius = float(np.linalg.norm(positions - center, axis=1).max()) if len(positions) else 1.0
 
@@ -85,12 +97,15 @@ def write_html_viewer(mesh: Mesh, path: str | Path, title: str = "ScanToBIM Mode
         "radius": radius if radius > 0 else 1.0,
     }
 
+    meta["textured"] = bool(textured)
     html = (
         _TEMPLATE.replace("__TITLE__", title)
         .replace("__META__", json.dumps(meta))
         .replace("__POSITIONS__", b64(positions))
         .replace("__NORMALS__", b64(normals))
         .replace("__COLORS__", b64(colors))
+        .replace("__UVS__", b64(uvs))
+        .replace("__TEXTURE_URI__", texture_uri)
         .replace("__INDICES__", b64(indices))
         .replace("__CREASES__", b64(creases))
     )
@@ -128,8 +143,10 @@ function decode(b64, T) {
 const positions = decode("__POSITIONS__", Float32Array);
 const normals   = decode("__NORMALS__", Float32Array);
 const colors    = decode("__COLORS__", Uint8Array);
+const uvs       = decode("__UVS__", Float32Array);
 const indices   = decode("__INDICES__", Uint32Array);
 const creases   = decode("__CREASES__", Uint32Array);
+const TEXTURE_URI = "__TEXTURE_URI__";
 
 document.getElementById("stats").textContent =
   META.vertices + " Vertices · " + META.triangles + " Dreiecke · " + META.surfaces + " Flächen";
@@ -144,14 +161,16 @@ function shader(type, src) {
   if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
   return s;
 }
-const VS = "attribute vec3 aPos; attribute vec3 aNrm; attribute vec3 aCol;" +
-  "uniform mat4 uMVP; uniform float uBias; varying vec3 vN; varying vec3 vC;" +
-  "void main(){ vN=aNrm; vC=aCol; gl_Position=uMVP*vec4(aPos,1.0); gl_Position.z-=uBias*gl_Position.w; }";
-const FS = "precision mediump float; varying vec3 vN; varying vec3 vC;" +
+const VS = "attribute vec3 aPos; attribute vec3 aNrm; attribute vec3 aCol; attribute vec2 aUV;" +
+  "uniform mat4 uMVP; uniform float uBias; varying vec3 vN; varying vec3 vC; varying vec2 vUV;" +
+  "void main(){ vN=aNrm; vC=aCol; vUV=aUV; gl_Position=uMVP*vec4(aPos,1.0); gl_Position.z-=uBias*gl_Position.w; }";
+const FS = "precision mediump float; varying vec3 vN; varying vec3 vC; varying vec2 vUV;" +
   "uniform vec3 uEye; uniform float uFlat; uniform vec3 uLine;" +
+  "uniform float uTextured; uniform sampler2D uTex;" +
   "void main(){ vec3 n=normalize(vN);" +
   " float d=abs(dot(n,normalize(uEye)));" +
-  " vec3 lit=vC*(0.35+0.65*d);" +
+  " vec3 base=mix(vC, texture2D(uTex, vUV).rgb, uTextured);" +
+  " vec3 lit=base*(0.45+0.55*d);" +
   " gl_FragColor=vec4(mix(lit,uLine,uFlat),1.0); }";
 const prog = gl.createProgram();
 gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
@@ -165,17 +184,39 @@ function buffer(target, data) {
 const posBuf = buffer(gl.ARRAY_BUFFER, positions);
 const nrmBuf = buffer(gl.ARRAY_BUFFER, normals);
 const colBuf = buffer(gl.ARRAY_BUFFER, colors);
+const uvBuf = buffer(gl.ARRAY_BUFFER, uvs);
 const idxBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, indices);
 const lineBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, creases);
 
 const aPos = gl.getAttribLocation(prog, "aPos");
 const aNrm = gl.getAttribLocation(prog, "aNrm");
 const aCol = gl.getAttribLocation(prog, "aCol");
+const aUV = gl.getAttribLocation(prog, "aUV");
 const uMVP = gl.getUniformLocation(prog, "uMVP");
 const uEye = gl.getUniformLocation(prog, "uEye");
 const uFlat = gl.getUniformLocation(prog, "uFlat");
 const uLine = gl.getUniformLocation(prog, "uLine");
 const uBias = gl.getUniformLocation(prog, "uBias");
+const uTextured = gl.getUniformLocation(prog, "uTextured");
+const uTex = gl.getUniformLocation(prog, "uTex");
+
+let texReady = false;
+if (META.textured && TEXTURE_URI) {
+  const tex = gl.createTexture();
+  const img = new Image();
+  img.onload = () => {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    texReady = true;
+  };
+  img.src = TEXTURE_URI;
+}
 
 let theta = -1.0, phi = 1.1, dist = META.radius * 2.6;
 const target = META.center.slice();
@@ -233,6 +274,12 @@ function draw() {
   gl.enableVertexAttribArray(aNrm); gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
   gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
   gl.enableVertexAttribArray(aCol); gl.vertexAttribPointer(aCol, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+  if (aUV >= 0) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+    gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
+  }
+  gl.uniform1f(uTextured, texReady ? 1.0 : 0.0);
+  gl.uniform1i(uTex, 0);
 
   gl.uniform1f(uFlat, 0.0); gl.uniform1f(uBias, 0.0);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);

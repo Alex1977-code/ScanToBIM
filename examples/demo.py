@@ -26,6 +26,7 @@ def main() -> None:
     cloud = add_outliers(
         make_l_room_scan(density=900, noise=0.004, window=True), fraction=0.01
     )
+    _paint_cloud(cloud)  # give the scan realistic RGB, like a photogrammetry cloud
     write_point_cloud(cloud, out_dir / "scan.ply")
     print(f"  {len(cloud):,} points → {out_dir / 'scan.ply'}")
 
@@ -46,12 +47,48 @@ def main() -> None:
         path = write_mesh(result.mesh, out_dir / f"model{ext}")
         print(f"  wrote {path}")
 
+    # Photo-realistic version: bake the cloud colors into a texture atlas.
+    from scantobim.core.texture import bake_texture_from_cloud
+
+    textured = bake_texture_from_cloud(result, cloud)
+    th, tw = textured.texture.shape[:2]
+    for ext in (".glb", ".html"):
+        path = write_mesh(textured, out_dir / f"model_texturiert{ext}")
+        print(f"  wrote {path} (Textur {tw}x{th})")
+
     from scantobim.io.dxf import write_floorplan_dxf
 
     plan = write_floorplan_dxf(result.mesh, out_dir / "grundriss.dxf")
     print(f"  wrote {plan}")
     (out_dir / "report.json").write_text(json.dumps(rep, indent=2))
     print(f"  wrote {out_dir / 'report.json'}")
+
+
+def _paint_cloud(cloud) -> None:
+    """Synthetic 'photo colors': parquet floor, painted walls with a dado."""
+    import numpy as np
+
+    pts = cloud.points
+    rng = np.random.default_rng(1)
+    colors = np.zeros((len(pts), 3), dtype=np.uint8)
+    h = 2.5
+    is_floor = pts[:, 2] < 0.05
+    is_ceiling = pts[:, 2] > h - 0.05
+    is_wall = ~is_floor & ~is_ceiling
+
+    stripe = ((pts[:, 0] / 0.12).astype(int) % 2).astype(np.float64)
+    grain = rng.normal(0, 8, len(pts))
+    colors[is_floor, 0] = np.clip(165 + 18 * stripe[is_floor] + grain[is_floor], 0, 255)
+    colors[is_floor, 1] = np.clip(120 + 14 * stripe[is_floor] + grain[is_floor], 0, 255)
+    colors[is_floor, 2] = np.clip(80 + 8 * stripe[is_floor] + grain[is_floor], 0, 255)
+    colors[is_ceiling] = (235, 232, 226)
+    wall_col = np.array([210, 205, 196], dtype=np.float64)
+    dado = np.array([96, 130, 158], dtype=np.float64)
+    wmask = is_wall & (pts[:, 2] >= 1.0)
+    colors[wmask] = np.clip(wall_col + rng.normal(0, 5, (wmask.sum(), 3)), 0, 255).astype(np.uint8)
+    dmask = is_wall & (pts[:, 2] < 1.0)
+    colors[dmask] = np.clip(dado + rng.normal(0, 6, (dmask.sum(), 3)), 0, 255).astype(np.uint8)
+    cloud.colors = colors
 
 
 if __name__ == "__main__":

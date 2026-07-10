@@ -54,12 +54,23 @@ def write_point_cloud(cloud: PointCloud, path: str | Path) -> Path:
 # --------------------------------------------------------------------------- OBJ
 
 def _write_obj(mesh: Mesh, path: Path) -> None:
-    lines = ["# ScanToBIM reconstruction", "o scan_model"]
+    textured = mesh.texture is not None and mesh.uvs is not None
+    lines = ["# ScanToBIM reconstruction"]
+    if textured:
+        mtl_path = path.with_suffix(".mtl")
+        png_path = path.with_name(path.stem + "_texture.png")
+        lines.append(f"mtllib {mtl_path.name}")
+    lines.append("o scan_model")
     for v in mesh.vertices:
         lines.append(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}")
+    if textured:
+        for uv in mesh.uvs:
+            lines.append(f"vt {uv[0]:.6f} {1.0 - uv[1]:.6f}")  # OBJ v runs bottom-up
     normals = mesh.vertex_normals()
     for n in normals:
         lines.append(f"vn {n[0]:.4f} {n[1]:.4f} {n[2]:.4f}")
+    if textured:
+        lines.append("usemtl scan_texture")
     prev_group = None
     groups = mesh.face_groups if mesh.face_groups is not None else np.zeros(len(mesh.faces), dtype=int)
     names = mesh.group_names or {}
@@ -68,8 +79,21 @@ def _write_obj(mesh: Mesh, path: Path) -> None:
             lines.append(f"g {names.get(int(group), f'surface_{int(group):03d}')}")
             prev_group = group
         a, b, c = (int(i) + 1 for i in face)
-        lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")
+        if textured:
+            lines.append(f"f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}")
+        else:
+            lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")
     path.write_text("\n".join(lines) + "\n")
+
+    if textured:
+        from scantobim.io.png import encode_png
+
+        png_path.write_bytes(encode_png(mesh.texture))
+        mtl_path.write_text(
+            "newmtl scan_texture\n"
+            "Ka 1.0 1.0 1.0\nKd 1.0 1.0 1.0\nKs 0.0 0.0 0.0\n"
+            f"map_Kd {png_path.name}\n"
+        )
 
 
 # --------------------------------------------------------------------------- PLY
@@ -160,8 +184,9 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
     normals = mesh.vertex_normals().astype(np.float32)
     indices = mesh.faces.astype(np.uint32).ravel()
 
+    textured = mesh.texture is not None and mesh.uvs is not None
     colors = None
-    if mesh.vertex_colors is not None:
+    if mesh.vertex_colors is not None and not textured:
         colors = (mesh.vertex_colors.astype(np.float32) / 255.0).astype(np.float32)
 
     def _pad(b: bytes, pad_byte: bytes = b"\0") -> bytes:
@@ -204,12 +229,27 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
             {"bufferView": col_view, "componentType": 5126, "count": len(colors), "type": "VEC3"}
         )
         attributes["COLOR_0"] = len(accessors) - 1
+    if textured:
+        uv_view = _add_view(mesh.uvs.astype(np.float32).tobytes(), 34962)
+        accessors.append(
+            {"bufferView": uv_view, "componentType": 5126, "count": len(mesh.uvs), "type": "VEC2"}
+        )
+        attributes["TEXCOORD_0"] = len(accessors) - 1
 
     idx_view = _add_view(indices.tobytes(), 34963)
     accessors.append(
         {"bufferView": idx_view, "componentType": 5125, "count": len(indices), "type": "SCALAR"}
     )
 
+    material = {
+        "name": "scan_surface",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.9,
+        },
+        "doubleSided": True,
+    }
     gltf = {
         "asset": {"version": "2.0", "generator": "ScanToBIM"},
         "scene": 0,
@@ -227,21 +267,25 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
                 ]
             }
         ],
-        "materials": [
-            {
-                "name": "scan_surface",
-                "pbrMetallicRoughness": {
-                    "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
-                    "metallicFactor": 0.0,
-                    "roughnessFactor": 0.9,
-                },
-                "doubleSided": True,
-            }
-        ],
+        "materials": [material],
         "bufferViews": buffer_views,
         "accessors": accessors,
         "buffers": [{"byteLength": offset}],
     }
+    if textured:
+        from scantobim.io.png import encode_png
+
+        png_bytes = encode_png(mesh.texture)
+        img_view = len(buffer_views)
+        data = _pad(png_bytes)
+        buffer_views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(data)})
+        buffers.append(data)
+        offset += len(data)
+        gltf["buffers"][0]["byteLength"] = offset
+        gltf["images"] = [{"bufferView": img_view, "mimeType": "image/png"}]
+        gltf["samplers"] = [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}]
+        gltf["textures"] = [{"sampler": 0, "source": 0}]
+        material["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
 
     bin_chunk = b"".join(buffers)
     json_chunk = _pad(json.dumps(gltf, separators=(",", ":")).encode("utf-8"), b" ")

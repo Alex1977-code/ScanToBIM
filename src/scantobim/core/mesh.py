@@ -25,6 +25,11 @@ class Mesh:
     group_names:
         Optional mapping of group id → semantic name (e.g. ``wall_003``),
         filled by the surface classification stage.
+    uvs:
+        Optional ``(V, 2)`` float texture coordinates (glTF convention:
+        origin top-left), set by the texture baking stage.
+    texture:
+        Optional ``(H, W, 3)`` uint8 texture atlas belonging to ``uvs``.
     """
 
     vertices: np.ndarray
@@ -32,6 +37,8 @@ class Mesh:
     vertex_colors: np.ndarray | None = None
     face_groups: np.ndarray | None = None
     group_names: dict[int, str] | None = None
+    uvs: np.ndarray | None = None
+    texture: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.vertices = np.ascontiguousarray(self.vertices, dtype=np.float64).reshape(-1, 3)

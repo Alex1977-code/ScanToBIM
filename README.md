@@ -67,10 +67,37 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 | 📄 **DXF-Grundriss** (`--floorplan plan.dxf`) | Horizontalschnitt (Standard: 1 m über Boden) als AutoCAD-R12-DXF – direkt nutzbar in AutoCAD, LibreCAD, QCAD, BricsCAD. |
 | 🌐 **Interaktiver HTML-Viewer** (`-o model.html`) | Eine einzige HTML-Datei mit eingebettetem WebGL-Renderer: Orbit/Pan/Zoom, Flächenfarben, schwarze Kantenlinien. Läuft offline in jedem Browser – ideal zum Weitergeben an Kunden, keine Software nötig. |
 | 📦 **Mehrere Eingangsdateien** | `scantobim reconstruct scan1.laz scan2.e57 wolke.ply -o model.glb` verschmilzt beliebig viele Quellen zu einem Modell; `--register-inputs` registriert sie vorher per ICP. |
+| 📷 **Foto-Texturierung** (`--texture`) | Die RGB-Daten der Punktwolke (Photogrammetrie, RGB-Scanner) werden als Textur-Atlas auf die sauberen Flächen gebacken – fotorealistische Darstellung auf exakter Geometrie. Auflösung folgt der Punktdichte (`--texel` überschreibt). |
+| 📸 **Foto-Projektion** (`--texture-photos`) | Noch schärfer: Die Originalfotos werden über die COLMAP-Kameraposen direkt auf das Modell projiziert – pro Texel wählt ScanToBIM das am besten blickende, **nicht verdeckte** Foto (Verdeckung wird gegen das Modell selbst per Ray-Test geprüft). Volle Fotoauflösung auf dem Modell. |
 | ⚙️ **STEP-Export** (`-o model.stp`) | Echtes CAD-B-Rep (AP214): analytische Ebenen, exakte Kantenzüge, Öffnungen als Innenkonturen; wasserdichte Modelle als Volumenkörper (`MANIFOLD_SOLID_BREP`). Importierbar in SolidWorks, Inventor, Fusion, FreeCAD, AutoCAD und **HiCAD**. |
 | 🏗️ **IFC-Export** (`-o model.ifc`) | IFC4-Bauwerksmodell: Wände als `IfcWall`, Böden als `IfcSlab`, Decken als `IfcCovering` – inkl. Projekt/Gebäude/Geschoss-Struktur und Fenster-Öffnungen. Öffnet in Revit, ArchiCAD, Solibri, BlenderBIM. |
 
 ![Viewer](docs/images/viewer.png)
+
+## Fotorealistische Darstellung
+
+Die Fotodaten landen nicht nur in der Geometrie, sondern auch auf ihr:
+
+![Texturiert](docs/images/textured.png)
+
+> Punktwolken-Farben auf das rekonstruierte Modell gebacken – Wandfarbe,
+> Sockel und Parkett bleiben fotorealistisch, die Kanten bleiben exakt.
+> Durch die rekonstruierte Fensteröffnung ist der texturierte Boden sichtbar.
+
+```bash
+# Textur aus den RGB-Farben der Punktwolke (Photogrammetrie / RGB-Scanner)
+scantobim reconstruct wolke.ply -o model.html --texture
+
+# Maximale Schärfe: Originalfotos via COLMAP-Kameraposen projizieren
+scantobim photos ./fotos -o wolke.ply           # schreibt auch model_txt/
+scantobim reconstruct wolke.ply -o model.glb \
+    --texture-photos ./fotos --colmap-model wolke_colmap/model_txt
+```
+
+Texturen landen eingebettet im GLB (PBR-Material mit `baseColorTexture`),
+im HTML-Viewer (Base64) und als OBJ+MTL+PNG-Trio; PLY/STL/STEP/IFC bleiben
+reine Geometrie. UV-Atlas mit Gutter gegen Kantenbluten, Löcher (Verdeckung,
+dünn besetzte Stellen) werden per Nächster-Nachbar-Inpainting gefüllt.
 
 ## Industrie-Modus: Maschinenbau & Stahlbau
 
@@ -128,9 +155,9 @@ CAD-Geometrie an.
 Voraussetzung: Python ≥ 3.10.
 
 ```bash
-pip install .            # aus diesem Repository
-pip install .[laz]       # + LAZ-Unterstützung (empfohlen)
-pip install .[laz,e57]   # + E57
+pip install .                 # aus diesem Repository
+pip install .[laz]            # + LAZ-Unterstützung (empfohlen)
+pip install .[laz,e57,photos] # + E57 + Foto-Projektions-Texturierung
 ```
 
 Für den Foto-Workflow zusätzlich COLMAP installieren
@@ -221,7 +248,7 @@ Ausrichtungs-Transformation und Laufzeit.
 
 ```bash
 pip install -e .[dev]
-pytest          # 105 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
+pytest          # 112 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
 python examples/demo.py   # erzeugt Beispiel-Scan + Modell + Viewer in demo_output/
 ```
 
@@ -267,7 +294,13 @@ trimmed point-to-plane **ICP multi-scan registration**
 **self-contained interactive HTML viewer** (`-o model.html` — embedded
 WebGL, orbit controls, crease-edge overlay, works offline in any browser).
 Multiple input files merge into one model (`--register-inputs` runs ICP
-first). Exports: OBJ (semantic surface groups), PLY, STL, glTF/GLB, HTML,
+first). **Photo-realistic texturing**: `--texture` bakes the cloud's RGB
+into a UV texture atlas on the clean surfaces; `--texture-photos` projects
+the original photos via COLMAP camera poses, per-texel choosing the best
+non-occluded view (occlusion ray-tested against the model itself) —
+full photo resolution on exact geometry, exported as GLB (PBR
+baseColorTexture), standalone HTML viewer, or OBJ+MTL+PNG.
+Exports: OBJ (semantic surface groups), PLY, STL, glTF/GLB, HTML,
 **STEP AP214** (true planar B-rep with shared edges and hole loops — solids
 for watertight models; the documented exchange route into HiCAD, which
 imports STEP natively) and **IFC4** (IfcWall/IfcSlab/IfcCovering with
@@ -280,7 +313,7 @@ gears are separated via their tip-circle cylinders), gear stages
 the IPE/HEA/HEB/UPN catalogs. A synthetic 74k-point room scan with 4 mm
 noise reconstructs to its minimal exact representation — 18 vertices, all
 angles exactly 90°, window included. Pure Python (numpy/scipy/laspy),
-105 tests, MIT license. CLI:
+112 tests, MIT license. CLI:
 `scantobim reconstruct scan.laz -o model.stp --preset indoor`.
 
 ## Lizenz

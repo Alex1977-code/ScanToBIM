@@ -134,6 +134,24 @@ def test_cli_analyze(tmp_path, capsys):
     assert "shaft:" in capsys.readouterr().out
 
 
+def test_cli_reconstruct_with_texture(tmp_path, capsys):
+    cloud = make_box_scan(density=700, noise=0.004)
+    rng = np.random.default_rng(0)
+    from scantobim.core.cloud import PointCloud
+
+    colored = PointCloud(
+        points=cloud.points,
+        colors=rng.integers(60, 200, (len(cloud.points), 3), dtype=np.uint8),
+    )
+    src = write_point_cloud(colored, tmp_path / "scan.ply")
+    out = tmp_path / "model.glb"
+    code = main(["reconstruct", str(src), "-o", str(out), "--texture", "--seed", "1"])
+    assert code == 0
+    assert "texture atlas:" in capsys.readouterr().out
+    raw = out.read_bytes()
+    assert b"image/png" in raw
+
+
 def test_cli_error_on_missing_file(tmp_path, capsys):
     assert main(["info", str(tmp_path / "nope.ply")]) == 1
     assert "error:" in capsys.readouterr().err
