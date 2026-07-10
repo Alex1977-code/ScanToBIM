@@ -93,6 +93,156 @@ def make_l_room_scan(
     return PointCloud(points=np.vstack(parts), source="synthetic L-room")
 
 
+def sample_cylinder(
+    center, axis, radius, length, density, noise, rng, caps: bool = False
+) -> np.ndarray:
+    """Sample the lateral surface of a cylinder (optionally with end caps)."""
+    center = np.asarray(center, dtype=np.float64)
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    helper = np.array([1.0, 0, 0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1, 0])
+    u = np.cross(axis, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+
+    n = max(64, int(2 * np.pi * radius * length * density))
+    theta = rng.uniform(0, 2 * np.pi, n)
+    t = rng.uniform(-length / 2, length / 2, n)
+    r = radius + rng.normal(0, noise, n)
+    pts = (
+        center
+        + np.outer(t, axis)
+        + np.outer(r * np.cos(theta), u)
+        + np.outer(r * np.sin(theta), v)
+    )
+    if caps:
+        for sign in (-1.0, 1.0):
+            m = max(32, int(np.pi * radius**2 * density))
+            rr = radius * np.sqrt(rng.uniform(0, 1, m))
+            th = rng.uniform(0, 2 * np.pi, m)
+            cap = (
+                center
+                + (sign * length / 2 + rng.normal(0, noise, m))[:, None] * axis
+                + np.outer(rr * np.cos(th), u)
+                + np.outer(rr * np.sin(th), v)
+            )
+            pts = np.vstack([pts, cap])
+    return pts
+
+
+def make_stepped_shaft_scan(
+    steps=((0.030, 0.08), (0.050, 0.12), (0.040, 0.10)),
+    axis=(0, 0, 1.0),
+    origin=(0, 0, 0),
+    density: float = 400000.0,
+    noise: float = 0.0003,
+    seed: int = 11,
+) -> PointCloud:
+    """A stepped shaft: coaxial cylinder segments ``(radius, length)`` in a row."""
+    rng = np.random.default_rng(seed)
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    origin = np.asarray(origin, dtype=np.float64)
+    parts = []
+    pos = 0.0
+    for radius, length in steps:
+        center = origin + (pos + length / 2) * axis
+        parts.append(sample_cylinder(center, axis, radius, length, density, noise, rng))
+        pos += length
+    return PointCloud(points=np.vstack(parts), source="synthetic shaft")
+
+
+def make_gear_scan(
+    teeth: int = 24,
+    module: float = 0.004,
+    width: float = 0.030,
+    center=(0, 0, 0),
+    axis=(0, 0, 1.0),
+    density: float = 400000.0,
+    noise: float = 0.0002,
+    seed: int = 13,
+) -> PointCloud:
+    """A spur gear approximated with trapezoidal teeth (DIN-style dimensions).
+
+    Tip diameter da = m*(z+2), root df = m*(z-2.5); the tooth flanks are
+    linear. Samples the toothed lateral surface plus both annular end faces.
+    """
+    rng = np.random.default_rng(seed)
+    center = np.asarray(center, dtype=np.float64)
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    helper = np.array([1.0, 0, 0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1, 0])
+    u = np.cross(axis, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+
+    ra = module * (teeth + 2) / 2.0
+    rf = module * (teeth - 2.5) / 2.0
+
+    def radius_at(theta):
+        # Periodic trapezoid: tip land 40%, root land 30%, flanks 15% each.
+        phase = np.mod(theta * teeth / (2 * np.pi), 1.0)
+        r = np.empty_like(phase)
+        tip = phase < 0.40
+        flank1 = (phase >= 0.40) & (phase < 0.55)
+        root = (phase >= 0.55) & (phase < 0.85)
+        flank2 = phase >= 0.85
+        r[tip] = ra
+        r[flank1] = ra + (rf - ra) * (phase[flank1] - 0.40) / 0.15
+        r[root] = rf
+        r[flank2] = rf + (ra - rf) * (phase[flank2] - 0.85) / 0.15
+        return r
+
+    n = max(2000, int(2 * np.pi * ra * width * density))
+    theta = rng.uniform(0, 2 * np.pi, n)
+    t = rng.uniform(-width / 2, width / 2, n)
+    r = radius_at(theta) + rng.normal(0, noise, n)
+    pts = (
+        center + np.outer(t, axis)
+        + np.outer(r * np.cos(theta), u) + np.outer(r * np.sin(theta), v)
+    )
+    # End faces (annulus from 0.5*rf to tooth surface).
+    for sign in (-1.0, 1.0):
+        m = n // 3
+        th = rng.uniform(0, 2 * np.pi, m)
+        rr = np.sqrt(rng.uniform((0.5 * rf) ** 2, radius_at(th) ** 2))
+        face = (
+            center + (sign * width / 2 + rng.normal(0, noise, m))[:, None] * axis
+            + np.outer(rr * np.cos(th), u) + np.outer(rr * np.sin(th), v)
+        )
+        pts = np.vstack([pts, face])
+    return PointCloud(points=pts, source=f"synthetic gear z={teeth}")
+
+
+def make_ipe_beam_scan(
+    h: float = 0.200,
+    b: float = 0.100,
+    tf: float = 0.0085,
+    tw: float = 0.0056,
+    length: float = 3.0,
+    density: float = 40000.0,
+    noise: float = 0.001,
+    seed: int = 17,
+) -> PointCloud:
+    """An I-profile steel beam along +X: two flanges + web, outer surfaces."""
+    rng = np.random.default_rng(seed)
+    x = np.array([1.0, 0, 0])
+    y = np.array([0.0, 1, 0])
+    z = np.array([0.0, 0, 1])
+    parts = [
+        # Bottom flange: top + bottom surface
+        sample_rect((0, -b / 2, 0), x, y, length, b, density, noise, rng),
+        sample_rect((0, -b / 2, tf), x, y, length, b, density, noise, rng),
+        # Top flange
+        sample_rect((0, -b / 2, h - tf), x, y, length, b, density, noise, rng),
+        sample_rect((0, -b / 2, h), x, y, length, b, density, noise, rng),
+        # Web: both sides
+        sample_rect((0, -tw / 2, tf), x, z, length, h - 2 * tf, density, noise, rng),
+        sample_rect((0, tw / 2, tf), x, z, length, h - 2 * tf, density, noise, rng),
+    ]
+    return PointCloud(points=np.vstack(parts), source="synthetic IPE beam")
+
+
 def add_outliers(cloud: PointCloud, fraction: float = 0.01, seed: int = 9) -> PointCloud:
     """Scatter uniform noise points around the cloud's bounding box."""
     rng = np.random.default_rng(seed)

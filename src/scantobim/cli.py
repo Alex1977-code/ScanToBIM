@@ -46,12 +46,21 @@ def main(argv: list[str] | None = None) -> int:
     p_info = sub.add_parser("info", help="print statistics about a point cloud")
     p_info.add_argument("input", type=Path)
 
-    p_rec = sub.add_parser("reconstruct", help="point cloud → clean-edged 3D model")
-    p_rec.add_argument("input", type=Path, help="input point cloud")
+    p_rec = sub.add_parser("reconstruct", help="point cloud(s) → clean-edged 3D model")
+    p_rec.add_argument(
+        "input", type=Path, nargs="+",
+        help="input point cloud(s); multiple files are merged into one model",
+    )
     p_rec.add_argument(
         "-o", "--output", type=Path, required=True,
-        help="output mesh (.obj/.ply/.stl/.glb/.gltf/.html — .html is an "
-        "interactive standalone viewer)",
+        help="output model: .obj/.ply/.stl/.glb/.gltf (mesh), .html "
+        "(interactive standalone viewer), .stp/.step (CAD B-rep, also the "
+        "exchange route into HiCAD), .ifc (BIM building elements)",
+    )
+    p_rec.add_argument(
+        "--register-inputs", action="store_true",
+        help="ICP-register additional input clouds onto the first one before "
+        "merging (default: assume shared coordinates)",
     )
     p_rec.add_argument(
         "--preset", default="building",
@@ -99,6 +108,21 @@ def main(argv: list[str] | None = None) -> int:
     p_reg.add_argument("--transforms", type=Path, default=None,
                        help="write the 4x4 transforms as JSON")
 
+    p_an = sub.add_parser(
+        "analyze",
+        help="industrial analysis: cylinders, stepped shafts, gears, gear "
+        "stages and steel profiles (Wellen, Zahnräder, Getriebe, Stahlbau)",
+    )
+    p_an.add_argument("input", type=Path, nargs="+", help="point cloud(s) to analyze")
+    p_an.add_argument("-o", "--output", type=Path, default=None,
+                      help="write the analysis report to this JSON file")
+    p_an.add_argument("--mesh", type=Path, default=None,
+                      help="write detected primitives as a mesh (.glb/.html/.obj)")
+    p_an.add_argument("--dist", type=float, default=None,
+                      help="cylinder RANSAC distance threshold (default: auto)")
+    p_an.add_argument("--no-steel", action="store_true",
+                      help="skip steel profile matching")
+
     p_photos = sub.add_parser(
         "photos", help="photos → dense point cloud via COLMAP (must be installed)"
     )
@@ -119,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_reconstruct(args)
         if args.command == "register":
             return _cmd_register(args)
+        if args.command == "analyze":
+            return _cmd_analyze(args)
         if args.command == "photos":
             return _cmd_photos(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
@@ -146,10 +172,32 @@ def _cmd_info(args) -> int:
     return 0
 
 
+def _read_inputs(paths: list[Path], register: bool) -> "object":
+    """Read one or more clouds; optionally ICP-register onto the first."""
+    clouds = []
+    for p in paths:
+        print(f"reading {p} …")
+        cloud = read_point_cloud(p)
+        print(f"  {len(cloud):,} points")
+        clouds.append(cloud)
+    if len(clouds) == 1:
+        return clouds[0]
+    if register:
+        from scantobim.core.registration import apply_transform, register_point_to_plane
+
+        for i in range(1, len(clouds)):
+            res = register_point_to_plane(clouds[i], clouds[0])
+            clouds[i] = apply_transform(clouds[i], res.transform)
+            print(f"  registered {paths[i].name}: rmse={res.rmse:.5f}")
+    from scantobim.core.registration import merge_clouds
+
+    merged = merge_clouds(clouds)
+    print(f"merged {len(clouds)} clouds → {len(merged):,} points")
+    return merged
+
+
 def _cmd_reconstruct(args) -> int:
-    print(f"reading {args.input} …")
-    cloud = read_point_cloud(args.input)
-    print(f"  {len(cloud):,} points")
+    cloud = _read_inputs(args.input, args.register_inputs)
 
     cfg = PipelineConfig.preset(args.preset)
     if args.voxel is not None:
@@ -187,8 +235,20 @@ def _cmd_reconstruct(args) -> int:
     print(f"  residual:  {rep['residual_points']} unexplained points")
     print(f"  runtime:   {rep['runtime_seconds']} s")
 
-    out = write_mesh(result.mesh, args.output)
-    print(f"wrote {out}")
+    ext = args.output.suffix.lower()
+    if ext in (".stp", ".step"):
+        from scantobim.io.step import write_step
+
+        out = write_step(result.surfaces, args.output)
+        print(f"wrote {out} (STEP AP214 — in HiCAD über Datei > Import > STEP laden)")
+    elif ext == ".ifc":
+        from scantobim.io.ifc import write_ifc
+
+        out = write_ifc(result.surfaces, args.output)
+        print(f"wrote {out} (IFC4)")
+    else:
+        out = write_mesh(result.mesh, args.output)
+        print(f"wrote {out}")
 
     if args.floorplan is not None:
         from scantobim.io.dxf import write_floorplan_dxf
@@ -235,6 +295,62 @@ def _cmd_register(args) -> int:
         args.transforms.write_text(json.dumps(transforms, indent=2))
         print(f"wrote {args.transforms}")
     print(f"next: scantobim reconstruct {args.output} -o model.glb")
+    return 0
+
+
+def _cmd_analyze(args) -> int:
+    from scantobim.core.machinery import analyze_machinery, cylinder_mesh
+    from scantobim.core.steel import detect_steel_members, steel_report
+
+    cloud = _read_inputs(args.input, register=False)
+    print("analyzing rotational geometry (cylinders, shafts, gears) …")
+    report = analyze_machinery(cloud, distance_threshold=args.dist)
+    objects = report.pop("_objects")
+
+    print(f"  cylinders:   {len(report['cylinders'])}")
+    for s in report["shafts"]:
+        dias = " → ".join(f"⌀{st['diameter'] * 1000:.1f}mm" for st in s["steps"])
+        print(f"  shaft:       {len(s['steps'])} steps, {s['total_length'] * 1000:.1f}mm  [{dias}]")
+    for g in report["gears"]:
+        print(
+            f"  gear:        z={g['teeth']}, m={g['module'] * 1000:.2f}mm, "
+            f"da={g['tip_diameter'] * 1000:.1f}mm, b={g['width'] * 1000:.1f}mm"
+        )
+    for st in report["gear_stages"]:
+        print(f"  gear stage:  i={st['ratio']:.3f}, a={st['center_distance'] * 1000:.1f}mm")
+
+    if not args.no_steel:
+        print("matching steel profiles …")
+        members = detect_steel_members(cloud)
+        report["steel_members"] = steel_report(members)
+        for m in report["steel_members"]:
+            print(f"  steel:       {m['profile']} ({m['family']}), L={m['length']:.3f}")
+
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2, default=_json_default))
+        print(f"wrote {args.output}")
+
+    if args.mesh is not None:
+        from scantobim.core.mesh import merge_meshes
+
+        parts = []
+        for i, c in enumerate(objects["cylinders"]):
+            parts.append(
+                cylinder_mesh(c.center, c.axis, c.radius, c.length, group=i)
+            )
+        for j, g in enumerate(objects["gears"]):
+            parts.append(
+                cylinder_mesh(
+                    g.center, g.axis, g.tip_diameter / 2, g.width,
+                    color=(230, 180, 120), group=1000 + j,
+                )
+            )
+        if parts:
+            write_mesh(merge_meshes(parts), args.mesh)
+            print(f"wrote {args.mesh}")
+        else:
+            print("no primitives detected — skipping mesh output")
     return 0
 
 

@@ -18,16 +18,22 @@ The package implements a structured scan-to-model pipeline:
 
 from scantobim.core.cloud import PointCloud
 from scantobim.core.mesh import Mesh
-from scantobim.core.pipeline import PipelineConfig, ReconstructionResult, reconstruct
+from scantobim.core.pipeline import (
+    PipelineConfig,
+    ReconstructionResult,
+    SurfaceGeometry,
+    reconstruct,
+)
 from scantobim.core.registration import merge_clouds, register_point_to_plane
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "PointCloud",
     "Mesh",
     "PipelineConfig",
     "ReconstructionResult",
+    "SurfaceGeometry",
     "reconstruct",
     "register_point_to_plane",
     "merge_clouds",

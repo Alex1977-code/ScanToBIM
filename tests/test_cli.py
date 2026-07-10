@@ -80,6 +80,60 @@ def test_cli_register(tmp_path, capsys):
     assert np.array(data[str(other)]).shape == (4, 4)
 
 
+def test_cli_reconstruct_multiple_inputs(tmp_path, capsys):
+    """Two half-scans of the same box merge into one model."""
+    cloud = make_box_scan(density=700, noise=0.004)
+    half = len(cloud.points) // 2
+    from scantobim.core.cloud import PointCloud
+
+    a = write_point_cloud(PointCloud(points=cloud.points[:half]), tmp_path / "a.ply")
+    b = write_point_cloud(PointCloud(points=cloud.points[half:]), tmp_path / "b.ply")
+    out = tmp_path / "model.glb"
+    report = tmp_path / "report.json"
+    code = main(
+        ["reconstruct", str(a), str(b), "-o", str(out), "--report", str(report), "--seed", "1"]
+    )
+    assert code == 0
+    assert json.loads(report.read_text())["planes"] == 6
+    assert "merged 2 clouds" in capsys.readouterr().out
+
+
+def test_cli_reconstruct_step_output(tmp_path, capsys):
+    cloud = make_box_scan(density=700, noise=0.004)
+    src = write_point_cloud(cloud, tmp_path / "scan.ply")
+    out = tmp_path / "model.stp"
+    assert main(["reconstruct", str(src), "-o", str(out), "--seed", "1"]) == 0
+    text = out.read_text()
+    assert text.startswith("ISO-10303-21;")
+    assert "MANIFOLD_SOLID_BREP" in text
+
+
+def test_cli_reconstruct_ifc_output(tmp_path, capsys):
+    cloud = make_box_scan(density=700, noise=0.004)
+    src = write_point_cloud(cloud, tmp_path / "scan.ply")
+    out = tmp_path / "model.ifc"
+    assert main(["reconstruct", str(src), "-o", str(out), "--seed", "1"]) == 0
+    assert "IFC4" in out.read_text()
+
+
+def test_cli_analyze(tmp_path, capsys):
+    from tests.synthetic import make_stepped_shaft_scan
+
+    shaft = make_stepped_shaft_scan(steps=((0.030, 0.08), (0.050, 0.12)))
+    src = write_point_cloud(shaft, tmp_path / "shaft.ply")
+    report_path = tmp_path / "analysis.json"
+    mesh_path = tmp_path / "primitives.glb"
+    code = main(
+        ["analyze", str(src), "-o", str(report_path), "--mesh", str(mesh_path), "--no-steel"]
+    )
+    assert code == 0
+    report = json.loads(report_path.read_text())
+    assert len(report["shafts"]) == 1
+    assert len(report["shafts"][0]["steps"]) == 2
+    assert mesh_path.stat().st_size > 0
+    assert "shaft:" in capsys.readouterr().out
+
+
 def test_cli_error_on_missing_file(tmp_path, capsys):
     assert main(["info", str(tmp_path / "nope.ply")]) == 1
     assert "error:" in capsys.readouterr().err

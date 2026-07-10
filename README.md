@@ -66,8 +66,50 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 | 🔗 **Multi-Scan-Registrierung** (`scantobim register`) | Getrimmtes Punkt-zu-Ebene-ICP registriert grob vorausgerichtete Scans aufeinander und verschmilzt sie (Transformationen als JSON exportierbar). |
 | 📄 **DXF-Grundriss** (`--floorplan plan.dxf`) | Horizontalschnitt (Standard: 1 m über Boden) als AutoCAD-R12-DXF – direkt nutzbar in AutoCAD, LibreCAD, QCAD, BricsCAD. |
 | 🌐 **Interaktiver HTML-Viewer** (`-o model.html`) | Eine einzige HTML-Datei mit eingebettetem WebGL-Renderer: Orbit/Pan/Zoom, Flächenfarben, schwarze Kantenlinien. Läuft offline in jedem Browser – ideal zum Weitergeben an Kunden, keine Software nötig. |
+| 📦 **Mehrere Eingangsdateien** | `scantobim reconstruct scan1.laz scan2.e57 wolke.ply -o model.glb` verschmilzt beliebig viele Quellen zu einem Modell; `--register-inputs` registriert sie vorher per ICP. |
+| ⚙️ **STEP-Export** (`-o model.stp`) | Echtes CAD-B-Rep (AP214): analytische Ebenen, exakte Kantenzüge, Öffnungen als Innenkonturen; wasserdichte Modelle als Volumenkörper (`MANIFOLD_SOLID_BREP`). Importierbar in SolidWorks, Inventor, Fusion, FreeCAD, AutoCAD und **HiCAD**. |
+| 🏗️ **IFC-Export** (`-o model.ifc`) | IFC4-Bauwerksmodell: Wände als `IfcWall`, Böden als `IfcSlab`, Decken als `IfcCovering` – inkl. Projekt/Gebäude/Geschoss-Struktur und Fenster-Öffnungen. Öffnet in Revit, ArchiCAD, Solibri, BlenderBIM. |
 
 ![Viewer](docs/images/viewer.png)
+
+## Industrie-Modus: Maschinenbau & Stahlbau
+
+`scantobim analyze` vermisst rotatorische Maschinengeometrie und Stahltragwerke
+direkt aus der Punktwolke – Reverse Engineering für Bestandsanlagen:
+
+![Getriebeanalyse](docs/images/machinery.png)
+
+| Erkennung | Ausgabe |
+| --- | --- |
+| **Zylinder** | Rohre, Lagerzapfen, Bohrungen, Säulen: Achse, Durchmesser, Länge, RMS (normalenbasiertes RANSAC mit Kleinste-Quadrate-Verfeinerung und Winkelabdeckungs-Gate). |
+| **Wellen** (auch abgesetzt) | Koaxiale Zylinderketten werden zu Wellen gruppiert: Absätze in Reihenfolge mit ⌀/Länge/Position – die Maße für die Nachfertigung. |
+| **Zahnräder** (Stirnräder) | Zähnezahl über FFT des Winkel-Radius-Profils, Kopf-/Fußkreis, **Modul nach DIN** (m = da/(z+2)), Teilkreis, Zahnbreite. Achse wird über Stirnflächen-Normalen präzisiert; kämmende Räder in einem Cluster werden über ihre Kopfkreis-Zylinder getrennt. |
+| **Getriebestufen** (Großgetriebe) | Kämmende Radpaare aus parallelen Achsen im Teilkreis-Achsabstand: Übersetzung i und Achsabstand a je Stufe. |
+| **Stahlprofile** | Längliche Bauteil-Cluster werden vermessen (Achse, h × b, Länge, Steglage) und gegen die Walzprofil-Kataloge **IPE / HEA / HEB / UPN** (DIN 1025/1026) gematcht – inkl. Abweichung vom Katalogmaß. |
+
+```bash
+# Getriebe / Anlage analysieren: JSON-Bericht + Primitiv-Mesh
+scantobim analyze getriebe.e57 -o analyse.json --mesh primitive.glb
+
+# Stahltragwerk: Profile identifizieren
+scantobim analyze halle.laz -o traeger.json
+```
+
+Hinweis Genauigkeit: freistehende Räder werden am genauesten vermessen; im
+Zahneingriff kann der Kopfkreis des Großrads leicht unterschätzt werden.
+
+## CAD-Übergabe: STEP & HiCAD
+
+`-o model.stp` schreibt ein **echtes B-Rep** (keine Dreiecksfacetten): jede
+Fläche als analytische `PLANE` mit exakten Kantenzügen, gemeinsame Kanten
+zwischen Flächen werden geteilt (`EDGE_CURVE`), Öffnungen sind Innenkonturen.
+Wasserdichte Gebäude werden als Volumenkörper exportiert.
+
+**HiCAD (ISD):** Das native `.SZA`-Format ist proprietär und kann nur von
+HiCAD selbst geschrieben werden. Der dokumentierte Übergabeweg ist STEP:
+in HiCAD über *Datei → Import → STEP* die von ScanToBIM erzeugte `.stp`
+laden – Flächen, Kanten und Öffnungen kommen dort als editierbare
+CAD-Geometrie an.
 
 ## Unterstützte Eingaben
 
@@ -110,9 +152,16 @@ scantobim reconstruct raum.e57 -o raum.obj --preset indoor
 scantobim photos ./fotos -o wolke.ply
 scantobim reconstruct wolke.ply -o model.glb
 
-# Mehrere Scans registrieren und gemeinsam rekonstruieren
+# Mehrere Eingangsdateien direkt zu einem Modell (beliebige Formate mischen)
+scantobim reconstruct standpunkt1.laz standpunkt2.e57 drohne.ply -o model.glb
+scantobim reconstruct s1.ply s2.ply --register-inputs -o model.glb  # mit ICP
+
+# CAD/BIM-Export
+scantobim reconstruct scan.laz -o model.stp   # STEP B-Rep (auch für HiCAD)
+scantobim reconstruct raum.e57 -o model.ifc --preset indoor  # IFC4-Bauteile
+
+# Oder explizit registrieren und Zwischenergebnis behalten
 scantobim register standpunkt1.ply standpunkt2.ply standpunkt3.ply -o gesamt.ply
-scantobim reconstruct gesamt.ply -o model.glb --preset indoor
 
 # Achsen ausrichten, Grundriss als DXF, interaktiver Browser-Viewer
 scantobim reconstruct scan.laz -o model.html --align --floorplan grundriss.dxf
@@ -163,14 +212,16 @@ Ausrichtungs-Transformation und Laufzeit.
   (`pip install scantobim[viz]`).
 - Die ICP-Registrierung ist eine Fein-Registrierung; Scans müssen grob
   vorausgerichtet sein (Scanner-Software, gemeinsame Georeferenz).
-- Geplant: IFC-Export (Wände/Decken als BIM-Bauteile), Zylinder-Detektion
-  für Rohrleitungen, Mehrgeschoss-Klassifikation.
+- Zahnradvermessung: Gerad-Stirnräder (Schräg-/Kegelräder auf der Roadmap);
+  Stahlprofile: I/H- und U-Familien (L-Winkel und Hohlprofile geplant).
+- Geplant: Mehrgeschoss-Klassifikation, IfcOpeningElement-Beziehungen,
+  Kegel-/Torus-Primitive, natives Hohlprofil-Matching.
 
 ## Entwicklung
 
 ```bash
 pip install -e .[dev]
-pytest          # 79 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
+pytest          # 105 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
 python examples/demo.py   # erzeugt Beispiel-Scan + Modell + Viewer in demo_output/
 ```
 
@@ -215,11 +266,22 @@ trimmed point-to-plane **ICP multi-scan registration**
 (`scantobim register`), **DXF floor plan export** (`--floorplan`), and a
 **self-contained interactive HTML viewer** (`-o model.html` — embedded
 WebGL, orbit controls, crease-edge overlay, works offline in any browser).
-Exports: OBJ (semantic surface groups), PLY, STL, glTF/GLB, HTML.
-A synthetic 74k-point room scan with 4 mm noise reconstructs to its minimal
-exact representation — 18 vertices, all angles exactly 90°, window included.
-Pure Python (numpy/scipy/laspy), 79 tests, MIT license. CLI:
-`scantobim reconstruct scan.laz -o model.glb --preset indoor`.
+Multiple input files merge into one model (`--register-inputs` runs ICP
+first). Exports: OBJ (semantic surface groups), PLY, STL, glTF/GLB, HTML,
+**STEP AP214** (true planar B-rep with shared edges and hole loops — solids
+for watertight models; the documented exchange route into HiCAD, which
+imports STEP natively) and **IFC4** (IfcWall/IfcSlab/IfcCovering with
+project/building/storey structure). The industrial mode
+(`scantobim analyze`) reverse-engineers machinery: cylinders, stepped
+shafts (step diameters/lengths), spur gears (tooth count via FFT of the
+angular radius profile, DIN module, tip/root circles, face width — meshing
+gears are separated via their tip-circle cylinders), gear stages
+(transmission ratio + center distance) and steel members matched against
+the IPE/HEA/HEB/UPN catalogs. A synthetic 74k-point room scan with 4 mm
+noise reconstructs to its minimal exact representation — 18 vertices, all
+angles exactly 90°, window included. Pure Python (numpy/scipy/laspy),
+105 tests, MIT license. CLI:
+`scantobim reconstruct scan.laz -o model.stp --preset indoor`.
 
 ## Lizenz
 

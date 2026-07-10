@@ -112,9 +112,27 @@ class PipelineConfig:
 
 
 @dataclass
+class SurfaceGeometry:
+    """Exact polygonal geometry of one reconstructed surface.
+
+    This is the CAD-grade representation (planar face with outer boundary
+    and hole loops) that feeds the STEP and IFC exporters — the triangle
+    mesh is derived from it for visualization formats.
+    """
+
+    plane_index: int
+    normal: np.ndarray  # unit normal (faces outward/inward per config)
+    outer: np.ndarray  # (N, 3) CCW around the normal
+    holes: list  # list of (M, 3) arrays, CCW around the normal
+    surface_class: str = ""
+    name: str = ""
+
+
+@dataclass
 class ReconstructionResult:
     mesh: Mesh
     residual: PointCloud  # points not explained by any planar surface
+    surfaces: list = field(default_factory=list)  # list[SurfaceGeometry]
     report: dict = field(default_factory=dict)
 
 
@@ -197,9 +215,10 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
 
     palette = _make_palette(len(planes))
     parts: list[Mesh] = []
+    geometries: list[SurfaceGeometry] = []
     plane_reports = []
     for pi, plane in enumerate(planes):
-        part, info = _reconstruct_plane(
+        part, info, geometry = _reconstruct_plane(
             plane,
             pi,
             work.points,
@@ -212,6 +231,8 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
         plane_reports.append(info)
         if part is not None:
             parts.append(part)
+        if geometry is not None:
+            geometries.append(geometry)
     report["surfaces"] = plane_reports
 
     if not parts:
@@ -234,6 +255,11 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
         plane_normals = {
             pi: alignment[:3, :3] @ n for pi, n in plane_normals.items()
         }
+        rot, trans = final_t[:3, :3], final_t[:3, 3]
+        for geo in geometries:
+            geo.outer = geo.outer @ rot.T + trans
+            geo.holes = [h @ rot.T + trans for h in geo.holes]
+            geo.normal = rot @ geo.normal
         report["alignment"] = [[round(float(v), 8) for v in row] for row in final_t]
 
     # ---- 8. semantics: classification + quantity takeoff --------------------
@@ -256,6 +282,10 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
     for info in plane_reports:
         if info.get("status") == "ok" and info["plane"] in class_of:
             info["class"] = class_of[info["plane"]]
+    for geo in geometries:
+        if geo.plane_index in class_of:
+            geo.surface_class = class_of[geo.plane_index]
+            geo.name = mesh.group_names[geo.plane_index]
     report["quantities"] = quantity_takeoff(mesh, class_of, surf_area)
 
     report["mesh"] = {
@@ -266,7 +296,9 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
     }
     report["residual_points"] = len(residual)
     report["runtime_seconds"] = round(time.perf_counter() - t0, 3)
-    return ReconstructionResult(mesh=mesh, residual=residual, report=report)
+    return ReconstructionResult(
+        mesh=mesh, residual=residual, surfaces=geometries, report=report
+    )
 
 
 def _reconstruct_plane(
@@ -278,7 +310,7 @@ def _reconstruct_plane(
     lines: list,
     corners: list,
     color: tuple[int, int, int],
-) -> tuple[Mesh | None, dict]:
+) -> tuple[Mesh | None, dict, "SurfaceGeometry | None"]:
     info: dict = {
         "plane": plane_index,
         "points": int(len(plane.inliers)),
@@ -290,7 +322,7 @@ def _reconstruct_plane(
     boundary, hole_loops = alpha_shape_loops(uv, alpha=cfg.alpha_factor * spacing)
     if boundary is None or len(boundary) < 3:
         info["status"] = "rejected: no boundary"
-        return None, info
+        return None, info, None
 
     boundary = simplify_polygon(boundary, tolerance=cfg.simplify_factor * spacing)
     if cfg.straighten:
@@ -311,7 +343,7 @@ def _reconstruct_plane(
     uv_final = remove_collinear(uv_final, tolerance=0.5 * spacing)
     if len(uv_final) < 3 or polygon_area(uv_final) < (2.0 * spacing) ** 2:
         info["status"] = "rejected: degenerate after snapping"
-        return None, info
+        return None, info, None
 
     # Openings (windows, door cutouts): regularize each hole loop and keep it
     # if it stays a valid polygon strictly inside the final outer boundary.
@@ -336,7 +368,7 @@ def _reconstruct_plane(
     verts2d, tris = triangulate_with_holes(uv_final, holes)
     if len(tris) == 0:
         info["status"] = "rejected: triangulation failed"
-        return None, info
+        return None, info, None
 
     vertices = plane.lift_to_3d(verts2d)
     colors = np.tile(np.asarray(color, dtype=np.uint8), (len(vertices), 1))
@@ -354,7 +386,13 @@ def _reconstruct_plane(
     info["openings"] = len(holes)
     if holes:
         info["opening_areas"] = [round(polygon_area(h), 4) for h in holes]
-    return mesh, info
+    geometry = SurfaceGeometry(
+        plane_index=plane_index,
+        normal=plane.normal.copy(),
+        outer=plane.lift_to_3d(uv_final),
+        holes=[plane.lift_to_3d(h) for h in holes],
+    )
+    return mesh, info, geometry
 
 
 def _orient_planes(planes, points: np.ndarray, mode: str) -> None:
