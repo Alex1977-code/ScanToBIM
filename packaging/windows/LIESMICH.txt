@@ -1,0 +1,53 @@
+ScanToBIM fuer Windows (64 Bit)
+===============================
+
+Punktwolken & Fotos -> 3D-Modelle mit sauberen Kanten.
+Keine Installation noetig: scantobim.exe ist eigenstaendig
+(Python ist NICHT erforderlich).
+
+Erster Start
+------------
+Windows SmartScreen kann beim ersten Start warnen, weil die Datei
+nicht code-signiert ist:
+  "Weitere Informationen" -> "Trotzdem ausfuehren"
+
+Benutzung (Eingabeaufforderung oder PowerShell)
+-----------------------------------------------
+  scantobim.exe --help
+
+  :: Punktwolke inspizieren
+  scantobim.exe info scan.laz
+
+  :: Gebaeude/Raum -> Modell (interaktiver Viewer, einfach im Browser oeffnen)
+  scantobim.exe reconstruct scan.laz -o modell.html --texture
+
+  :: CAD- und BIM-Export
+  scantobim.exe reconstruct scan.laz -o modell.stp
+  scantobim.exe reconstruct raum.e57 -o modell.ifc --preset indoor
+
+  :: Grundriss als DXF
+  scantobim.exe reconstruct scan.laz -o modell.glb --floorplan grundriss.dxf
+
+  :: Maschinenbau: Wellen, Zahnraeder, Getriebe, Stahlprofile, Anschluesse
+  scantobim.exe analyze getriebe.e57 -o analyse.json --mesh primitive.glb
+
+  :: Geschweisste Blechkonstruktionen: Dicken, Naehte, Brennschnitt-DXF
+  scantobim.exe sheetmetal behaelter.ply -o bleche.json --dxf zuschnitt.dxf
+
+  :: Brueckenbauwerke: Typ, Felder, Pfeiler, Lager, Bogen, Seile
+  scantobim.exe bridge bruecke.laz -o bauwerk.json
+
+  :: Mehrere Scans registrieren und verschmelzen
+  scantobim.exe register standpunkt1.ply standpunkt2.ply -o gesamt.ply
+
+Eingabeformate:  .las .laz .e57 .ply .pcd .pts .xyz .csv  (+ Fotos via COLMAP)
+Ausgabeformate:  .stp .ifc .glb .obj .stl .html .dxf + JSON-Berichte
+
+Hinweis Foto-Workflow: "scantobim.exe photos" benoetigt ein separat
+installiertes COLMAP (https://colmap.github.io). Alternativ die dichte
+Punktwolke aus einem beliebigen Photogrammetrie-Programm als .ply laden.
+
+Dokumentation & Quellcode:
+  https://github.com/Alex1977-code/ScanToBIM
+
+Lizenz: MIT
