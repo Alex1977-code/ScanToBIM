@@ -22,8 +22,10 @@ def main() -> None:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("demo_output")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print("generating synthetic L-room scan (4 mm noise, 1% outliers) …")
-    cloud = add_outliers(make_l_room_scan(density=900, noise=0.004), fraction=0.01)
+    print("generating synthetic L-room scan with window (4 mm noise, 1% outliers) …")
+    cloud = add_outliers(
+        make_l_room_scan(density=900, noise=0.004, window=True), fraction=0.01
+    )
     write_point_cloud(cloud, out_dir / "scan.ply")
     print(f"  {len(cloud):,} points → {out_dir / 'scan.ply'}")
 
@@ -31,14 +33,23 @@ def main() -> None:
     result = reconstruct(cloud, PipelineConfig.preset("indoor"))
 
     rep = result.report
-    print(f"  planes:  {rep['planes']}  (angles: {rep['plane_angles']})")
-    print(f"  corners: {rep['exact_corners']}")
-    print(f"  mesh:    {rep['mesh']['vertices']} vertices / {rep['mesh']['triangles']} triangles")
-    print(f"  runtime: {rep['runtime_seconds']} s")
+    openings = sum(s.get("openings", 0) for s in rep["surfaces"])
+    print(f"  planes:   {rep['planes']}  (angles: {rep['plane_angles']})")
+    print(f"  corners:  {rep['exact_corners']}")
+    print(f"  openings: {openings}")
+    print(f"  classes:  {rep['quantities']['surface_count_by_class']}")
+    print(f"  mesh:     {rep['mesh']['vertices']} vertices / {rep['mesh']['triangles']} triangles")
+    print(f"  runtime:  {rep['runtime_seconds']} s")
 
-    for ext in (".obj", ".ply", ".stl", ".glb"):
+    # model.html is the interactive standalone viewer — open it in a browser.
+    for ext in (".obj", ".ply", ".stl", ".glb", ".html"):
         path = write_mesh(result.mesh, out_dir / f"model{ext}")
         print(f"  wrote {path}")
+
+    from scantobim.io.dxf import write_floorplan_dxf
+
+    plan = write_floorplan_dxf(result.mesh, out_dir / "grundriss.dxf")
+    print(f"  wrote {plan}")
     (out_dir / "report.json").write_text(json.dumps(rep, indent=2))
     print(f"  wrote {out_dir / 'report.json'}")
 

@@ -19,8 +19,9 @@ The package implements a structured scan-to-model pipeline:
 from scantobim.core.cloud import PointCloud
 from scantobim.core.mesh import Mesh
 from scantobim.core.pipeline import PipelineConfig, ReconstructionResult, reconstruct
+from scantobim.core.registration import merge_clouds, register_point_to_plane
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "PointCloud",
@@ -28,5 +29,7 @@ __all__ = [
     "PipelineConfig",
     "ReconstructionResult",
     "reconstruct",
+    "register_point_to_plane",
+    "merge_clouds",
     "__version__",
 ]

@@ -14,7 +14,7 @@ from scantobim.core.mesh import Mesh
 
 def write_mesh(mesh: Mesh, path: str | Path) -> Path:
     """Write ``mesh`` to ``path``; format is chosen by extension
-    (``.obj``, ``.ply``, ``.stl``, ``.glb``, ``.gltf``)."""
+    (``.obj``, ``.ply``, ``.stl``, ``.glb``, ``.gltf``, ``.html``)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     ext = path.suffix.lower()
@@ -26,8 +26,14 @@ def write_mesh(mesh: Mesh, path: str | Path) -> Path:
         _write_stl(mesh, path)
     elif ext in (".glb", ".gltf"):
         _write_glb(mesh, path)
+    elif ext in (".html", ".htm"):
+        from scantobim.io.html_viewer import write_html_viewer
+
+        write_html_viewer(mesh, path)
     else:
-        raise ValueError(f"Unsupported mesh format: {ext!r} (use .obj .ply .stl .glb)")
+        raise ValueError(
+            f"Unsupported mesh format: {ext!r} (use .obj .ply .stl .glb .html)"
+        )
     return path
 
 
@@ -56,9 +62,10 @@ def _write_obj(mesh: Mesh, path: Path) -> None:
         lines.append(f"vn {n[0]:.4f} {n[1]:.4f} {n[2]:.4f}")
     prev_group = None
     groups = mesh.face_groups if mesh.face_groups is not None else np.zeros(len(mesh.faces), dtype=int)
+    names = mesh.group_names or {}
     for face, group in zip(mesh.faces, groups):
         if group != prev_group:
-            lines.append(f"g surface_{int(group):03d}")
+            lines.append(f"g {names.get(int(group), f'surface_{int(group):03d}')}")
             prev_group = group
         a, b, c = (int(i) + 1 for i in face)
         lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")

@@ -22,12 +22,16 @@ class Mesh:
     face_groups:
         Optional ``(F,)`` int — id of the source surface (plane) per face,
         exported as OBJ groups so CAD/BIM tools can address single surfaces.
+    group_names:
+        Optional mapping of group id → semantic name (e.g. ``wall_003``),
+        filled by the surface classification stage.
     """
 
     vertices: np.ndarray
     faces: np.ndarray
     vertex_colors: np.ndarray | None = None
     face_groups: np.ndarray | None = None
+    group_names: dict[int, str] | None = None
 
     def __post_init__(self) -> None:
         self.vertices = np.ascontiguousarray(self.vertices, dtype=np.float64).reshape(-1, 3)
@@ -143,7 +147,123 @@ def _any_point_in_triangle(pts: np.ndarray, a, b, c) -> bool:
     # Inclusive: a vertex exactly on the ear boundary blocks the ear too —
     # clipping across it would create a triangle crossing the polygon edge
     # that continues from that vertex (classic concave-polygon failure).
-    return bool(np.any((u >= -1e-12) & (v >= -1e-12) & (u + v <= 1 + 1e-12)))
+    inside = (u >= -1e-12) & (v >= -1e-12) & (u + v <= 1 + 1e-12)
+    # …except points coincident with a triangle corner: those are duplicated
+    # bridge vertices from hole merging and must not block the ear.
+    coincident = (
+        (np.einsum("ij,ij->i", pts - a, pts - a) < 1e-24)
+        | (np.einsum("ij,ij->i", pts - b, pts - b) < 1e-24)
+        | (np.einsum("ij,ij->i", pts - c, pts - c) < 1e-24)
+    )
+    return bool(np.any(inside & ~coincident))
+
+
+def triangulate_with_holes(
+    outer: np.ndarray, holes: list[np.ndarray]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Triangulate a CCW polygon with CCW hole loops.
+
+    Holes are merged into the outer boundary with bridge edges (Eberly's
+    max-x visibility method), then the resulting simple polygon is
+    ear-clipped. Returns ``(vertices, triangles)`` — bridge vertices are
+    duplicated and collapse again during mesh welding.
+    """
+    if not holes:
+        return outer.copy(), triangulate_polygon(outer)
+    merged = outer.copy()
+    ordered = sorted(holes, key=lambda h: -float(h[:, 0].max()))
+    for idx, hole in enumerate(ordered):
+        cw_hole = hole[::-1]  # holes must run opposite to the outer loop
+        # A bridge must not cross holes that are not merged in yet.
+        pending: list[tuple[np.ndarray, np.ndarray]] = []
+        for other in ordered[idx + 1 :]:
+            for k in range(len(other)):
+                pending.append((other[k], other[(k + 1) % len(other)]))
+        merged = _merge_hole(merged, cw_hole, pending)
+    return merged, triangulate_polygon(merged)
+
+
+def _merge_hole(
+    outer: np.ndarray,
+    hole: np.ndarray,
+    pending_edges: list[tuple[np.ndarray, np.ndarray]],
+) -> np.ndarray:
+    """Connect ``hole`` (CW) into ``outer`` (CCW) via a mutually visible bridge.
+
+    From the hole's max-x vertex, outer vertices are tried nearest-first; the
+    first bridge segment that crosses no outer edge, no hole edge and no
+    pending hole is used. Bridge endpoints are duplicated in the splice and
+    collapse again during vertex welding.
+    """
+    n = len(outer)
+    h = len(hole)
+    m = int(np.argmax(hole[:, 0]))
+    start = hole[m]
+
+    scale = float(np.abs(outer).max()) + 1.0
+    eps = 1e-12 * scale * scale
+
+    order = np.argsort(np.einsum("ij,ij->i", outer - start, outer - start))
+    for p in order:
+        target = outer[p]
+        if np.einsum("i,i->", target - start, target - start) < eps:
+            continue
+        mid = (start + target) / 2.0
+        ok = True
+        # Against outer edges (skip the two incident to p).
+        for i in range(n):
+            j = (i + 1) % n
+            if i == p or j == p:
+                continue
+            if _segments_cross(start, target, outer[i], outer[j], eps):
+                ok = False
+                break
+        if ok:
+            # Against the hole's own edges (skip the two incident to m).
+            for i in range(h):
+                j = (i + 1) % h
+                if i == m or j == m:
+                    continue
+                if _segments_cross(start, target, hole[i], hole[j], eps):
+                    ok = False
+                    break
+        if ok:
+            for q1, q2 in pending_edges:
+                if _segments_cross(start, target, q1, q2, eps):
+                    ok = False
+                    break
+        if ok and not _point_in_polygon_2d(mid, hole):
+            # Splice: outer[..p], hole cycle from m back to m, then outer[p..]
+            hole_cycle = np.vstack([hole[m:], hole[:m], hole[m : m + 1]])
+            return np.vstack([outer[: p + 1], hole_cycle, outer[p:]])
+    return outer  # no visible bridge — drop the hole rather than corrupt
+
+
+def _segments_cross(p1, p2, q1, q2, eps: float) -> bool:
+    """Proper segment intersection (shared endpoints / touching don't count)."""
+    r = p2 - p1
+    s = q2 - q1
+    d1 = r[0] * (q1[1] - p1[1]) - r[1] * (q1[0] - p1[0])
+    d2 = r[0] * (q2[1] - p1[1]) - r[1] * (q2[0] - p1[0])
+    d3 = s[0] * (p1[1] - q1[1]) - s[1] * (p1[0] - q1[0])
+    d4 = s[0] * (p2[1] - q1[1]) - s[1] * (p2[0] - q1[0])
+    return bool(
+        ((d1 > eps and d2 < -eps) or (d1 < -eps and d2 > eps))
+        and ((d3 > eps and d4 < -eps) or (d3 < -eps and d4 > eps))
+    )
+
+
+def _point_in_polygon_2d(pt, poly) -> bool:
+    x, y = float(pt[0]), float(pt[1])
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            if x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+    return inside
 
 
 def merge_meshes(parts: list[Mesh]) -> Mesh:
@@ -154,6 +274,7 @@ def merge_meshes(parts: list[Mesh]) -> Mesh:
     faces = []
     colors = []
     groups = []
+    names: dict[int, str] = {}
     offset = 0
     has_colors = all(p.vertex_colors is not None for p in parts)
     for p in parts:
@@ -165,12 +286,15 @@ def merge_meshes(parts: list[Mesh]) -> Mesh:
             groups.append(p.face_groups)
         else:
             groups.append(np.zeros(len(p.faces), dtype=np.int64))
+        if p.group_names:
+            names.update(p.group_names)
         offset += len(p.vertices)
     return Mesh(
         vertices=np.vstack(vertices),
         faces=np.vstack(faces),
         vertex_colors=np.vstack(colors) if has_colors else None,
         face_groups=np.concatenate(groups),
+        group_names=names or None,
     )
 
 
@@ -201,4 +325,5 @@ def weld_vertices(mesh: Mesh, tolerance: float) -> Mesh:
         faces=new_faces[ok],
         vertex_colors=new_colors,
         face_groups=None if mesh.face_groups is None else mesh.face_groups[ok],
+        group_names=mesh.group_names,
     )

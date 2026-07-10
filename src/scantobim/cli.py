@@ -50,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     p_rec.add_argument("input", type=Path, help="input point cloud")
     p_rec.add_argument(
         "-o", "--output", type=Path, required=True,
-        help="output mesh (.obj/.ply/.stl/.glb/.gltf)",
+        help="output mesh (.obj/.ply/.stl/.glb/.gltf/.html — .html is an "
+        "interactive standalone viewer)",
     )
     p_rec.add_argument(
         "--preset", default="building",
@@ -68,11 +69,35 @@ def main(argv: list[str] | None = None) -> int:
                        help="disable boundary straightening")
     p_rec.add_argument("--no-color", action="store_true",
                        help="do not color surfaces in the output mesh")
+    p_rec.add_argument("--no-openings", action="store_true",
+                       help="do not reconstruct window/door openings as holes")
+    p_rec.add_argument("--align", action="store_true",
+                       help="rotate dominant directions onto the X/Y/Z axes and "
+                       "put the floor at Z=0 (transform is stored in the report)")
+    p_rec.add_argument("--floorplan", type=Path, default=None,
+                       help="additionally write a 2D floor plan as DXF")
+    p_rec.add_argument("--floorplan-height", type=float, default=1.0,
+                       help="slice height above the model base for --floorplan "
+                       "(default: 1.0)")
     p_rec.add_argument("--report", type=Path, default=None,
                        help="write the quality report to this JSON file")
     p_rec.add_argument("--residual-out", type=Path, default=None,
                        help="write points not explained by any surface to this .ply")
     p_rec.add_argument("--seed", type=int, default=None, help="RANSAC random seed")
+
+    p_reg = sub.add_parser(
+        "register",
+        help="register roughly pre-aligned scans onto the first one (ICP) "
+        "and merge them into a single cloud",
+    )
+    p_reg.add_argument("reference", type=Path, help="reference scan (stays fixed)")
+    p_reg.add_argument("others", type=Path, nargs="+", help="scans to align onto it")
+    p_reg.add_argument("-o", "--output", type=Path, required=True,
+                       help="merged output cloud (.ply)")
+    p_reg.add_argument("--voxel", type=float, default=0.0,
+                       help="voxel size for thinning the merged cloud (0 = keep all)")
+    p_reg.add_argument("--transforms", type=Path, default=None,
+                       help="write the 4x4 transforms as JSON")
 
     p_photos = sub.add_parser(
         "photos", help="photos → dense point cloud via COLMAP (must be installed)"
@@ -92,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_info(args)
         if args.command == "reconstruct":
             return _cmd_reconstruct(args)
+        if args.command == "register":
+            return _cmd_register(args)
         if args.command == "photos":
             return _cmd_photos(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
@@ -137,21 +164,39 @@ def _cmd_reconstruct(args) -> int:
         cfg.straighten = False
     if args.no_color:
         cfg.color_surfaces = False
+    if args.no_openings:
+        cfg.detect_openings = False
+    if args.align:
+        cfg.align_axes = True
     if args.seed is not None:
         cfg.seed = args.seed
 
     print(f"reconstructing (preset: {args.preset}) …")
     result = reconstruct(cloud, cfg)
     rep = result.report
+    openings = sum(s.get("openings", 0) for s in rep["surfaces"])
+    q = rep["quantities"]
     print(f"  planes:    {rep['planes']}")
     print(f"  angles:    {rep['plane_angles']}")
     print(f"  corners:   {rep['exact_corners']}")
+    print(f"  openings:  {openings}")
+    print(f"  classes:   {q['surface_count_by_class']}")
+    if "volume" in q:
+        print(f"  volume:    {q['volume']} (watertight, {q['orientation']} normals)")
     print(f"  mesh:      {rep['mesh']['vertices']} vertices, {rep['mesh']['triangles']} triangles")
     print(f"  residual:  {rep['residual_points']} unexplained points")
     print(f"  runtime:   {rep['runtime_seconds']} s")
 
     out = write_mesh(result.mesh, args.output)
     print(f"wrote {out}")
+
+    if args.floorplan is not None:
+        from scantobim.io.dxf import write_floorplan_dxf
+
+        plan = write_floorplan_dxf(
+            result.mesh, args.floorplan, height_above_floor=args.floorplan_height
+        )
+        print(f"wrote {plan} (slice at base + {args.floorplan_height})")
 
     if args.report is not None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -160,6 +205,36 @@ def _cmd_reconstruct(args) -> int:
     if args.residual_out is not None and len(result.residual):
         write_point_cloud(result.residual, args.residual_out)
         print(f"wrote {args.residual_out}")
+    return 0
+
+
+def _cmd_register(args) -> int:
+    from scantobim.core.registration import (
+        apply_transform,
+        merge_clouds,
+        register_point_to_plane,
+    )
+
+    reference = read_point_cloud(args.reference)
+    print(f"reference: {args.reference} ({len(reference):,} points)")
+    aligned = [reference]
+    transforms = {str(args.reference): np.eye(4).tolist()}
+    for other in args.others:
+        cloud = read_point_cloud(other)
+        res = register_point_to_plane(cloud, reference)
+        aligned.append(apply_transform(cloud, res.transform))
+        transforms[str(other)] = res.transform.tolist()
+        status = "converged" if res.converged else f"stopped after {res.iterations} it."
+        print(f"  {other}: rmse={res.rmse:.5f} ({status})")
+
+    merged = merge_clouds(aligned, voxel_size=args.voxel)
+    write_point_cloud(merged, args.output)
+    print(f"wrote {args.output} ({len(merged):,} points)")
+    if args.transforms is not None:
+        args.transforms.parent.mkdir(parents=True, exist_ok=True)
+        args.transforms.write_text(json.dumps(transforms, indent=2))
+        print(f"wrote {args.transforms}")
+    print(f"next: scantobim reconstruct {args.output} -o model.glb")
     return 0
 
 

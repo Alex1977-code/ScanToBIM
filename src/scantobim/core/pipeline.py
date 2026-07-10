@@ -15,16 +15,19 @@ from scantobim.core.edges import (
     snap_points_to_corners,
     snap_points_to_line,
 )
-from scantobim.core.mesh import Mesh, merge_meshes, triangulate_polygon, weld_vertices
+from scantobim.core.mesh import Mesh, merge_meshes, triangulate_with_holes, weld_vertices
 from scantobim.core.planes import detect_planes, plane_adjacency
 from scantobim.core.polygons import (
-    alpha_shape_boundary,
+    alpha_shape_loops,
     dedupe_polygon,
+    point_in_polygon,
     polygon_area,
     remove_collinear,
     simplify_polygon,
     straighten_polygon,
 )
+from scantobim.core.semantics import classify_surfaces, quantity_takeoff
+from scantobim.core.transform import apply_alignment, compute_alignment
 from scantobim.core.preprocess import (
     estimate_normals,
     estimate_point_spacing,
@@ -73,10 +76,17 @@ class PipelineConfig:
     corner_snap_factor: float = 12.0  # x spacing
     contact_factor: float = 6.0  # x spacing (plane adjacency)
 
+    # --- openings (windows / door cutouts as holes in surfaces) ---
+    detect_openings: bool = True
+    min_opening_factor: float = 8.0  # opening area >= (factor x spacing)^2
+
     # --- mesh ---
     orient: str = "outward"  # "outward" | "inward" | "none"
     weld_factor: float = 0.25  # x spacing
     color_surfaces: bool = True
+
+    # --- output coordinate system ---
+    align_axes: bool = False  # rotate dominant directions onto X/Y/Z, floor at Z=0
 
     @classmethod
     def preset(cls, name: str) -> "PipelineConfig":
@@ -214,6 +224,40 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
         mesh.vertex_colors = None
 
     residual = work.select(unassigned)
+
+    # ---- 7. world alignment (optional) --------------------------------------
+    plane_normals = {pi: planes[pi].normal.copy() for pi in range(len(planes))}
+    if cfg.align_axes:
+        alignment = compute_alignment(planes)
+        mesh, res_pts, final_t = apply_alignment(mesh, residual.points, alignment)
+        residual.points = res_pts
+        plane_normals = {
+            pi: alignment[:3, :3] @ n for pi, n in plane_normals.items()
+        }
+        report["alignment"] = [[round(float(v), 8) for v in row] for row in final_t]
+
+    # ---- 8. semantics: classification + quantity takeoff --------------------
+    surface_ids = sorted({int(g) for g in mesh.face_groups}) if mesh.face_groups is not None else []
+    mean_z: dict[int, float] = {}
+    surf_area: dict[int, float] = {}
+    for gid in surface_ids:
+        sel = mesh.face_groups == gid
+        tri = mesh.vertices[mesh.faces[sel]]
+        areas = 0.5 * np.linalg.norm(
+            np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1
+        )
+        surf_area[gid] = float(areas.sum())
+        mean_z[gid] = float(tri[:, :, 2].mean())
+    classes = classify_surfaces(
+        [plane_normals[g] for g in surface_ids], [mean_z[g] for g in surface_ids]
+    )
+    class_of = dict(zip(surface_ids, classes))
+    mesh.group_names = {g: f"{class_of[g]}_{g:03d}" for g in surface_ids}
+    for info in plane_reports:
+        if info.get("status") == "ok" and info["plane"] in class_of:
+            info["class"] = class_of[info["plane"]]
+    report["quantities"] = quantity_takeoff(mesh, class_of, surf_area)
+
     report["mesh"] = {
         "vertices": len(mesh.vertices),
         "triangles": len(mesh.faces),
@@ -243,7 +287,7 @@ def _reconstruct_plane(
     }
 
     uv = plane.project_to_2d(points[plane.inliers])
-    boundary = alpha_shape_boundary(uv, alpha=cfg.alpha_factor * spacing)
+    boundary, hole_loops = alpha_shape_loops(uv, alpha=cfg.alpha_factor * spacing)
     if boundary is None or len(boundary) < 3:
         info["status"] = "rejected: no boundary"
         return None, info
@@ -269,12 +313,32 @@ def _reconstruct_plane(
         info["status"] = "rejected: degenerate after snapping"
         return None, info
 
-    tris = triangulate_polygon(uv_final)
+    # Openings (windows, door cutouts): regularize each hole loop and keep it
+    # if it stays a valid polygon strictly inside the final outer boundary.
+    holes: list[np.ndarray] = []
+    if cfg.detect_openings:
+        min_hole_area = (cfg.min_opening_factor * spacing) ** 2
+        for hole in hole_loops:
+            hole = simplify_polygon(hole, tolerance=cfg.simplify_factor * spacing)
+            if cfg.straighten:
+                hole = straighten_polygon(hole, angle_tol_deg=cfg.straighten_angle_tol_deg)
+            hole = dedupe_polygon(hole, min_dist=max(0.5 * spacing, 1e-9))
+            hole = remove_collinear(hole, tolerance=0.5 * spacing)
+            if len(hole) < 3 or polygon_area(hole) < min_hole_area:
+                continue
+            # A real opening is clearly smaller than its surface.
+            if polygon_area(hole) > 0.8 * polygon_area(uv_final):
+                continue
+            if not all(point_in_polygon(v, uv_final) for v in hole):
+                continue
+            holes.append(hole)
+
+    verts2d, tris = triangulate_with_holes(uv_final, holes)
     if len(tris) == 0:
         info["status"] = "rejected: triangulation failed"
         return None, info
 
-    vertices = plane.lift_to_3d(uv_final)
+    vertices = plane.lift_to_3d(verts2d)
     colors = np.tile(np.asarray(color, dtype=np.uint8), (len(vertices), 1))
     mesh = Mesh(
         vertices=vertices,
@@ -284,7 +348,12 @@ def _reconstruct_plane(
     )
     info["status"] = "ok"
     info["boundary_vertices"] = int(len(uv_final))
-    info["area"] = round(polygon_area(uv_final), 4)
+    info["area"] = round(
+        polygon_area(uv_final) - sum(polygon_area(h) for h in holes), 4
+    )
+    info["openings"] = len(holes)
+    if holes:
+        info["opening_areas"] = [round(polygon_area(h), 4) for h in holes]
     return mesh, info
 
 

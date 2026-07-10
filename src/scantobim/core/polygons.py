@@ -23,15 +23,29 @@ def alpha_shape_boundary(uv: np.ndarray, alpha: float) -> np.ndarray | None:
     """Outer boundary polygon (2D, CCW) of the alpha shape of ``uv`` points.
 
     ``alpha`` is the circumradius limit — use ~3-4x the point spacing.
-    Returns the longest closed boundary loop as an ``(M, 2)`` array, or
+    Returns the largest closed boundary loop as an ``(M, 2)`` array, or
     ``None`` if no valid loop exists.
     """
+    outer, _holes = alpha_shape_loops(uv, alpha)
+    return outer
+
+
+def alpha_shape_loops(
+    uv: np.ndarray, alpha: float
+) -> tuple[np.ndarray | None, list[np.ndarray]]:
+    """Outer boundary (CCW) plus inner boundaries (holes, CCW) of the alpha shape.
+
+    Holes are regions inside the outer loop that contain no supporting points —
+    physical openings such as windows and door cutouts in a scanned wall.
+    Returns ``(outer, [hole, ...])``; holes are filtered to loops that lie
+    strictly inside the outer boundary.
+    """
     if len(uv) < 4:
-        return None
+        return None, []
     try:
         tri = Delaunay(uv)
     except Exception:
-        return None
+        return None, []
 
     pts = uv
     simplices = tri.simplices
@@ -48,7 +62,7 @@ def alpha_shape_boundary(uv: np.ndarray, alpha: float) -> np.ndarray | None:
         circum_r = (ab * bc * ca) / (2.0 * area2)
     keep = simplices[(area2 > 1e-14) & (circum_r < alpha)]
     if len(keep) == 0:
-        return None
+        return None, []
 
     # Boundary edges appear exactly once among kept triangles.
     edges = np.vstack([keep[:, [0, 1]], keep[:, [1, 2]], keep[:, [2, 0]]])
@@ -58,17 +72,45 @@ def alpha_shape_boundary(uv: np.ndarray, alpha: float) -> np.ndarray | None:
     )
     boundary_edges = edges[first_idx[counts == 1]]
     if len(boundary_edges) < 3:
-        return None
+        return None, []
 
     loops = _assemble_loops(boundary_edges)
     if not loops:
-        return None
-    # Outer boundary = loop with the largest enclosed area.
-    best = max(loops, key=lambda lp: abs(_signed_area(pts[lp])))
-    poly = pts[best]
-    if _signed_area(poly) < 0:
-        poly = poly[::-1]
-    return poly
+        return None, []
+    # Outer boundary = loop with the largest enclosed area; the rest are
+    # hole candidates.
+    loops.sort(key=lambda lp: -abs(_signed_area(pts[lp])))
+    outer = pts[loops[0]]
+    if _signed_area(outer) < 0:
+        outer = outer[::-1]
+
+    holes: list[np.ndarray] = []
+    for lp in loops[1:]:
+        hole = pts[lp]
+        if len(hole) < 3:
+            continue
+        rep = hole.mean(axis=0)
+        if not point_in_polygon(rep, outer):
+            continue
+        if _signed_area(hole) < 0:
+            hole = hole[::-1]
+        holes.append(hole)
+    return outer, holes
+
+
+def point_in_polygon(pt: np.ndarray, poly: np.ndarray) -> bool:
+    """Ray-casting point-in-polygon test (boundary counts as outside-ish)."""
+    x, y = float(pt[0]), float(pt[1])
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            x_int = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < x_int:
+                inside = not inside
+    return inside
 
 
 def _assemble_loops(edges: np.ndarray) -> list[list[int]]:
@@ -80,6 +122,9 @@ def _assemble_loops(edges: np.ndarray) -> list[list[int]]:
         neighbors[int(u)].append(int(v))
         neighbors[int(v)].append(int(u))
 
+    # Each undirected boundary edge belongs to exactly one loop — mark both
+    # directions as visited so a loop is traced once, not once per direction
+    # (the reversed duplicate would later masquerade as a giant hole).
     visited_edges: set[tuple[int, int]] = set()
     loops: list[list[int]] = []
     for start in list(neighbors):
@@ -89,6 +134,7 @@ def _assemble_loops(edges: np.ndarray) -> list[list[int]]:
             loop = [start]
             prev, cur = start, nxt
             visited_edges.add((start, nxt))
+            visited_edges.add((nxt, start))
             ok = True
             while cur != start:
                 loop.append(cur)
@@ -103,6 +149,7 @@ def _assemble_loops(edges: np.ndarray) -> list[list[int]]:
                     ok = False
                     break
                 visited_edges.add((cur, step))
+                visited_edges.add((step, cur))
                 prev, cur = cur, step
                 if len(loop) > len(edges) + 1:
                     ok = False

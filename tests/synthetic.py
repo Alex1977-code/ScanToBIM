@@ -56,9 +56,12 @@ def make_box_scan(
 
 
 def make_l_room_scan(
-    density: float = 900.0, noise: float = 0.004, seed: int = 3
+    density: float = 900.0, noise: float = 0.004, seed: int = 3, window: bool = False
 ) -> PointCloud:
-    """An L-shaped room footprint extruded to 2.5 m — six walls + floor + ceiling."""
+    """An L-shaped room footprint extruded to 2.5 m — six walls + floor + ceiling.
+
+    With ``window=True`` the long south wall gets a 1.4 x 1.0 m window opening.
+    """
     rng = np.random.default_rng(seed)
     h = 2.5
     # L footprint: (0,0) (5,0) (5,2.5) (2.5,2.5) (2.5,4.5) (0,4.5)
@@ -71,7 +74,14 @@ def make_l_room_scan(
         u = b - a
         length = np.linalg.norm(u)
         u = u / length
-        parts.append(sample_rect(a, u, z, length, h, density, noise, rng))
+        wall = sample_rect(a, u, z, length, h, density, noise, rng)
+        if window and i == 0:  # south wall y=0: window x in [1.5, 2.9], z in [0.9, 1.9]
+            inside = (
+                (wall[:, 0] > 1.5) & (wall[:, 0] < 2.9)
+                & (wall[:, 2] > 0.9) & (wall[:, 2] < 1.9)
+            )
+            wall = wall[~inside]
+        parts.append(wall)
     # floor + ceiling: rejection-sample the L polygon
     for z0 in (0.0, h):
         n = int(5 * 4.5 * density)

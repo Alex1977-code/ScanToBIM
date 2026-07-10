@@ -8,9 +8,10 @@ Dreiecksnetze klassischer Flächenrekonstruktion.
 
 ![Demo](docs/images/demo.png)
 
-> Aus 75.000 verrauschten Scanpunkten (4 mm Sensor­rauschen, 1 % Ausreißer)
-> entsteht die **minimale exakte Repräsentation** des Raums: 12 Vertices,
-> 20 Dreiecke, alle Kanten schnurgerade, alle Winkel exakt 90°.
+> Aus 74.000 verrauschten Scanpunkten (4 mm Sensor­rauschen, 1 % Ausreißer)
+> entsteht die **minimale exakte Repräsentation** des Raums: 18 Vertices,
+> alle Kanten schnurgerade, alle Winkel exakt 90° – und das Fenster wird als
+> echte Öffnung in der Wand rekonstruiert.
 
 > English summary at the bottom of this document.
 
@@ -44,11 +45,29 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
    Begradigung an dominanten Richtungen (O-Snap-Stil) → Snapping der
    Polygone auf die exakten Schnittgeraden und Eckpunkte → Entfernung
    kollinearer Restpunkte.
+5b. **Öffnungen** – Innenkonturen der Alpha-Shape (Bereiche ohne Messpunkte
+   innerhalb einer Fläche) werden als **Fenster und Türausschnitte** erkannt,
+   genauso begradigt wie die Außenkontur und als echte Löcher trianguliert
+   (Brücken-Triangulierung mit Sichtbarkeitstest).
 6. **Vermaschung & Export** – Ear-Clipping-Triangulierung, Vertex-Welding
    (gemeinsame Kanten werden echte Falze statt Risse – geschlossene Räume
-   werden wasserdicht), Export als **OBJ** (mit Flächengruppen), **PLY**,
-   **STL**, **glTF/GLB** (mit Flächenfarben) plus maschinenlesbarem
+   werden wasserdicht), Export als **OBJ** (mit semantischen Flächengruppen),
+   **PLY**, **STL**, **glTF/GLB** (mit Flächenfarben) plus maschinenlesbarem
    **Qualitätsbericht** (JSON).
+
+## Professionelle Zusatzfunktionen
+
+| Funktion | Beschreibung |
+| --- | --- |
+| 🪟 **Öffnungs-Erkennung** | Fenster/Türen werden als regularisierte Löcher in den Flächen rekonstruiert; Fläche und Anzahl stehen im Bericht (`--no-openings` schaltet ab). |
+| 🏷️ **Bauteil-Klassifikation** | Jede Fläche wird als `floor` / `ceiling` / `slab` / `wall` / `sloped` klassifiziert – als OBJ-Gruppennamen (`wall_003`) und im Bericht. |
+| 📐 **Mengenermittlung** | Flächen je Bauteilklasse, Grundmaße, Wasserdichtigkeits-Prüfung und **Raumvolumen** (Divergenzsatz) – die Zahlen, nach denen abgerechnet wird. |
+| 🧭 **Auto-Ausrichtung** (`--align`) | Dominante Richtungen werden auf die X/Y/Z-Achsen gedreht, der Boden auf Z=0 gelegt; die 4x4-Transformation steht reversibel im Bericht. |
+| 🔗 **Multi-Scan-Registrierung** (`scantobim register`) | Getrimmtes Punkt-zu-Ebene-ICP registriert grob vorausgerichtete Scans aufeinander und verschmilzt sie (Transformationen als JSON exportierbar). |
+| 📄 **DXF-Grundriss** (`--floorplan plan.dxf`) | Horizontalschnitt (Standard: 1 m über Boden) als AutoCAD-R12-DXF – direkt nutzbar in AutoCAD, LibreCAD, QCAD, BricsCAD. |
+| 🌐 **Interaktiver HTML-Viewer** (`-o model.html`) | Eine einzige HTML-Datei mit eingebettetem WebGL-Renderer: Orbit/Pan/Zoom, Flächenfarben, schwarze Kantenlinien. Läuft offline in jedem Browser – ideal zum Weitergeben an Kunden, keine Software nötig. |
+
+![Viewer](docs/images/viewer.png)
 
 ## Unterstützte Eingaben
 
@@ -91,6 +110,13 @@ scantobim reconstruct raum.e57 -o raum.obj --preset indoor
 scantobim photos ./fotos -o wolke.ply
 scantobim reconstruct wolke.ply -o model.glb
 
+# Mehrere Scans registrieren und gemeinsam rekonstruieren
+scantobim register standpunkt1.ply standpunkt2.ply standpunkt3.ply -o gesamt.ply
+scantobim reconstruct gesamt.ply -o model.glb --preset indoor
+
+# Achsen ausrichten, Grundriss als DXF, interaktiver Browser-Viewer
+scantobim reconstruct scan.laz -o model.html --align --floorplan grundriss.dxf
+
 # Nicht erklärte Punkte (Möbel, Vegetation, …) separat sichern
 scantobim reconstruct scan.las -o model.obj --residual-out rest.ply
 ```
@@ -124,9 +150,10 @@ werden automatisch aus dem Punktabstand abgeleitet.
 ## Qualitätsbericht
 
 `--report report.json` schreibt u. a.: Punktzahlen je Verarbeitungsschritt,
-Ebenen mit RMS/Fläche/Normale, Winkelstatistik (wie viele Ebenenpaare exakt
-parallel/orthogonal sind), Anzahl exakter Ecken, Mesh-Statistik inkl.
-Wasserdichtigkeit (`boundary_edges == 0`) und Laufzeit.
+Ebenen mit RMS/Fläche/Normale/Bauteilklasse/Öffnungen, Winkelstatistik (wie
+viele Ebenenpaare exakt parallel/orthogonal sind), Anzahl exakter Ecken,
+Mengenermittlung (Flächen je Klasse, Volumen, Wasserdichtigkeit),
+Ausrichtungs-Transformation und Laufzeit.
 
 ## Grenzen & Ausblick
 
@@ -134,17 +161,17 @@ Wasserdichtigkeit (`boundary_edges == 0`) und Laufzeit.
   Innenräume, CAD-artige Objekte). Organische Formen landen im
   Residuum (`--residual-out`) – dafür optional Open3D-Poisson nutzen
   (`pip install scantobim[viz]`).
-- Öffnungen (Fenster/Türen als Löcher in Flächen) werden derzeit als
-  Außenkontur rekonstruiert; Loch-Topologie ist der nächste Schritt.
+- Die ICP-Registrierung ist eine Fein-Registrierung; Scans müssen grob
+  vorausgerichtet sein (Scanner-Software, gemeinsame Georeferenz).
 - Geplant: IFC-Export (Wände/Decken als BIM-Bauteile), Zylinder-Detektion
-  für Rohrleitungen.
+  für Rohrleitungen, Mehrgeschoss-Klassifikation.
 
 ## Entwicklung
 
 ```bash
 pip install -e .[dev]
-pytest          # 56 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
-python examples/demo.py   # erzeugt Beispiel-Scan + Modell in demo_output/
+pytest          # 79 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
+python examples/demo.py   # erzeugt Beispiel-Scan + Modell + Viewer in demo_output/
 ```
 
 Die End-to-End-Tests prüfen harte Qualitätskriterien: exakte 90°-Winkel,
@@ -179,12 +206,19 @@ exact parallel/orthogonal relations (Manhattan snapping), derives edges
 *mathematically* as plane–plane intersection lines and 3-plane corner
 points, extracts per-plane boundary polygons (alpha shape → simplification →
 dominant-direction straightening) snapped onto those exact edges, and welds
-everything into a watertight-where-possible mesh. Exports: OBJ (surface
-groups), PLY, STL, glTF/GLB (per-surface colors) plus a JSON quality report
-(exact-angle statistics, corner count, watertightness, residual points).
-A synthetic 75k-point room scan with 4 mm noise reconstructs to its minimal
-exact representation — 12 vertices, 20 triangles, all angles exactly 90°.
-Pure Python (numpy/scipy/laspy), 56 tests, MIT license. CLI:
+everything into a watertight-where-possible mesh. **Windows and door cutouts
+are reconstructed as true regularized holes**; every surface is classified
+(floor/ceiling/slab/wall/sloped) and a quantity takeoff (areas per class,
+room volume via divergence theorem, watertightness) lands in the JSON
+report. Extras: automatic axis alignment with floor at Z=0 (`--align`),
+trimmed point-to-plane **ICP multi-scan registration**
+(`scantobim register`), **DXF floor plan export** (`--floorplan`), and a
+**self-contained interactive HTML viewer** (`-o model.html` — embedded
+WebGL, orbit controls, crease-edge overlay, works offline in any browser).
+Exports: OBJ (semantic surface groups), PLY, STL, glTF/GLB, HTML.
+A synthetic 74k-point room scan with 4 mm noise reconstructs to its minimal
+exact representation — 18 vertices, all angles exactly 90°, window included.
+Pure Python (numpy/scipy/laspy), 79 tests, MIT license. CLI:
 `scantobim reconstruct scan.laz -o model.glb --preset indoor`.
 
 ## Lizenz
