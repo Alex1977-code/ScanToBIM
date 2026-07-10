@@ -364,13 +364,24 @@ def _find_cables_and_pylons(work, above_mask, deck: BridgeDeck, spacing: float, 
                 inclination_deg=float(np.rad2deg(np.arccos(np.clip(vertical, 0, 1)))),
             )
             # Leftover fragments of an already-found cable refit as a second
-            # line — merge by midpoint + inclination.
+            # line. Fragments are COLLINEAR with the original — their
+            # midpoints may sit anywhere along the cable — so the robust
+            # duplicate test is parallel direction + distance of the new
+            # midpoint from the existing cable's infinite line.
             mid = (candidate.start + candidate.end) / 2.0
-            duplicate = any(
-                np.linalg.norm((c.start + c.end) / 2.0 - mid) < 0.05 * deck.length
-                and abs(c.inclination_deg - candidate.inclination_deg) < 5.0
-                for c in cables
-            )
+            cand_dir = candidate.end - candidate.start
+            cand_dir = cand_dir / max(np.linalg.norm(cand_dir), 1e-12)
+            duplicate = False
+            for c in cables:
+                d = c.end - c.start
+                d = d / max(np.linalg.norm(d), 1e-12)
+                if abs(float(d @ cand_dir)) < np.cos(np.deg2rad(5.0)):
+                    continue
+                rel = mid - c.start
+                line_dist = np.linalg.norm(rel - (rel @ d) * d)
+                if line_dist < 0.02 * deck.length:
+                    duplicate = True
+                    break
             if not duplicate:
                 cables.append(candidate)
         remaining = remaining[~best_mask]
