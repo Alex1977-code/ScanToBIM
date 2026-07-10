@@ -136,6 +136,22 @@ def main(argv: list[str] | None = None) -> int:
     p_an.add_argument("--no-steel", action="store_true",
                       help="skip steel profile matching")
 
+    p_sm = sub.add_parser(
+        "sheetmetal",
+        help="welded sheet metal analysis: plates with thickness, weld seam "
+        "lengths, weights, cutting outlines (geschweißte Blechkonstruktionen)",
+    )
+    p_sm.add_argument("input", type=Path, nargs="+", help="point cloud(s), both "
+                      "plate faces must be scanned")
+    p_sm.add_argument("-o", "--output", type=Path, default=None,
+                      help="write the analysis report to this JSON file")
+    p_sm.add_argument("--dxf", type=Path, default=None,
+                      help="write 1:1 cutting outlines of all plates to this DXF")
+    p_sm.add_argument("--dist", type=float, default=None,
+                      help="plane RANSAC distance threshold (default: auto)")
+    p_sm.add_argument("--max-thickness", type=float, default=0.05,
+                      help="maximum plate thickness in input units (default: 0.05)")
+
     p_photos = sub.add_parser(
         "photos", help="photos → dense point cloud via COLMAP (must be installed)"
     )
@@ -158,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_register(args)
         if args.command == "analyze":
             return _cmd_analyze(args)
+        if args.command == "sheetmetal":
+            return _cmd_sheetmetal(args)
         if args.command == "photos":
             return _cmd_photos(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
@@ -287,8 +305,11 @@ def _cmd_reconstruct(args) -> int:
     elif ext == ".ifc":
         from scantobim.io.ifc import write_ifc
 
-        out = write_ifc(result.surfaces, args.output)
-        print(f"wrote {out} (IFC4)")
+        out = write_ifc(
+            result.surfaces, args.output, storeys=result.report.get("storeys")
+        )
+        n_storeys = max(1, len(result.report.get("storeys", [])))
+        print(f"wrote {out} (IFC4, {n_storeys} Geschoss(e))")
     else:
         out = write_mesh(output_mesh, args.output)
         print(f"wrote {out}")
@@ -361,6 +382,12 @@ def _cmd_analyze(args) -> int:
         )
     for st in report["gear_stages"]:
         print(f"  gear stage:  i={st['ratio']:.3f}, a={st['center_distance'] * 1000:.1f}mm")
+    for c in report["cones"]:
+        print(
+            f"  cone:        {c['half_angle_deg']:.1f}°, "
+            f"⌀{c['diameter_small'] * 1000:.1f}→⌀{c['diameter_large'] * 1000:.1f}mm, "
+            f"h={c['height'] * 1000:.1f}mm"
+        )
 
     if not args.no_steel:
         print("matching steel profiles …")
@@ -394,6 +421,49 @@ def _cmd_analyze(args) -> int:
             print(f"wrote {args.mesh}")
         else:
             print("no primitives detected — skipping mesh output")
+    return 0
+
+
+def _cmd_sheetmetal(args) -> int:
+    from scantobim.core.sheetmetal import analyze_sheet_metal
+
+    cloud = _read_inputs(args.input, register=False)
+    print("detecting plates and weld seams …")
+    report = analyze_sheet_metal(
+        cloud,
+        distance_threshold=args.dist,
+        max_thickness=args.max_thickness,
+    )
+    objects = report.pop("_objects")
+
+    for p in report["plates"]:
+        t_cat = p["thickness_catalog"]
+        t_str = f"t={t_cat * 1000:.0f}mm" if t_cat else f"t≈{p['thickness_measured'] * 1000:.1f}mm"
+        print(
+            f"  plate {p['id']}: {t_str}, "
+            f"{p['size'][0] * 1000:.0f} x {p['size'][1] * 1000:.0f} mm, "
+            f"{p['weight_kg']:.1f} kg"
+        )
+    for s in report["weld_seams"]:
+        print(
+            f"  seam {s['plates'][0]}-{s['plates'][1]}: "
+            f"{s['length'] * 1000:.0f} mm, {s['angle_deg']:.0f}°"
+        )
+    tot = report["totals"]
+    print(
+        f"  totals: {tot['plate_count']} plates, {tot['weight_kg']:.1f} kg, "
+        f"weld length {tot['weld_length'] * 1000:.0f} mm"
+    )
+
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2, default=_json_default))
+        print(f"wrote {args.output}")
+    if args.dxf is not None:
+        from scantobim.io.dxf import write_cutting_dxf
+
+        out = write_cutting_dxf(objects["plates"], args.dxf)
+        print(f"wrote {out} (Zuschnittkonturen 1:1)")
     return 0
 
 

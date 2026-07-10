@@ -82,3 +82,57 @@ def write_floorplan_dxf(
     lines += ["0", "ENDSEC", "0", "EOF"]
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def write_cutting_dxf(plates, path: str | Path, gap: float = 0.05) -> Path:
+    """Cutting layout for laser/plasma: every plate outline 1:1, side by side.
+
+    Each plate becomes a closed POLYLINE on layer ``ZUSCHNITT`` plus a TEXT
+    label (``Blech <id> t=<mm>``) on layer ``BESCHRIFTUNG``. Outlines are
+    axis-aligned via their bounding rectangle and laid out in a row with
+    ``gap`` spacing — ready for nesting software or direct cutting.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not plates:
+        raise ValueError("no plates to export")
+
+    lines = ["0", "SECTION", "2", "ENTITIES"]
+    cursor_x = 0.0
+    for k, plate in enumerate(plates):
+        outline = _axis_align_2d(plate.outline_2d)
+        outline = outline - outline.min(axis=0) + np.array([cursor_x, 0.0])
+        lines += ["0", "POLYLINE", "8", "ZUSCHNITT", "66", "1", "70", "1"]
+        for x, y in outline:
+            lines += [
+                "0", "VERTEX", "8", "ZUSCHNITT",
+                "10", f"{x:.6f}", "20", f"{y:.6f}", "30", "0.0",
+            ]
+        lines += ["0", "SEQEND"]
+
+        t = plate.catalog_thickness or plate.thickness
+        label = f"Blech {k} t={t * 1000:.0f}mm"
+        height = max(0.02, 0.06 * float(outline[:, 1].max() - outline[:, 1].min()))
+        lines += [
+            "0", "TEXT", "8", "BESCHRIFTUNG",
+            "10", f"{cursor_x:.6f}",
+            "20", f"{float(outline[:, 1].max()) + height:.6f}",
+            "30", "0.0",
+            "40", f"{height:.4f}",
+            "1", label,
+        ]
+        cursor_x = float(outline[:, 0].max()) + gap
+    lines += ["0", "ENDSEC", "0", "EOF"]
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _axis_align_2d(poly: np.ndarray) -> np.ndarray:
+    """Rotate a 2D outline so its dominant edge direction runs along +X."""
+    segs = np.roll(poly, -1, axis=0) - poly
+    lengths = np.hypot(segs[:, 0], segs[:, 1])
+    k = int(np.argmax(lengths))
+    ang = np.arctan2(segs[k, 1], segs[k, 0])
+    c, s = np.cos(-ang), np.sin(-ang)
+    rot = np.array([[c, -s], [s, c]])
+    return poly @ rot.T

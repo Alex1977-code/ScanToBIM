@@ -152,6 +152,24 @@ def test_cli_reconstruct_with_texture(tmp_path, capsys):
     assert b"image/png" in raw
 
 
+def test_cli_sheetmetal(tmp_path, capsys):
+    from tests.synthetic import make_welded_tank_scan
+
+    src = write_point_cloud(make_welded_tank_scan(), tmp_path / "tank.ply")
+    report_path = tmp_path / "bleche.json"
+    dxf_path = tmp_path / "zuschnitt.dxf"
+    code = main(
+        ["sheetmetal", str(src), "-o", str(report_path), "--dxf", str(dxf_path)]
+    )
+    assert code == 0
+    report = json.loads(report_path.read_text())
+    assert report["totals"]["plate_count"] == 5
+    assert report["totals"]["weld_length"] > 0
+    assert dxf_path.read_text().count("POLYLINE") == 5
+    out = capsys.readouterr().out
+    assert "plate 0:" in out and "totals:" in out
+
+
 def test_cli_error_on_missing_file(tmp_path, capsys):
     assert main(["info", str(tmp_path / "nope.ply")]) == 1
     assert "error:" in capsys.readouterr().err

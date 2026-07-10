@@ -52,9 +52,15 @@ def write_ifc(
     path: str | Path,
     name: str = "ScanToBIM Modell",
     storey_name: str = "Erdgeschoss",
+    storeys: list[dict] | None = None,
     timestamp: str | None = None,
 ) -> Path:
-    """Write classified :class:`SurfaceGeometry` objects as an IFC4 file."""
+    """Write classified :class:`SurfaceGeometry` objects as an IFC4 file.
+
+    ``storeys`` (from the pipeline report) creates one IfcBuildingStorey per
+    entry (``{"elevation", "height"}``); elements are assigned by the height
+    of their geometry. Without it a single storey is created.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not surfaces:
@@ -90,14 +96,31 @@ def write_ifc(
     building = w.add(
         f"IFCBUILDING('{ifc_guid()}',$,'Gebaeude',$,$,#{bld_lp},$,$,.ELEMENT.,$,$,$)"
     )
-    storey_lp = w.add(f"IFCLOCALPLACEMENT(#{bld_lp},#{world_axis})")
-    storey = w.add(
-        f"IFCBUILDINGSTOREY('{ifc_guid()}',$,'{storey_name}',$,$,#{storey_lp},$,$,"
-        f".ELEMENT.,0.)"
-    )
+    if not storeys:
+        storeys = [{"index": 0, "elevation": 0.0, "height": 0.0}]
+    storey_ids = []
+    storey_lps = []
+    for k, st in enumerate(storeys):
+        lp = w.add(f"IFCLOCALPLACEMENT(#{bld_lp},#{world_axis})")
+        label = storey_name if len(storeys) == 1 else f"Geschoss {k}"
+        storey_ids.append(
+            w.add(
+                f"IFCBUILDINGSTOREY('{ifc_guid()}',$,'{label}',$,$,#{lp},$,$,"
+                f".ELEMENT.,{_f(st.get('elevation', 0.0))})"
+            )
+        )
+        storey_lps.append(lp)
     w.add(f"IFCRELAGGREGATES('{ifc_guid()}',$,$,$,#{project},(#{site}))")
     w.add(f"IFCRELAGGREGATES('{ifc_guid()}',$,$,$,#{site},(#{building}))")
-    w.add(f"IFCRELAGGREGATES('{ifc_guid()}',$,$,$,#{building},(#{storey}))")
+    storey_refs = ",".join(f"#{s}" for s in storey_ids)
+    w.add(f"IFCRELAGGREGATES('{ifc_guid()}',$,$,$,#{building},({storey_refs}))")
+
+    def storey_for(mean_z: float) -> int:
+        """Index of the storey whose [elevation, elevation+height) holds z."""
+        for k in range(len(storeys) - 1, -1, -1):
+            if mean_z >= storeys[k].get("elevation", 0.0) - 0.3:
+                return k
+        return 0
 
     # --- building elements ----------------------------------------------------
     def cartesian(p) -> int:
@@ -109,10 +132,12 @@ def write_ifc(
         refs = ",".join(f"#{cartesian(p)}" for p in poly)
         return w.add(f"IFCPOLYLOOP(({refs}))")
 
-    element_ids = []
+    elements_by_storey: dict[int, list[int]] = {k: [] for k in range(len(storeys))}
     for geo in surfaces:
         cls = getattr(geo, "surface_class", "") or "wall"
         entity, predefined = _CLASS_MAP.get(cls, ("IFCBUILDINGELEMENTPROXY", None))
+        sk = storey_for(float(np.mean(geo.outer[:, 2])))
+        storey_lp = storey_lps[sk]
 
         bounds = [w.add(f"IFCFACEOUTERBOUND(#{poly_loop(geo.outer)},.T.)")]
         for hole in geo.holes:
@@ -135,13 +160,16 @@ def write_ifc(
             args = f"'{ifc_guid()}',$,'{label}',$,$,#{lp},#{pds},$,$"
         else:
             args = f"'{ifc_guid()}',$,'{label}',$,$,#{lp},#{pds},$,$"
-        element_ids.append(w.add(f"{entity}({args})"))
+        elements_by_storey[sk].append(w.add(f"{entity}({args})"))
 
-    elem_refs = ",".join(f"#{e}" for e in element_ids)
-    w.add(
-        f"IFCRELCONTAINEDINSPATIALSTRUCTURE('{ifc_guid()}',$,$,$,"
-        f"({elem_refs}),#{storey})"
-    )
+    for k, elems in elements_by_storey.items():
+        if not elems:
+            continue
+        elem_refs = ",".join(f"#{e}" for e in elems)
+        w.add(
+            f"IFCRELCONTAINEDINSPATIALSTRUCTURE('{ifc_guid()}',$,$,$,"
+            f"({elem_refs}),#{storey_ids[k]})"
+        )
 
     stamp = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     header = (

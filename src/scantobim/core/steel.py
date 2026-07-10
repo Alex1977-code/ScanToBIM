@@ -45,6 +45,32 @@ CATALOG: dict[str, tuple[float, float]] = {
     "UPN 140": (0.140, 0.060), "UPN 160": (0.160, 0.065), "UPN 180": (0.180, 0.070),
     "UPN 200": (0.200, 0.075), "UPN 220": (0.220, 0.080), "UPN 240": (0.240, 0.085),
     "UPN 260": (0.260, 0.090), "UPN 280": (0.280, 0.095), "UPN 300": (0.300, 0.100),
+    # Square hollow sections SHS — EN 10219
+    "SHS 40": (0.040, 0.040), "SHS 50": (0.050, 0.050), "SHS 60": (0.060, 0.060),
+    "SHS 70": (0.070, 0.070), "SHS 80": (0.080, 0.080), "SHS 90": (0.090, 0.090),
+    "SHS 100": (0.100, 0.100), "SHS 120": (0.120, 0.120), "SHS 140": (0.140, 0.140),
+    "SHS 150": (0.150, 0.150), "SHS 160": (0.160, 0.160), "SHS 180": (0.180, 0.180),
+    "SHS 200": (0.200, 0.200), "SHS 250": (0.250, 0.250),
+    # Rectangular hollow sections RHS — EN 10219
+    "RHS 50x30": (0.050, 0.030), "RHS 60x40": (0.060, 0.040),
+    "RHS 80x40": (0.080, 0.040), "RHS 100x50": (0.100, 0.050),
+    "RHS 100x60": (0.100, 0.060), "RHS 120x60": (0.120, 0.060),
+    "RHS 120x80": (0.120, 0.080), "RHS 140x80": (0.140, 0.080),
+    "RHS 160x80": (0.160, 0.080), "RHS 200x100": (0.200, 0.100),
+    "RHS 200x120": (0.200, 0.120), "RHS 250x150": (0.250, 0.150),
+    "RHS 300x200": (0.300, 0.200),
+    # Equal angles L — EN 10056-1
+    "L 40x40": (0.040, 0.040), "L 50x50": (0.050, 0.050), "L 60x60": (0.060, 0.060),
+    "L 70x70": (0.070, 0.070), "L 80x80": (0.080, 0.080), "L 90x90": (0.090, 0.090),
+    "L 100x100": (0.100, 0.100), "L 120x120": (0.120, 0.120),
+    "L 150x150": (0.150, 0.150),
+}
+
+_FAMILY_PREFIXES = {
+    "I/H": ("IPE", "HEA", "HEB"),
+    "U": ("UPN",),
+    "hollow": ("SHS", "RHS"),
+    "L": ("L ",),
 }
 
 
@@ -68,7 +94,7 @@ def match_profile(
     Returns ``(designation, relative_deviation)`` or ``("unbekannt", inf)``
     when nothing lies within ``tolerance``.
     """
-    prefixes = ("IPE", "HEA", "HEB") if family == "I/H" else ("UPN",) if family == "U" else ()
+    prefixes = _FAMILY_PREFIXES.get(family, ())
     best_name, best_dev = "unbekannt", float("inf")
     for name, (h, b) in CATALOG.items():
         if prefixes and not name.startswith(prefixes):
@@ -96,13 +122,20 @@ def measure_member(points: np.ndarray) -> SteelMember | None:
     t = centered @ axis
     length = float(np.quantile(t, 0.995) - np.quantile(t, 0.005))
 
-    # Cross-section in the perpendicular plane, PCA-aligned.
+    # Cross-section in the perpendicular plane. PCA orientation is degenerate
+    # for square (SHS) and L sections, so align with the minimum-area
+    # bounding rectangle instead (rotating-calipers style search).
     cross = centered - np.outer(t, axis)
-    q = np.column_stack([cross @ vecs[:, 1], cross @ vecs[:, 0]])
-    cvals, cvecs = np.linalg.eigh(q.T @ q / len(q))
-    q = q @ cvecs  # columns: minor, major
-    height = float(np.quantile(q[:, 1], 0.995) - np.quantile(q[:, 1], 0.005))
-    width = float(np.quantile(q[:, 0], 0.995) - np.quantile(q[:, 0], 0.005))
+    q_raw = np.column_stack([cross @ vecs[:, 1], cross @ vecs[:, 0]])
+    q = _min_area_align(q_raw)
+    # Put the larger extent on axis 1 ("height").
+    ext0 = float(np.quantile(q[:, 0], 0.995) - np.quantile(q[:, 0], 0.005))
+    ext1 = float(np.quantile(q[:, 1], 0.995) - np.quantile(q[:, 1], 0.005))
+    if ext0 > ext1:
+        q = q[:, ::-1]
+        ext0, ext1 = ext1, ext0
+    q = q - (np.quantile(q, 0.995, axis=0) + np.quantile(q, 0.005, axis=0)) / 2.0
+    width, height = ext0, ext1
 
     family = _classify_family(q, height, width)
     profile, deviation = match_profile(height, width, family)
@@ -118,20 +151,81 @@ def measure_member(points: np.ndarray) -> SteelMember | None:
     )
 
 
+def _min_area_align(q: np.ndarray, step_deg: float = 2.0) -> np.ndarray:
+    """Rotate 2D points into the profile's natural orientation.
+
+    Rolled sections consist of axis-parallel straight segments, so the right
+    rotation is the one that puts the most material ON the bounding-box
+    edges (minimum bbox area is ambiguous for L sections).
+    """
+    best_ang, best_score = 0.0, -np.inf
+    sub = q[:: max(1, len(q) // 4000)]
+    for ang in np.deg2rad(np.arange(0.0, 90.0, step_deg)):
+        c, s = np.cos(ang), np.sin(ang)
+        xr = sub[:, 0] * c - sub[:, 1] * s
+        yr = sub[:, 0] * s + sub[:, 1] * c
+        x_lo, x_hi = np.quantile(xr, 0.01), np.quantile(xr, 0.99)
+        y_lo, y_hi = np.quantile(yr, 0.01), np.quantile(yr, 0.99)
+        band_x = 0.08 * (x_hi - x_lo)
+        band_y = 0.08 * (y_hi - y_lo)
+        on_edge = (
+            (xr < x_lo + band_x) | (xr > x_hi - band_x)
+            | (yr < y_lo + band_y) | (yr > y_hi - band_y)
+        )
+        score = on_edge.mean()
+        if score > best_score:
+            best_score, best_ang = score, ang
+    c, s = np.cos(best_ang), np.sin(best_ang)
+    return q @ np.array([[c, s], [-s, c]])
+
+
 def _classify_family(q: np.ndarray, height: float, width: float) -> str:
-    """I/H vs U from the web position in the normalized cross-section.
+    """Cross-section family from the occupancy pattern.
 
     ``q[:, 1]`` runs along the profile height, ``q[:, 0]`` along the width.
-    Points in the mid-height band belong to the web; a centered web means an
-    I/H section, a web at one width edge means a channel (U).
+    * I/H — flanges at both height edges, web centered in the width.
+    * U — flanges at both height edges, web at one width edge.
+    * hollow (RHS/SHS) — material along all four bounding edges, empty core.
+    * L — material along exactly two adjacent edges.
     """
+    band_h = 0.14 * height
+    band_w = 0.14 * width
+    top = q[:, 1] > 0.5 * height - band_h
+    bottom = q[:, 1] < -0.5 * height + band_h
+    left = q[:, 0] < -0.5 * width + band_w
+    right = q[:, 0] > 0.5 * width - band_w
+    n = len(q)
+    f_top, f_bottom = top.mean(), bottom.mean()
+    f_left, f_right = left.mean(), right.mean()
+
+    edge_flags = [f > 0.08 for f in (f_top, f_bottom, f_left, f_right)]
+    if all(edge_flags):
+        # All four edges occupied: hollow section — unless a centered web
+        # exists (an I-profile's flange tips also touch left/right bands).
+        mid = np.abs(q[:, 1]) < 0.25 * height
+        if mid.sum() >= 20:
+            web = np.abs(q[mid, 0]) < 0.15 * width
+            core = mid & (np.abs(q[:, 0]) < 0.5 * width - band_w)
+            if web.mean() > 0.5:
+                return "I/H"
+            if core.sum() < 0.02 * n:
+                return "hollow"
+        else:
+            return "hollow"
+
+    if sum(edge_flags) == 2 and (
+        (edge_flags[0] != edge_flags[1]) and (edge_flags[2] != edge_flags[3])
+    ):
+        return "L"  # one height edge + one width edge
+
+    # Web-based I/H vs U decision.
     mid = np.abs(q[:, 1]) < 0.25 * height
     if mid.sum() < 20:
         return "unknown"
     web_offset = float(np.median(q[mid, 0]))
     web_spread = float(np.std(q[mid, 0]))
     if web_spread > 0.30 * width:
-        return "unknown"  # no concentrated web (e.g. hollow section)
+        return "unknown"
     if abs(web_offset) < 0.15 * width:
         return "I/H"
     if abs(web_offset) > 0.30 * width:

@@ -83,6 +83,18 @@ class GearStage:
     center_distance: float
 
 
+@dataclass
+class Cone:
+    apex: np.ndarray
+    axis: np.ndarray  # unit, pointing from apex into the material
+    half_angle_deg: float
+    r_min: float  # radius at the near end of the scanned extent
+    r_max: float  # radius at the far end
+    height: float  # axial extent of the scanned surface
+    inliers: np.ndarray
+    rms: float
+
+
 # --------------------------------------------------------------------- cylinders
 
 def detect_cylinders(
@@ -258,6 +270,167 @@ def _plane_basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     u = np.cross(axis, helper)
     u /= np.linalg.norm(u)
     return u, np.cross(axis, u)
+
+
+# ------------------------------------------------------------------------- cones
+
+def detect_cones(
+    points: np.ndarray,
+    normals: np.ndarray,
+    distance_threshold: float,
+    min_inliers: int = 400,
+    max_cones: int = 8,
+    ransac_iterations: int = 1200,
+    seed: int = 7,
+) -> tuple[list[Cone], np.ndarray]:
+    """Detect truncated cones (hoppers, reducers, chutes).
+
+    Every tangent plane of a cone passes through its apex, so the apex is the
+    least-squares intersection of the inliers' tangent planes — that property
+    drives both the 3-point RANSAC hypothesis and the refinement.
+    """
+    rng = np.random.default_rng(seed)
+    n_total = len(points)
+    spacing = _median_spacing(points, rng)
+    connectivity_radius = max(4.0 * distance_threshold, 3.0 * spacing)
+    scene = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+    remaining = np.arange(n_total)
+    cones: list[Cone] = []
+    consecutive_fails = 0
+
+    while (
+        len(remaining) >= min_inliers
+        and len(cones) < max_cones
+        and consecutive_fails < 6
+    ):
+        pts = points[remaining]
+        nrm = normals[remaining]
+
+        best_count = 0
+        best = None
+        for _ in range(ransac_iterations):
+            idx = rng.integers(len(pts), size=3)
+            model = _cone_from_three_points(pts[idx], nrm[idx], scene)
+            if model is None:
+                continue
+            apex, axis, half = model
+            resid = _cone_residuals(pts, apex, axis, half)
+            mask = np.abs(resid) < distance_threshold
+            count = int(mask.sum())
+            if count > best_count:
+                best_count = count
+                best = (apex, axis, half, mask)
+        if best is None or best_count < min_inliers:
+            break
+
+        apex, axis, half, mask = best
+        for _ in range(3):
+            model = _refine_cone(pts[mask], nrm[mask])
+            if model is None:
+                break
+            apex, axis, half = model
+            resid = _cone_residuals(pts, apex, axis, half)
+            mask = np.abs(resid) < distance_threshold
+            if mask.sum() < min_inliers:
+                break
+        if mask.sum() < min_inliers or not (3.0 < np.rad2deg(half) < 80.0):
+            consecutive_fails += 1
+            continue
+
+        cand = remaining[mask]
+        component = _largest_component(points[cand], connectivity_radius)
+        if len(component) < min_inliers:
+            remaining = np.setdiff1d(remaining, cand, assume_unique=True)
+            continue
+        cand = cand[component]
+
+        resid = _cone_residuals(points[cand], apex, axis, half)
+        rms = float(np.sqrt(np.mean(resid**2)))
+        if rms > 0.5 * distance_threshold or np.linalg.norm(apex) > 10 * scene:
+            consecutive_fails += 1
+            continue
+        # Angular coverage around the axis (rejects planes posing as cones).
+        u_b, v_b = _plane_basis(axis)
+        rel = points[cand] - apex
+        ang = np.arctan2(rel @ v_b, rel @ u_b)
+        occupied = len(np.unique(((ang + np.pi) / (2 * np.pi) * 64).astype(int) % 64))
+        if occupied < 16:
+            consecutive_fails += 1
+            continue
+        consecutive_fails = 0
+
+        t = rel @ axis
+        t_lo, t_hi = float(t.min()), float(t.max())
+        tan_half = np.tan(half)
+        cones.append(
+            Cone(
+                apex=apex,
+                axis=axis,
+                half_angle_deg=float(np.rad2deg(half)),
+                r_min=abs(t_lo) * tan_half,
+                r_max=abs(t_hi) * tan_half,
+                height=t_hi - t_lo,
+                inliers=cand,
+                rms=rms,
+            )
+        )
+        remaining = np.setdiff1d(remaining, cand, assume_unique=True)
+
+    unassigned = np.zeros(n_total, dtype=bool)
+    unassigned[remaining] = True
+    return cones, unassigned
+
+
+def _cone_from_three_points(pts, nrm, scene: float):
+    """Apex from three tangent planes, axis/angle from a small-circle fit."""
+    m = np.vstack(nrm)
+    if abs(np.linalg.det(m)) < 1e-4:
+        return None
+    apex = np.linalg.solve(m, np.einsum("ij,ij->i", nrm, pts))
+    if np.linalg.norm(apex - pts.mean(axis=0)) > 10 * scene:
+        return None
+    return _axis_angle_from_apex(pts, apex)
+
+
+def _refine_cone(pts, nrm):
+    """Least-squares apex over all tangent planes, then small-circle refit."""
+    b = np.einsum("ij,ij->i", nrm, pts)
+    apex, *_ = np.linalg.lstsq(nrm, b, rcond=None)
+    return _axis_angle_from_apex(pts, apex)
+
+
+def _axis_angle_from_apex(pts, apex):
+    """Fit axis and half-angle given the apex.
+
+    The unit directions u_i = (p_i - apex)/|…| of cone surface points lie on
+    a small circle of the unit sphere: u·axis = cos(half). Solving
+    ``u_i · w = 1`` in least squares gives axis = w/|w|, cos(half) = 1/|w| —
+    unbiased even for partial arcs, unlike the mean-direction estimator.
+    """
+    u = pts - apex
+    lengths = np.linalg.norm(u, axis=1)
+    good = lengths > 1e-9
+    if good.sum() < 3:
+        return None
+    u = u[good] / lengths[good, None]
+    w, *_ = np.linalg.lstsq(u, np.ones(len(u)), rcond=None)
+    norm_w = float(np.linalg.norm(w))
+    if norm_w <= 1.0 + 1e-9:
+        return None  # cos(half) >= 1 — degenerate (plane or numerical junk)
+    axis = w / norm_w
+    half = float(np.arccos(1.0 / norm_w))
+    if not (np.deg2rad(1.0) < half < np.deg2rad(88.0)):
+        return None
+    return apex, axis, half
+
+
+def _cone_residuals(pts, apex, axis, half):
+    rel = pts - apex
+    lengths = np.linalg.norm(rel, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cosang = np.clip((rel @ axis) / np.where(lengths > 1e-12, lengths, 1.0), -1, 1)
+    theta = np.arccos(cosang)
+    return lengths * np.sin(theta - half)
 
 
 # ------------------------------------------------------------------------ shafts
@@ -605,6 +778,24 @@ def analyze_machinery(
     unassigned = unassigned & ~consumed
     shafts = group_shafts(cylinders, work.points)
 
+    # Cones (hoppers, reducers) on the points no cylinder explained.
+    cones: list[Cone] = []
+    residual_idx = np.flatnonzero(unassigned)
+    if len(residual_idx) > 400:
+        found, cone_unassigned = detect_cones(
+            work.points[residual_idx],
+            work.normals[residual_idx],
+            distance_threshold=distance_threshold,
+            min_inliers=max(400, min_inliers),
+            seed=seed,
+        )
+        for cone in found:
+            cone.inliers = residual_idx[cone.inliers]
+            cones.append(cone)
+        still = np.zeros(len(work.points), dtype=bool)
+        still[residual_idx[cone_unassigned]] = True
+        unassigned = still
+
     # Gear candidates the cylinder stage missed entirely: clusters of
     # leftover points (teeth break the smooth cylinder model). Meshing gears
     # touch and form one cluster, so each cluster is decomposed recursively.
@@ -675,7 +866,24 @@ def analyze_machinery(
             }
             for st in stages
         ],
-        "_objects": {"cylinders": cylinders, "shafts": shafts, "gears": gears},
+        "cones": [
+            {
+                "apex": [round(float(x), 5) for x in c.apex],
+                "axis": [round(float(x), 5) for x in c.axis],
+                "half_angle_deg": round(c.half_angle_deg, 2),
+                "diameter_small": round(2 * c.r_min, 5),
+                "diameter_large": round(2 * c.r_max, 5),
+                "height": round(c.height, 5),
+                "rms": round(c.rms, 6),
+            }
+            for c in cones
+        ],
+        "_objects": {
+            "cylinders": cylinders,
+            "shafts": shafts,
+            "gears": gears,
+            "cones": cones,
+        },
     }
     return report
 

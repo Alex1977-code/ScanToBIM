@@ -53,6 +53,40 @@ def classify_surfaces(
     ]
 
 
+def detect_storeys(
+    horizontal_zs: list[float],
+    merge_tol: float = 0.5,
+    min_storey_height: float = 1.8,
+) -> list[dict]:
+    """Storeys from the elevations of horizontal surfaces.
+
+    Elevations within ``merge_tol`` collapse into one slab level; every pair
+    of consecutive levels at least ``min_storey_height`` apart is a storey.
+    Returns ``[{"index", "elevation", "height"}, ...]`` bottom-up.
+    """
+    if not horizontal_zs:
+        return []
+    zs = sorted(horizontal_zs)
+    levels: list[list[float]] = [[zs[0]]]
+    for z in zs[1:]:
+        if z - levels[-1][-1] <= merge_tol:
+            levels[-1].append(z)
+        else:
+            levels.append([z])
+    elevations = [float(np.mean(lv)) for lv in levels]
+    storeys = []
+    for lo, hi in zip(elevations, elevations[1:]):
+        if hi - lo >= min_storey_height:
+            storeys.append(
+                {
+                    "index": len(storeys),
+                    "elevation": round(lo, 4),
+                    "height": round(hi - lo, 4),
+                }
+            )
+    return storeys
+
+
 def signed_volume(mesh: Mesh) -> float:
     """Signed volume via the divergence theorem (valid for closed meshes).
 

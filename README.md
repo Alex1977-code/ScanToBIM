@@ -112,7 +112,8 @@ direkt aus der Punktwolke – Reverse Engineering für Bestandsanlagen:
 | **Wellen** (auch abgesetzt) | Koaxiale Zylinderketten werden zu Wellen gruppiert: Absätze in Reihenfolge mit ⌀/Länge/Position – die Maße für die Nachfertigung. |
 | **Zahnräder** (Stirnräder) | Zähnezahl über FFT des Winkel-Radius-Profils, Kopf-/Fußkreis, **Modul nach DIN** (m = da/(z+2)), Teilkreis, Zahnbreite. Achse wird über Stirnflächen-Normalen präzisiert; kämmende Räder in einem Cluster werden über ihre Kopfkreis-Zylinder getrennt. |
 | **Getriebestufen** (Großgetriebe) | Kämmende Radpaare aus parallelen Achsen im Teilkreis-Achsabstand: Übersetzung i und Achsabstand a je Stufe. |
-| **Stahlprofile** | Längliche Bauteil-Cluster werden vermessen (Achse, h × b, Länge, Steglage) und gegen die Walzprofil-Kataloge **IPE / HEA / HEB / UPN** (DIN 1025/1026) gematcht – inkl. Abweichung vom Katalogmaß. |
+| **Kegel** | Trichter, Reduzierstücke, Schurren: Spitze, Achse, halber Öffnungswinkel, Durchmesser klein/groß, Höhe (Tangentialebenen-RANSAC mit Kleinkreis-Fit auf der Einheitskugel). |
+| **Stahlprofile** | Längliche Bauteil-Cluster werden vermessen (Achse, h × b, Länge, Querschnitts-Belegung) und gegen die Kataloge **IPE / HEA / HEB / UPN / SHS / RHS / L** (DIN 1025/1026, EN 10219/10056) gematcht – inkl. Abweichung vom Katalogmaß. |
 
 ```bash
 # Getriebe / Anlage analysieren: JSON-Bericht + Primitiv-Mesh
@@ -124,6 +125,34 @@ scantobim analyze halle.laz -o traeger.json
 
 Hinweis Genauigkeit: freistehende Räder werden am genauesten vermessen; im
 Zahneingriff kann der Kopfkreis des Großrads leicht unterschätzt werden.
+
+## Geschweißte Blechkonstruktionen
+
+`scantobim sheetmetal` analysiert geschweißte Baugruppen (Behälter, Gehäuse,
+Rahmen, Schurren) und liefert die Fertigungsdaten für Nachbau und Kalkulation:
+
+![Blechkonstruktion](docs/images/sheetmetal.png)
+
+- **Bleche**: Parallele Ebenenpaare mit wenigen Millimetern Abstand sind die
+  beiden Seiten eines Blechs → Mittelebene, **gemessene Dicke** (gematcht
+  gegen die Lager-Dickenreihe 2–30 mm), begradigte Außenkontur, Abmessungen,
+  Fläche und **Gewicht** (Stahl, 7,85 kg/dm³).
+- **Schweißnähte**: Wo zwei Bleche zusammenstoßen, schneidet sich ihre
+  Mittelebene in einer Linie; der belegte Abschnitt ist die Naht – mit
+  **Länge und Öffnungswinkel** je Naht plus Gesamtnahtlänge für die
+  Schweißkalkulation.
+- **Brennschnitt-DXF** (`--dxf zuschnitt.dxf`): alle Blechkonturen 1:1
+  nebeneinander, beschriftet mit Nummer und Dicke – direkt in die
+  Verschachtelungs-Software oder auf den Laser/Plasma-Tisch.
+
+```bash
+scantobim sheetmetal behaelter.e57 -o bleche.json --dxf zuschnitt.dxf
+```
+
+Voraussetzung: beide Seiten jedes Blechs müssen im Scan enthalten sein
+(innen + außen), sonst ist die Dicke nicht messbar. Im Testfall (Behälter
+0,6 × 0,4 × 0,3 m, 8/6 mm) werden alle 5 Bleche mit korrekter Dicke und
+alle 8 Nähte mit Σ 3.199 mm (Soll: 3.200 mm) erkannt.
 
 ## CAD-Übergabe: STEP & HiCAD
 
@@ -239,16 +268,17 @@ Ausrichtungs-Transformation und Laufzeit.
   (`pip install scantobim[viz]`).
 - Die ICP-Registrierung ist eine Fein-Registrierung; Scans müssen grob
   vorausgerichtet sein (Scanner-Software, gemeinsame Georeferenz).
-- Zahnradvermessung: Gerad-Stirnräder (Schräg-/Kegelräder auf der Roadmap);
-  Stahlprofile: I/H- und U-Familien (L-Winkel und Hohlprofile geplant).
-- Geplant: Mehrgeschoss-Klassifikation, IfcOpeningElement-Beziehungen,
-  Kegel-/Torus-Primitive, natives Hohlprofil-Matching.
+- Zahnradvermessung: Gerad-Stirnräder (Schräg-/Kegelräder auf der Roadmap).
+- Blechkonstruktionen: ebene Bleche (gekantete/gewalzte Bleche und
+  Abwicklung auf der Roadmap); Kegelschüsse werden über `analyze` erkannt.
+- Geplant: IfcOpeningElement-Beziehungen, Torus-Primitive (Rohrbögen),
+  Schweißnaht-Typklassifikation (Kehl-/Stumpfnaht), Blech-Abwicklung.
 
 ## Entwicklung
 
 ```bash
 pip install -e .[dev]
-pytest          # 112 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
+pytest          # 129 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
 python examples/demo.py   # erzeugt Beispiel-Scan + Modell + Viewer in demo_output/
 ```
 
@@ -309,11 +339,18 @@ project/building/storey structure). The industrial mode
 shafts (step diameters/lengths), spur gears (tooth count via FFT of the
 angular radius profile, DIN module, tip/root circles, face width — meshing
 gears are separated via their tip-circle cylinders), gear stages
-(transmission ratio + center distance) and steel members matched against
-the IPE/HEA/HEB/UPN catalogs. A synthetic 74k-point room scan with 4 mm
+(transmission ratio + center distance), truncated cones (hoppers/reducers,
+via tangent-plane RANSAC with a small-circle fit on the unit sphere) and
+steel members matched against the IPE/HEA/HEB/UPN/SHS/RHS/L catalogs.
+**Welded sheet metal** (`scantobim sheetmetal`): parallel plane pairs
+become plates with measured thickness (matched to stock sizes), outline,
+area and weight; plate junctions become weld seams with length and angle
+(summed for costing); `--dxf` exports all cutting outlines 1:1 for
+laser/plasma. Multi-storey scans are detected and exported as separate
+IfcBuildingStoreys. A synthetic 74k-point room scan with 4 mm
 noise reconstructs to its minimal exact representation — 18 vertices, all
 angles exactly 90°, window included. Pure Python (numpy/scipy/laspy),
-112 tests, MIT license. CLI:
+129 tests, MIT license. CLI:
 `scantobim reconstruct scan.laz -o model.stp --preset indoor`.
 
 ## Lizenz

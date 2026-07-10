@@ -26,7 +26,7 @@ from scantobim.core.polygons import (
     simplify_polygon,
     straighten_polygon,
 )
-from scantobim.core.semantics import classify_surfaces, quantity_takeoff
+from scantobim.core.semantics import classify_surfaces, detect_storeys, quantity_takeoff
 from scantobim.core.transform import apply_alignment, compute_alignment
 from scantobim.core.preprocess import (
     estimate_normals,
@@ -287,6 +287,9 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
             geo.surface_class = class_of[geo.plane_index]
             geo.name = mesh.group_names[geo.plane_index]
     report["quantities"] = quantity_takeoff(mesh, class_of, surf_area)
+    report["storeys"] = detect_storeys(
+        [mean_z[g] for g in surface_ids if class_of[g] in ("floor", "slab", "ceiling")]
+    )
 
     report["mesh"] = {
         "vertices": len(mesh.vertices),

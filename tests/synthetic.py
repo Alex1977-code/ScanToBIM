@@ -243,6 +243,135 @@ def make_ipe_beam_scan(
     return PointCloud(points=np.vstack(parts), source="synthetic IPE beam")
 
 
+def make_welded_tank_scan(
+    length: float = 0.6,
+    width: float = 0.4,
+    height: float = 0.3,
+    t_bottom: float = 0.008,
+    t_wall: float = 0.006,
+    density: float = 500000.0,
+    noise: float = 0.0001,
+    seed: int = 21,
+) -> PointCloud:
+    """An open-top welded tank: bottom plate + 4 wall plates, both faces of
+    every plate sampled (as scanned inside and outside)."""
+    rng = np.random.default_rng(seed)
+    x, y, z = np.eye(3)
+    parts = []
+    # Bottom plate: inner face z=0, outer face z=-t_bottom.
+    parts.append(sample_rect((0, 0, 0), x, y, length, width, density, noise, rng))
+    parts.append(sample_rect((0, 0, -t_bottom), x, y, length, width, density, noise, rng))
+    # Walls (plate mid-planes at the tank contour), inner + outer faces.
+    walls = [
+        ((0, 0, 0), x, length, y),   # y = 0 wall
+        ((0, width, 0), x, length, y),  # y = width wall
+        ((0, 0, 0), y, width, x),    # x = 0 wall
+        ((length, 0, 0), y, width, x),  # x = length wall
+    ]
+    for origin, u_axis, u_len, n_axis in walls:
+        origin = np.asarray(origin, dtype=np.float64)
+        sign = 1.0 if np.allclose(origin[:2], 0) or origin @ n_axis == 0 else -1.0
+        inner = origin
+        outer = origin - sign * t_wall * n_axis
+        parts.append(sample_rect(inner, u_axis, z, u_len, height, density, noise, rng))
+        parts.append(sample_rect(outer, u_axis, z, u_len, height, density, noise, rng))
+    return PointCloud(points=np.vstack(parts), source="synthetic welded tank")
+
+
+def make_cone_scan(
+    apex=(0, 0, 0),
+    axis=(0, 0, 1.0),
+    half_angle_deg: float = 25.0,
+    t_min: float = 0.2,
+    t_max: float = 0.8,
+    density: float = 30000.0,
+    noise: float = 0.0005,
+    seed: int = 23,
+) -> PointCloud:
+    """A truncated cone shell (hopper) between axial distances t_min..t_max."""
+    rng = np.random.default_rng(seed)
+    apex = np.asarray(apex, dtype=np.float64)
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    helper = np.array([1.0, 0, 0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1, 0])
+    u = np.cross(axis, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    tan_half = np.tan(np.deg2rad(half_angle_deg))
+
+    area = np.pi * (t_min + t_max) * tan_half * (t_max - t_min)
+    n = max(2000, int(area * density))
+    # Uniform on the cone: t ~ sqrt-distributed for constant surface density.
+    t = np.sqrt(rng.uniform(t_min**2, t_max**2, n))
+    theta = rng.uniform(0, 2 * np.pi, n)
+    r = t * tan_half + rng.normal(0, noise, n)
+    pts = (
+        apex
+        + np.outer(t, axis)
+        + np.outer(r * np.cos(theta), u)
+        + np.outer(r * np.sin(theta), v)
+    )
+    return PointCloud(points=pts, source="synthetic cone")
+
+
+def make_shs_beam_scan(
+    size: float = 0.100,
+    length: float = 2.0,
+    density: float = 40000.0,
+    noise: float = 0.001,
+    seed: int = 27,
+) -> PointCloud:
+    """A square hollow section along +X: the four outer faces."""
+    rng = np.random.default_rng(seed)
+    x, y, z = np.eye(3)
+    s = size
+    parts = [
+        sample_rect((0, -s / 2, 0), x, y, length, s, density, noise, rng),      # bottom
+        sample_rect((0, -s / 2, s), x, y, length, s, density, noise, rng),      # top
+        sample_rect((0, -s / 2, 0), x, z, length, s, density, noise, rng),      # left
+        sample_rect((0, s / 2, 0), x, z, length, s, density, noise, rng),       # right
+    ]
+    return PointCloud(points=np.vstack(parts), source="synthetic SHS")
+
+
+def make_l_angle_scan(
+    leg: float = 0.080,
+    length: float = 2.0,
+    density: float = 40000.0,
+    noise: float = 0.001,
+    seed: int = 29,
+) -> PointCloud:
+    """An equal angle profile along +X: two perpendicular legs."""
+    rng = np.random.default_rng(seed)
+    x, y, z = np.eye(3)
+    parts = [
+        sample_rect((0, 0, 0), x, y, length, leg, density, noise, rng),  # horizontal leg
+        sample_rect((0, 0, 0), x, z, length, leg, density, noise, rng),  # vertical leg
+    ]
+    return PointCloud(points=np.vstack(parts), source="synthetic L angle")
+
+
+def make_two_storey_scan(
+    size=(4.0, 3.0), storey_height: float = 2.6,
+    density: float = 700.0, noise: float = 0.004, seed: int = 31,
+) -> PointCloud:
+    """Two stacked rooms: slabs at 0 / h / 2h plus full-height walls."""
+    rng = np.random.default_rng(seed)
+    sx, sy = size
+    h = storey_height
+    x, y, z = np.eye(3)
+    parts = []
+    for z0 in (0.0, h, 2 * h):
+        parts.append(sample_rect((0, 0, z0), x, y, sx, sy, density, noise, rng))
+    walls = [
+        ((0, 0, 0), x, sx), ((0, sy, 0), x, sx),
+        ((0, 0, 0), y, sy), ((sx, 0, 0), y, sy),
+    ]
+    for origin, u_axis, u_len in walls:
+        parts.append(sample_rect(origin, u_axis, z, u_len, 2 * h, density, noise, rng))
+    return PointCloud(points=np.vstack(parts), source="synthetic two-storey")
+
+
 def add_outliers(cloud: PointCloud, fraction: float = 0.01, seed: int = 9) -> PointCloud:
     """Scatter uniform noise points around the cloud's bounding box."""
     rng = np.random.default_rng(seed)
