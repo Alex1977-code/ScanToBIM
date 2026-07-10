@@ -211,7 +211,20 @@ CAD-Geometrie an.
 | iPhone/iPad LiDAR-Apps | `.ply`, `.e57`, `.xyz` | z. B. Scaniverse, Polycam, 3d Scanner App |
 | PCL / Leica Cyclone / Textformate | `.pcd`, `.pts`, `.xyz`, `.txt`, `.csv` | inkl. Intensität und RGB |
 
-## Installation
+## Download (Windows)
+
+Fertige Windows-Version auf der
+**[Releases-Seite](https://github.com/Alex1977-code/ScanToBIM/releases/latest)**:
+`scantobim-windows-x64.zip` entpacken und `scantobim.exe` nutzen – keine
+Installation, kein Python nötig. SmartScreen-Hinweis beim ersten Start:
+„Weitere Informationen → Trotzdem ausführen“ (nicht code-signiert);
+SHA256-Prüfsumme liegt bei. Schnellstart: `LIESMICH.txt` im Archiv.
+
+Release veröffentlichen (Maintainer): **Actions → Release → Run workflow**
+(Tag z. B. `v1.5.0`) oder einen `v*`-Tag pushen — die CI baut und testet die
+Exe auf einem Windows-Runner und veröffentlicht das GitHub-Release.
+
+## Installation (Python-Paket)
 
 Voraussetzung: Python ≥ 3.10.
 
