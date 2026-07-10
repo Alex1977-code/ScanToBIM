@@ -136,6 +136,15 @@ def main(argv: list[str] | None = None) -> int:
     p_an.add_argument("--no-steel", action="store_true",
                       help="skip steel profile matching")
 
+    p_br = sub.add_parser(
+        "bridge",
+        help="bridge structure analysis: type, deck, spans, piers, bearings, "
+        "arch, pylons, cables (Brückenbauwerke aller Art)",
+    )
+    p_br.add_argument("input", type=Path, nargs="+", help="point cloud(s) of the bridge")
+    p_br.add_argument("-o", "--output", type=Path, default=None,
+                      help="write the analysis report to this JSON file")
+
     p_sm = sub.add_parser(
         "sheetmetal",
         help="welded sheet metal analysis: plates with thickness, weld seam "
@@ -176,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_analyze(args)
         if args.command == "sheetmetal":
             return _cmd_sheetmetal(args)
+        if args.command == "bridge":
+            return _cmd_bridge(args)
         if args.command == "photos":
             return _cmd_photos(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
@@ -395,6 +406,16 @@ def _cmd_analyze(args) -> int:
         report["steel_members"] = steel_report(members)
         for m in report["steel_members"]:
             print(f"  steel:       {m['profile']} ({m['family']}), L={m['length']:.3f}")
+        if len(members) >= 2:
+            from scantobim.core.connections import connections_report, detect_connections
+
+            nodes = detect_connections(members)
+            report["connections"] = connections_report(nodes, members)
+            for n in report["connections"]:
+                profs = " + ".join(m["profile"] for m in n["members"])
+                angles = "/".join(f"{a:.0f}°" for a in n["angles_deg"])
+                print(f"  connection:  {profs} @ {angles} "
+                      f"(e={n['eccentricity'] * 1000:.0f}mm)")
 
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -464,6 +485,36 @@ def _cmd_sheetmetal(args) -> int:
 
         out = write_cutting_dxf(objects["plates"], args.dxf)
         print(f"wrote {out} (Zuschnittkonturen 1:1)")
+    return 0
+
+
+def _cmd_bridge(args) -> int:
+    from scantobim.core.bridge import analyze_bridge
+
+    cloud = _read_inputs(args.input, register=False)
+    print("analyzing bridge structure …")
+    report = analyze_bridge(cloud)
+    report.pop("_objects", None)
+
+    deck = report["deck"]
+    print(f"  type:      {report['bridge_type']}")
+    print(f"  deck:      {deck['length']:.1f} x {deck['width']:.1f} m, "
+          f"OK {deck['elevation']:.2f} m, {deck['area']:.0f} m²")
+    print(f"  spans:     {' + '.join(f'{s:.1f}' for s in report['spans'])} m")
+    print(f"  piers:     {len(report['piers'])}  |  abutments: {report['abutments']}"
+          f"  |  pylons: {report['pylons']}  |  cables: {len(report['cables'])}")
+    for p in report["piers"]:
+        b = p["bearing_point"]
+        print(f"    pier @ station {p['station']:+.1f} m, h={p['height']:.1f} m, "
+              f"Lager ({b[0]:.1f}, {b[1]:.1f}, {b[2]:.2f})")
+    if report["arch"]:
+        a = report["arch"]
+        print(f"  arch:      R={a['radius']:.1f} m, Stich {a['rise']:.1f} m")
+
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2, default=_json_default))
+        print(f"wrote {args.output}")
     return 0
 
 

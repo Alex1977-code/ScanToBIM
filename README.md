@@ -126,6 +126,38 @@ scantobim analyze halle.laz -o traeger.json
 Hinweis Genauigkeit: freistehende Räder werden am genauesten vermessen; im
 Zahneingriff kann der Kopfkreis des Großrads leicht unterschätzt werden.
 
+## Brückenbauwerke
+
+`scantobim bridge` erkennt das Tragsystem gescannter Brücken – alle
+Haupttypen – und liefert die Kenngrößen der Bauwerksprüfung:
+
+![Brückenerkennung](docs/images/bridges.png)
+
+| Komponente | Ausgabe |
+| --- | --- |
+| **Überbau** (Deck) | Achse, Länge, Breite, Fläche, Oberkante – die dominante langgestreckte Horizontalfläche (Ober-/Unterseite werden unterschieden). |
+| **Unterbauten** | Pfeiler mit Station, Höhe und **Lagerpunkt** (Pfeilerkopf); Widerlager an den Enden; daraus die **Feldweiten** (z. B. 10 + 10 + 10 m). |
+| **Bogen** | Teilzylinder unter dem Deck mit Querachse: Radius, Spannweite, Stich. |
+| **Pylone & Seile** | Pylone über kontinuierliche Vertikalbelegung (robust gegen kreuzende Seilfächer), Seile über Linien-RANSAC: Länge, Durchmesser, Neigung – Hänger (steil) vs. Schrägseile (flach). |
+| **Typ-Klassifikation** | Balken-/Platten-, Bogen-, Schrägseil-, Hängebrücke aus den gefundenen Komponenten. |
+
+```bash
+scantobim bridge bruecke.laz -o bauwerk.json
+```
+
+## Anschlussdetails (Stahlbau)
+
+Wo erkannte Profile zusammentreffen, entsteht ein Anschluss – `scantobim
+analyze` liefert die **Anschlussliste** automatisch mit:
+
+- **Knotenpunkte**: Stellen, an denen sich Bauteilachsen bis auf
+  Anschlusstoleranz nähern (Standard: 1,5 x größte Profilhöhe); nahe
+  Knoten werden verschmolzen, auch 3-Stab-Knoten.
+- Je Knoten: beteiligte **Profile**, **Winkel** zwischen den Stäben und
+  die **Exzentrizität** (Achsversatz – ein Qualitätsindikator des Details).
+- **Anschlussbleche**: Knoten-/Kopfplatten aus der Blech-Erkennung, die in
+  der Anschlusszone liegen, werden dem Knoten zugeordnet.
+
 ## Geschweißte Blechkonstruktionen
 
 `scantobim sheetmetal` analysiert geschweißte Baugruppen (Behälter, Gehäuse,
@@ -278,7 +310,7 @@ Ausrichtungs-Transformation und Laufzeit.
 
 ```bash
 pip install -e .[dev]
-pytest          # 129 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
+pytest          # 137 Tests: IO-Roundtrips, Algorithmen, End-to-End-Qualitätsgates
 python examples/demo.py   # erzeugt Beispiel-Scan + Modell + Viewer in demo_output/
 ```
 
@@ -347,10 +379,16 @@ become plates with measured thickness (matched to stock sizes), outline,
 area and weight; plate junctions become weld seams with length and angle
 (summed for costing); `--dxf` exports all cutting outlines 1:1 for
 laser/plasma. Multi-storey scans are detected and exported as separate
-IfcBuildingStoreys. A synthetic 74k-point room scan with 4 mm
+IfcBuildingStoreys. **Bridge recognition** (`scantobim bridge`): deck
+(axis/length/width), piers with stations and bearing points, span layout,
+abutments, arches (radius/rise), pylons and stay cables/hangers via line
+RANSAC — classified into beam/arch/cable-stayed/suspension types.
+**Connection details**: where detected members meet, a connection schedule
+is generated (node positions, member profiles, angles, eccentricity,
+assigned gusset plates). A synthetic 74k-point room scan with 4 mm
 noise reconstructs to its minimal exact representation — 18 vertices, all
 angles exactly 90°, window included. Pure Python (numpy/scipy/laspy),
-129 tests, MIT license. CLI:
+137 tests, MIT license. CLI:
 `scantobim reconstruct scan.laz -o model.stp --preset indoor`.
 
 ## Lizenz

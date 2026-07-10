@@ -372,6 +372,104 @@ def make_two_storey_scan(
     return PointCloud(points=np.vstack(parts), source="synthetic two-storey")
 
 
+def _bridge_deck(length, width, deck_z, thickness, density, noise, rng):
+    x, y = np.eye(3)[0], np.eye(3)[1]
+    top = sample_rect((-length / 2, -width / 2, deck_z), x, y, length, width, density, noise, rng)
+    bottom = sample_rect(
+        (-length / 2, -width / 2, deck_z - thickness), x, y, length, width, density, noise, rng
+    )
+    return [top, bottom]
+
+
+def make_beam_bridge_scan(
+    length: float = 30.0,
+    width: float = 6.0,
+    deck_z: float = 8.0,
+    density: float = 300.0,
+    noise: float = 0.01,
+    seed: int = 41,
+) -> PointCloud:
+    """Two-pier beam bridge: deck slab, 2 round piers, 2 abutment walls."""
+    rng = np.random.default_rng(seed)
+    parts = _bridge_deck(length, width, deck_z, 0.5, density, noise, rng)
+    for station in (-length / 6, length / 6):
+        parts.append(
+            sample_cylinder(
+                (station, 0, (deck_z - 0.5) / 2), (0, 0, 1), 0.6, deck_z - 0.5,
+                density * 4, noise, rng,
+            )
+        )
+    y, z = np.eye(3)[1], np.eye(3)[2]
+    for station in (-length / 2, length / 2):
+        parts.append(
+            sample_rect((station, -width / 2, 0), y, z, width, deck_z - 0.5, density * 2, noise, rng)
+        )
+    return PointCloud(points=np.vstack(parts), source="synthetic beam bridge")
+
+
+def make_arch_bridge_scan(
+    length: float = 24.0,
+    width: float = 5.0,
+    deck_z: float = 8.0,
+    radius: float = 12.0,
+    density: float = 300.0,
+    noise: float = 0.01,
+    seed: int = 43,
+) -> PointCloud:
+    """Arch bridge: deck slab + barrel arch (partial cylinder, axis across)."""
+    rng = np.random.default_rng(seed)
+    parts = _bridge_deck(length, width, deck_z, 0.5, density, noise, rng)
+    # Arch: cylinder axis along y, center below the deck, crown near deck.
+    center = np.array([0.0, 0.0, deck_z - 1.0 - radius])
+    n = int(2 * radius * 1.6 * width * density)
+    theta = rng.uniform(np.pi / 2 - 0.9, np.pi / 2 + 0.9, n)  # around the crown
+    yy = rng.uniform(-width / 2, width / 2, n)
+    r = radius + rng.normal(0, noise, n)
+    arch = np.column_stack(
+        [r * np.cos(theta), yy, center[2] + r * np.sin(theta)]
+    )
+    parts.append(arch)
+    return PointCloud(points=np.vstack(parts), source="synthetic arch bridge")
+
+
+def make_cable_stayed_bridge_scan(
+    length: float = 40.0,
+    width: float = 7.0,
+    deck_z: float = 10.0,
+    pylon_height: float = 18.0,
+    density: float = 250.0,
+    noise: float = 0.01,
+    seed: int = 47,
+) -> PointCloud:
+    """Cable-stayed bridge: deck, central pylon, 8 diagonal stay cables."""
+    rng = np.random.default_rng(seed)
+    parts = _bridge_deck(length, width, deck_z, 0.5, density, noise, rng)
+    # Pylon above (and a pier below) the deck at midspan.
+    parts.append(
+        sample_cylinder(
+            (0, 0, deck_z + pylon_height / 2), (0, 0, 1), 0.7, pylon_height,
+            density * 6, noise, rng,
+        )
+    )
+    parts.append(
+        sample_cylinder(
+            (0, 0, (deck_z - 0.5) / 2), (0, 0, 1), 0.7, deck_z - 0.5,
+            density * 4, noise, rng,
+        )
+    )
+    top = np.array([0.0, 0.0, deck_z + pylon_height * 0.95])
+    for station in (-16.0, -12.0, -8.0, -4.5, 4.5, 8.0, 12.0, 16.0):
+        anchor = np.array([station, 0.0, deck_z + 0.1])
+        axis = anchor - top
+        cable_len = np.linalg.norm(axis)
+        mid = (anchor + top) / 2.0
+        parts.append(
+            sample_cylinder(mid, axis / cable_len, 0.05, cable_len * 0.9,
+                            density * 3, noise * 0.5, rng)
+        )
+    return PointCloud(points=np.vstack(parts), source="synthetic cable-stayed bridge")
+
+
 def add_outliers(cloud: PointCloud, fraction: float = 0.01, seed: int = 9) -> PointCloud:
     """Scatter uniform noise points around the cloud's bounding box."""
     rng = np.random.default_rng(seed)
