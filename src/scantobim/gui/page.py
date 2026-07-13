@@ -231,6 +231,8 @@ button.ghost:hover{border-color:var(--accent)}
           <label class="opt"><input type="checkbox" id="texture" checked> Fototextur aus Punktfarben</label>
           <label class="opt"><input type="checkbox" id="align"> Achsen ausrichten, Boden auf Z=0</label>
           <label class="opt"><input type="checkbox" id="register"> Mehrere Scans automatisch registrieren (ICP)</label>
+          <label class="opt"><input type="checkbox" id="deviation"> Soll-Ist-Abweichungsanalyse (QS-Heatmap + Statistik)</label>
+          <label class="opt"><input type="checkbox" id="views"> Orthofoto-Ansichten N/O/S/W + Draufsicht (maßstabsgetreu)</label>
         </div>
         <label class="sel-label">Zusätzliche Exportformate</label>
         <div class="fmt" id="formats">
@@ -364,6 +366,8 @@ $("#run").onclick = async () => {
     options.texture = $("#texture").checked;
     options.align = $("#align").checked;
     options.register = $("#register").checked && state.files.length > 1;
+    options.deviation = $("#deviation").checked;
+    options.views = $("#views").checked;
     options.formats = [...document.querySelectorAll("#formats label.on")]
       .map(el => el.dataset.f);
   } else if (state.mode === "sheetmetal") {

@@ -47,12 +47,14 @@ def slice_mesh(mesh: Mesh, z: float) -> np.ndarray:
 
 
 def write_floorplan_dxf(
-    mesh: Mesh, path: str | Path, height_above_floor: float = 1.0
+    mesh: Mesh, path: str | Path, height_above_floor: float = 1.0,
+    annotate: bool = True,
 ) -> Path:
     """Write a DXF floor plan sliced ``height_above_floor`` above the model base.
 
-    Wall cuts land on layer ``SCHNITT``; the model's footprint outline (the
-    slice through everything) is what architects expect at 1.00 m.
+    Wall cuts land on layer ``SCHNITT``; with ``annotate`` every merged wall
+    run carries its length in meters as a dimension text on layer
+    ``BEMASSUNG`` — a checkable, print-ready plan.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,9 +81,100 @@ def write_floorplan_dxf(
             "21", f"{y2:.6f}",
             "31", "0.0",
         ]
+
+    if annotate:
+        seg = np.asarray(segments, dtype=np.float64)
+        extent = float(max(np.ptp(seg[:, :, 0]), np.ptp(seg[:, :, 1]), 1e-9))
+        centroid = seg.reshape(-1, 2).mean(axis=0)
+        text_h = max(0.02 * extent, 0.08)
+        for start, end in _merge_wall_runs(seg):
+            d = end - start
+            length = float(np.linalg.norm(d))
+            if length < 3 * text_h:
+                continue  # too short to label legibly
+            d /= length
+            normal = np.array([-d[1], d[0]])
+            angle = float(np.degrees(np.arctan2(d[1], d[0])))
+            if angle > 90.0 or angle <= -90.0:
+                angle = (angle + 180.0) % 360.0  # keep text upright
+            center = (start + end) / 2.0
+            if normal @ (centroid - center) < 0:
+                normal = -normal  # dimension text towards the plan interior
+            mid = center + normal * 1.2 * text_h
+            lines += [
+                "0", "TEXT",
+                "8", "BEMASSUNG",
+                "10", f"{mid[0]:.6f}",
+                "20", f"{mid[1]:.6f}",
+                "30", "0.0",
+                "40", f"{text_h:.4f}",
+                "1", f"{length:.3f}",
+                "50", f"{angle:.2f}",
+                "72", "1",
+                "11", f"{mid[0]:.6f}",
+                "21", f"{mid[1]:.6f}",
+                "31", "0.0",
+            ]
+
     lines += ["0", "ENDSEC", "0", "EOF"]
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def _merge_wall_runs(
+    segments: np.ndarray,
+    offset_tol: float = 0.03,
+    gap_tol: float = 0.08,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Merge collinear slice segments into wall runs for dimensioning.
+
+    A wall crossed at 1 m yields hundreds of short per-triangle cuts; the
+    dimension belongs to the merged run. Segments are grouped by direction
+    and perpendicular offset, projected onto their common line and merged
+    where gaps stay below ``gap_tol``.
+    """
+    n = len(segments)
+    used = np.zeros(n, dtype=bool)
+    starts, ends = segments[:, 0], segments[:, 1]
+    vecs = ends - starts
+    lens = np.linalg.norm(vecs, axis=1)
+    ok = lens > 1e-9
+    dirs = np.zeros_like(vecs)
+    dirs[ok] = vecs[ok] / lens[ok, None]
+    flip = (dirs[:, 0] < 0) | ((dirs[:, 0] == 0) & (dirs[:, 1] < 0))
+    dirs[flip] *= -1  # canonical sign: opposite directions compare equal
+
+    runs: list[tuple[np.ndarray, np.ndarray]] = []
+    for i in range(n):
+        if used[i] or not ok[i]:
+            continue
+        d = dirs[i]
+        normal = np.array([-d[1], d[0]])
+        offsets = starts @ normal
+        group = (
+            ok & ~used
+            & (np.abs(dirs @ normal) < 0.03)
+            & (np.abs(offsets - offsets[i]) < offset_tol)
+        )
+        idx = np.flatnonzero(group)
+        used[idx] = True
+        line_offset = float(offsets[idx].mean())
+        # Merge the 1D intervals along the common direction.
+        t = np.sort(np.stack([starts[idx] @ d, ends[idx] @ d], axis=1), axis=1)
+        t = t[np.argsort(t[:, 0])]
+        cur_lo, cur_hi = t[0]
+        for lo, hi in t[1:]:
+            if lo <= cur_hi + gap_tol:
+                cur_hi = max(cur_hi, hi)
+            else:
+                runs.append(
+                    (line_offset * normal + cur_lo * d, line_offset * normal + cur_hi * d)
+                )
+                cur_lo, cur_hi = lo, hi
+        runs.append(
+            (line_offset * normal + cur_lo * d, line_offset * normal + cur_hi * d)
+        )
+    return runs
 
 
 def write_cutting_dxf(plates, path: str | Path, gap: float = 0.05) -> Path:

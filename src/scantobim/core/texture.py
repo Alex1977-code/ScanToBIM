@@ -130,6 +130,7 @@ def bake_texture_from_photos(
     texel_size: float | None = None,
     transform: np.ndarray | None = None,
     max_cameras_per_surface: int = 8,
+    stats_out: dict | None = None,
 ) -> Mesh:
     """Project the original photos onto the model via COLMAP camera poses.
 
@@ -248,6 +249,22 @@ def bake_texture_from_photos(
 
         chart.image = img.reshape(chart.height, chart.width, 3).astype(np.uint8)
         chart.filled = filled.reshape(chart.height, chart.width)
+
+    # Coverage diagnostics: a healthy projection fills most texels. Near-zero
+    # coverage means wrong pose frame or missing image files — callers use
+    # this to fall back to cloud colors instead of shipping a grey model.
+    n_filled = sum(int(c.filled.sum()) for c in charts)
+    n_total = sum(c.filled.size for c in charts)
+    if stats_out is not None:
+        stats_out["coverage"] = n_filled / max(n_total, 1)
+        stats_out["images_used"] = len(image_cache)
+        stats_out["cameras"] = len(cameras)
+    if not image_cache:
+        raise ValueError(
+            f"{images_dir}: keine der im COLMAP-Modell registrierten "
+            "Bilddateien gefunden — Bildordner prüfen"
+        )
+
     _fill_holes(charts)
     atlas = _pack_atlas(charts)
     return _build_textured_mesh(result, charts, atlas)

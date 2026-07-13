@@ -216,3 +216,38 @@ def test_project_cli_with_photo_projection(tmp_path, capsys):
     log = capsys.readouterr().out
     assert "projecting 1 photos" in log and "texture atlas" in log
     assert b"data:image/png" in out.read_bytes()  # textured viewer
+
+
+def test_project_photo_fallback_wrong_frame(tmp_path, capsys):
+    """Poses in a different coordinate frame → automatic cloud-color fallback."""
+    from scantobim.cli import main
+
+    root = _build_project(tmp_path, with_photos=False)
+    img_dir = root / "camera" / "undistorted"
+    img_dir.mkdir(parents=True)
+    for i in range(6):
+        (img_dir / f"frame_{i:04d}.jpg").write_bytes(b"\xff\xd8\xff\xdb dummy")
+    # Camera centers ~1.4 km away from the scanned box: wrong frame.
+    _write_binary_model(
+        root / "camera" / "sparse" / "0",
+        [("frame_0000.jpg", (1.0, 0.0, 0.0, 0.0), (-1000.0, -1000.0, -50.0))],
+    )
+    out = tmp_path / "modell.html"
+    assert main(["project", str(root), "-o", str(out), "--seed", "1"]) == 0
+    log = capsys.readouterr().out
+    assert "anderes Koordinatensystem" in log
+    assert "Textur: punktfarben" in log
+    report = json.loads((tmp_path / "modell_bericht.json").read_text())
+    assert report["texture"]["source"] == "punktfarben"
+    assert b"data:image/png" in out.read_bytes()  # textured after fallback
+
+
+def test_project_photo_fallback_unreadable_images(tmp_path, capsys):
+    """Photos that never project/open must not leave a grey model behind."""
+    from scantobim.cli import main
+
+    root = _build_project(tmp_path, with_photos=True)  # dummy jpgs, cam at z=5
+    out = tmp_path / "modell.html"
+    assert main(["project", str(root), "-o", str(out), "--seed", "1"]) == 0
+    log = capsys.readouterr().out
+    assert "Textur: punktfarben" in log  # fell back instead of grey texture

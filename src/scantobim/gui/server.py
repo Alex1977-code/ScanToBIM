@@ -110,9 +110,13 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             preset=opts.get("preset", "building"),
             watertight=bool(opts.get("watertight")),
             align=bool(opts.get("align")),
-            no_photos=not opts.get("texture", True),
+            no_photos=False,
+            no_texture=not opts.get("texture", True),
             texel=None,
             report=outdir / "bericht.json",
+            deviation=(outdir / "abweichung.ply") if opts.get("deviation") else None,
+            tolerance=0.005,
+            views=(outdir / "ansichten") if opts.get("views") else None,
             seed=None,
         )
         code = _cmd_project(ns)
@@ -129,6 +133,19 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             summary["Volumen"] = f"{rep['quantities']['volume']:.3f} m³"
         if rep.get("trajectory_positions"):
             summary["Trajektorie"] = f"{rep['trajectory_positions']} Positionen"
+        tex = rep.get("texture", {})
+        if tex:
+            label = tex.get("source", "keine")
+            if tex.get("coverage") is not None:
+                label += f" ({tex['coverage'] * 100:.0f}% Abdeckung)"
+            summary["Textur"] = label
+        dev = rep.get("deviation")
+        if dev:
+            summary["Soll-Ist RMS"] = f"{dev['rms'] * 1000:.1f} mm"
+            summary["Innerhalb Toleranz"] = (
+                f"{dev['within_tolerance'] * 100:.1f}% "
+                f"(±{dev['tolerance'] * 1000:.0f} mm)"
+            )
         return summary
 
     cloud = _read_inputs(files, bool(opts.get("register")))
@@ -147,6 +164,7 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     q = rep["quantities"]
 
     output_mesh = result.mesh
+    texture_source = "keine"
     if opts.get("texture"):
         if cloud.colors is None:
             print("Hinweis: Punktwolke ohne Farbwerte — Textur übersprungen")
@@ -158,6 +176,7 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             if "alignment" in rep:
                 transform = np.array(rep["alignment"])
             output_mesh = bake_texture_from_cloud(result, cloud, transform=transform)
+            texture_source = "punktfarben"
 
     write_mesh(output_mesh, outdir / "modell.html")
     print("geschrieben: modell.html")
@@ -183,6 +202,14 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
 
             write_floorplan_dxf(result.mesh, outdir / "grundriss.dxf")
             print("geschrieben: grundriss.dxf")
+    if opts.get("deviation"):
+        from scantobim.cli import _write_deviation
+
+        _write_deviation(result, cloud, outdir / "abweichung.ply", 0.005)
+    if opts.get("views"):
+        from scantobim.cli import _write_views
+
+        _write_views(output_mesh, outdir / "ansichten")
     (outdir / "bericht.json").write_text(
         json.dumps(rep, indent=2, default=_json_default)
     )
@@ -203,6 +230,14 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
         )
     for cls, n in q.get("surface_count_by_class", {}).items():
         summary[f"Bauteile: {cls}"] = n
+    summary["Textur"] = texture_source
+    dev = rep.get("deviation")
+    if dev:
+        summary["Soll-Ist RMS"] = f"{dev['rms'] * 1000:.1f} mm"
+        summary["Soll-Ist P95"] = f"{dev['p95'] * 1000:.1f} mm"
+        summary["Innerhalb Toleranz"] = (
+            f"{dev['within_tolerance'] * 100:.1f}% (±{dev['tolerance'] * 1000:.0f} mm)"
+        )
     summary["Dreiecke"] = rep["mesh"]["triangles"]
     summary["Restpunkte"] = rep["residual_points"]
     summary["Rechenzeit"] = f"{rep['runtime_seconds']} s"
@@ -354,10 +389,13 @@ def _make_handler(state: GuiState):
             return {k: v[0] for k, v in urllib.parse.parse_qs(q).items()}
 
         def _job_outputs(self, job: dict) -> list[dict]:
+            base = Path(job["dir"])
             out = []
-            for f in sorted(Path(job["dir"]).iterdir()):
+            for f in sorted(base.rglob("*")):
                 if f.is_file():
-                    out.append({"name": f.name, "size": f.stat().st_size})
+                    out.append(
+                        {"name": str(f.relative_to(base)), "size": f.stat().st_size}
+                    )
             return out
 
         # ---- GET ----
@@ -397,15 +435,19 @@ def _make_handler(state: GuiState):
             elif route == "/api/output":
                 q = self._query()
                 job = state.jobs.get(q.get("job", ""))
-                name = Path(q.get("name", "")).name  # no traversal
-                target = Path(job["dir"]) / name if job else None
-                if target is None or not target.is_file():
+                target = None
+                if job is not None:
+                    base = Path(job["dir"]).resolve()
+                    candidate = (base / q.get("name", "")).resolve()
+                    if candidate.is_file() and candidate.is_relative_to(base):
+                        target = candidate
+                if target is None:
                     self._send(404, b"nicht gefunden", "text/plain")
                     return
                 ctype = _CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")
                 self._send(
                     200, target.read_bytes(), ctype,
-                    {"Content-Disposition": f'attachment; filename="{name}"'},
+                    {"Content-Disposition": f'attachment; filename="{target.name}"'},
                 )
             else:
                 self._send(404, b"not found", "text/plain")

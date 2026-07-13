@@ -177,6 +177,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("--trajectory", type=Path, default=None, metavar="TXT",
                        help="scanner trajectory (SLAM path, e.g. trajectory.txt): "
                        "orients normals towards the scanner for robust detection")
+    p_rec.add_argument("--deviation", type=Path, default=None, metavar="PLY",
+                       help="as-built QA: write the scan colored by signed "
+                       "deviation from the model (blue-white-red) plus "
+                       "statistics in the report")
+    p_rec.add_argument("--tolerance", type=float, default=0.005,
+                       help="deviation tolerance in input units for the QA "
+                       "quote (default: 0.005)")
+    p_rec.add_argument("--views", type=Path, default=None, metavar="DIR",
+                       help="write true-to-scale orthographic views (N/E/S/W/top) "
+                       "as PNG + world file into this directory")
     p_rec.add_argument("--seed", type=int, default=None, help="RANSAC random seed")
 
     p_proj = sub.add_parser(
@@ -196,10 +206,17 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="axis-align the model, floor at Z=0")
     p_proj.add_argument("--no-photos", action="store_true",
                         help="skip photo projection (use point cloud colors)")
+    p_proj.add_argument("--no-texture", action="store_true",
+                        help="no texturing at all (plain surface colors)")
     p_proj.add_argument("--texel", type=float, default=None,
                         help="texture resolution in input units (default: auto)")
     p_proj.add_argument("--report", type=Path, default=None,
                         help="quality report JSON (default: next to the output)")
+    p_proj.add_argument("--deviation", type=Path, default=None, metavar="PLY",
+                        help="as-built QA: deviation-colored scan + statistics")
+    p_proj.add_argument("--tolerance", type=float, default=0.005)
+    p_proj.add_argument("--views", type=Path, default=None, metavar="DIR",
+                        help="true-to-scale orthographic views as PNG")
     p_proj.add_argument("--seed", type=int, default=None)
 
     p_reg = sub.add_parser(
@@ -607,6 +624,11 @@ def _cmd_reconstruct(args) -> int:
         )
         print(f"wrote {plan} (slice at base + {args.floorplan_height})")
 
+    if args.deviation is not None:
+        _write_deviation(result, cloud, args.deviation, args.tolerance)
+    if args.views is not None:
+        _write_views(output_mesh, args.views)
+
     if args.report is not None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(rep, indent=2, default=_json_default))
@@ -657,6 +679,7 @@ def _cmd_project(args) -> int:
 
     # Texture: photo projection when poses + photos exist, else cloud colors.
     output_mesh = result.mesh
+    texture_info: dict = {"source": "keine"}
     use_photos = (
         not args.no_photos
         and project.colmap_model is not None
@@ -665,28 +688,67 @@ def _cmd_project(args) -> int:
     transform = None
     if "alignment" in rep:
         transform = np.array(rep["alignment"])
+
+    if use_photos:
+        # Sanity check: the camera path must live in the same coordinate
+        # frame as the cloud — SLAM exports sometimes keep poses in a local
+        # session frame while the cloud is georeferenced.
+        from scantobim.photogrammetry.colmap import read_colmap_model
+
+        cams = read_colmap_model(project.colmap_model)
+        centers = np.array([-c.rotation.T @ c.translation for c in cams])
+        lo, hi = cloud.aabb
+        diag = float(np.linalg.norm(hi - lo))
+        dist = np.linalg.norm(centers - (lo + hi) / 2.0, axis=1)
+        if float(np.median(dist)) > 2.0 * diag:
+            print("Hinweis: Kameraposen liegen weit außerhalb der Punktwolke "
+                  "(anderes Koordinatensystem?) — Foto-Projektion übersprungen")
+            use_photos = False
+
     if use_photos:
         try:
             from scantobim.core.texture import bake_texture_from_photos
 
             print(f"projecting {project.image_count} photos onto the model …")
-            output_mesh = bake_texture_from_photos(
+            stats: dict = {}
+            photo_mesh = bake_texture_from_photos(
                 result, project.colmap_model, project.images_dir,
-                texel_size=args.texel, transform=transform,
+                texel_size=args.texel, transform=transform, stats_out=stats,
             )
-            th, tw = output_mesh.texture.shape[:2]
-            print(f"  texture atlas: {tw} x {th} px")
+            coverage = stats.get("coverage", 0.0)
+            print(f"  Foto-Abdeckung: {coverage * 100:.0f}% der Flächen "
+                  f"({stats.get('images_used', 0)} Fotos verwendet)")
+            if coverage < 0.2:
+                print("Hinweis: Foto-Abdeckung zu gering — "
+                      "verwende stattdessen Punktwolken-Farben")
+                use_photos = False
+            else:
+                output_mesh = photo_mesh
+                th, tw = output_mesh.texture.shape[:2]
+                print(f"  texture atlas: {tw} x {th} px")
+                texture_info = {
+                    "source": "foto-projektion",
+                    "coverage": round(coverage, 3),
+                    "images_used": stats.get("images_used", 0),
+                }
         except Exception as exc:  # noqa: BLE001 — fall back, don't fail the model
             print(f"Hinweis: Foto-Projektion fehlgeschlagen ({exc}) — "
                   "verwende Punktwolken-Farben")
             use_photos = False
-    if not use_photos and cloud.colors is not None:
-        from scantobim.core.texture import bake_texture_from_cloud
+    no_texture = getattr(args, "no_texture", False)
+    if not use_photos and not no_texture:
+        if cloud.colors is not None:
+            from scantobim.core.texture import bake_texture_from_cloud
 
-        print("baking texture from cloud colors …")
-        output_mesh = bake_texture_from_cloud(
-            result, cloud, texel_size=args.texel, transform=transform
-        )
+            print("baking texture from cloud colors …")
+            output_mesh = bake_texture_from_cloud(
+                result, cloud, texel_size=args.texel, transform=transform
+            )
+            texture_info = {"source": "punktfarben"}
+        else:
+            print("Hinweis: Punktwolke ohne Farbwerte — Modell bleibt untexturiert")
+    rep["texture"] = texture_info
+    print(f"Textur: {texture_info['source']}")
 
     output = args.output or (args.directory / "scantobim_modell.html")
     ext = output.suffix.lower()
@@ -702,11 +764,44 @@ def _cmd_project(args) -> int:
         out = write_mesh(output_mesh, output)
     print(f"wrote {out}")
 
+    if args.deviation is not None:
+        _write_deviation(result, cloud, args.deviation, args.tolerance)
+    if args.views is not None:
+        _write_views(output_mesh, args.views)
+
     report_path = args.report or output.with_name(output.stem + "_bericht.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(rep, indent=2, default=_json_default))
     print(f"wrote {report_path}")
     return 0
+
+
+def _write_deviation(result, cloud, deviation_path: Path, tolerance: float) -> None:
+    """As-built QA: deviation-colored scan + statistics into the report."""
+    from scantobim.core.deviation import deviation_analysis
+
+    rep = result.report
+    alignment = np.array(rep["alignment"]) if "alignment" in rep else None
+    stats, dev_cloud = deviation_analysis(
+        result.mesh, cloud, tolerance=tolerance, alignment=alignment
+    )
+    write_point_cloud(dev_cloud, deviation_path)
+    rep["deviation"] = stats
+    print(
+        f"  Soll-Ist: RMS {stats['rms'] * 1000:.1f} mm | "
+        f"P95 {stats['p95'] * 1000:.1f} mm | "
+        f"{stats['within_tolerance'] * 100:.1f}% innerhalb "
+        f"±{tolerance * 1000:.1f} mm"
+    )
+    print(f"wrote {deviation_path} (Abweichungswolke blau-weiss-rot)")
+
+
+def _write_views(mesh, views_dir: Path) -> None:
+    from scantobim.io.views import write_ortho_views
+
+    files = write_ortho_views(mesh, views_dir)
+    print(f"wrote {len(files)} Ansichten + World-Files → {views_dir} "
+          "(nord/ost/sued/west/draufsicht, maßstabsgetreu)")
 
 
 CLOUD_EXTS_SORTED = sorted(_CLOUD_EXTS)

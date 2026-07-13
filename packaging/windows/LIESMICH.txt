@@ -39,8 +39,11 @@ Benutzung (Eingabeaufforderung oder PowerShell)
   scantobim.exe reconstruct scan.laz -o modell.stp
   scantobim.exe reconstruct raum.e57 -o modell.ifc --preset indoor
 
-  :: Grundriss als DXF
+  :: Grundriss als DXF (mit automatischer Wand-Bemassung)
   scantobim.exe reconstruct scan.laz -o modell.glb --floorplan grundriss.dxf
+
+  :: Qualitaetssicherung: Soll-Ist-Abweichung + massstabsgetreue Ansichten
+  scantobim.exe reconstruct scan.laz -o modell.html --deviation qa.ply --views ansichten
 
   :: Maschinenbau: Wellen, Zahnraeder, Getriebe, Stahlprofile, Anschluesse
   scantobim.exe analyze getriebe.e57 -o analyse.json --mesh primitive.glb

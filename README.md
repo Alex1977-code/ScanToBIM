@@ -106,6 +106,9 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 | 🏗️ **IFC-Export** (`-o model.ifc`) | IFC4-Bauwerksmodell: Wände als `IfcWall`, Böden als `IfcSlab`, Decken als `IfcCovering` – inkl. Projekt/Gebäude/Geschoss-Struktur und Fenster-Öffnungen. Öffnet in Revit, ArchiCAD, Solibri, BlenderBIM. |
 | 🖥️ **Grafische Oberfläche** (`scantobim gui`) | Lokale Web-App: Drag & Drop, Modus-Karten, Live-Protokoll, integrierter 3D-Viewer, Messbericht, Export-Downloads – ganz ohne Kommandozeile. |
 | 🔍 **Detailgetreu** (`--preset detail`) | Behält kleine Strukturen (mehr Ebenen, feinere Vereinfachung) und rekonstruiert **Stützen und Rohre als echte Zylinder** aus dem Residuum (`--cylinders` für jedes Preset). |
+| 📊 **Soll-Ist-Abweichungsanalyse** (`--deviation qa.ply`) | As-built-QS: Abstand jedes Scanpunkts zum Modell — Statistik (RMS, P95, Maximum, Toleranzquote, mm-Histogramm) im Bericht plus **eingefärbte Abweichungswolke** (blau = hinter der Fläche, weiß = drauf, rot = davor). |
+| 🗺️ **Orthofoto-Ansichten** (`--views ordner/`) | Maßstabsgetreue orthographische **Fassadenansichten** (Nord/Ost/Süd/West) und Draufsicht als PNG — mit World-File (`.pgw`), damit CAD/GIS sie lagerichtig im richtigen Maßstab importieren. Nutzt die Fototextur, wenn vorhanden. |
+| 📏 **Bemaßter Grundriss** | `--floorplan` beschriftet jetzt jede Wand automatisch mit ihrer Länge (Layer `BEMASSUNG`) — der Plan ist direkt prüfbar. |
 
 ![Viewer](docs/images/viewer.png)
 
