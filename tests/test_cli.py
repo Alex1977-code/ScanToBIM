@@ -181,3 +181,74 @@ def test_cli_version(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
+
+
+def test_cli_texture_without_colors_skipped(tmp_path, capsys):
+    """--texture on a colorless cloud writes the model untextured + a note."""
+    src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
+    out = tmp_path / "model.glb"
+    assert main(["reconstruct", str(src), "-o", str(out), "--texture", "--seed", "1"]) == 0
+    assert out.stat().st_size > 0
+    assert "no RGB colors" in capsys.readouterr().out
+
+
+def test_cli_no_args_prints_help(capsys):
+    """Plain `scantobim` (not frozen) prints the help instead of a stack trace."""
+    assert main([]) == 2
+    out = capsys.readouterr().out
+    assert "reconstruct" in out and "analyze" in out
+
+
+def _feed_input(monkeypatch, answers):
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
+
+
+def test_cli_drag_and_drop(tmp_path, capsys, monkeypatch):
+    """A bare file argument (file dragged onto the exe) runs the guided mode."""
+    src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
+    _feed_input(monkeypatch, ["", ""])  # format: HTML (default), scene: default
+    assert main([str(src)]) == 0
+    html = tmp_path / "scan_modell.html"
+    assert html.stat().st_size > 5000
+    report = json.loads((tmp_path / "scan_bericht.json").read_text())
+    assert report["planes"] == 6
+    assert "Fertig!" in capsys.readouterr().out
+
+
+def test_cli_interactive_frozen_no_args(tmp_path, capsys, monkeypatch):
+    """Double-clicked exe: welcome screen, prompt for a file, pause at the end."""
+    import sys as _sys
+
+    src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    _feed_input(
+        monkeypatch,
+        [f'"{src}"',  # dragged into the window (Windows quotes paths)
+         "",          # no more files
+         "2",         # STEP output
+         "1",         # scene: building
+         ""],         # final "Enter zum Beenden" pause
+    )
+    assert main([]) == 0
+    stp = tmp_path / "scan_modell.stp"
+    assert stp.read_text().startswith("ISO-10303-21;")
+    assert "gefuehrter Modus" in capsys.readouterr().out
+
+
+def test_cli_interactive_rejects_bad_paths(tmp_path, capsys, monkeypatch):
+    """Nonexistent paths and unknown formats re-prompt instead of crashing."""
+    import sys as _sys
+
+    src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
+    bogus = tmp_path / "notes.docx"
+    bogus.write_text("x")
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    _feed_input(
+        monkeypatch,
+        [str(tmp_path / "missing.ply"), str(bogus), str(src), "", "4", "", ""],
+    )
+    assert main([]) == 0
+    assert (tmp_path / "scan_modell.glb").stat().st_size > 0
+    out = capsys.readouterr().out
+    assert "nicht gefunden" in out and "kein unterstuetztes" in out

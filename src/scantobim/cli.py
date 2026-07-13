@@ -31,8 +31,58 @@ from scantobim.core.pipeline import PipelineConfig, reconstruct
 from scantobim.io.readers import read_point_cloud
 from scantobim.io.writers import write_mesh, write_point_cloud
 
+_CLOUD_EXTS = {".las", ".laz", ".ply", ".pcd", ".e57", ".xyz", ".pts", ".txt", ".csv", ".asc"}
+
+
+def _is_frozen() -> bool:
+    """True inside the packaged Windows executable (PyInstaller)."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def _pause() -> None:
+    """Keep the console window open — a double-clicked exe closes it instantly."""
+    try:
+        input("\nEnter druecken zum Beenden ... ")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # Double-clicked exe (no arguments): guided mode instead of a usage error
+    # that vanishes with the console window.
+    if not argv:
+        if _is_frozen():
+            code = _interactive()
+            _pause()
+            return code
+
+    # Files dragged onto the exe (or `scantobim scan.laz` without a command):
+    # every argument is an existing point cloud file -> guided reconstruction.
+    elif all(
+        Path(a).suffix.lower() in _CLOUD_EXTS and Path(a).exists() for a in argv
+    ):
+        code = _interactive([Path(a) for a in argv])
+        if _is_frozen():
+            _pause()
+        return code
+
+    parser = _build_parser()
+    if not argv:
+        parser.print_help()
+        return 2
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        if _is_frozen():
+            _pause()  # keep argparse errors readable in the double-click case
+        raise
+    return _dispatch(args)
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scantobim",
         description=(
@@ -185,7 +235,10 @@ def main(argv: list[str] | None = None) -> int:
     p_photos.add_argument("--cpu", action="store_true", help="disable GPU feature extraction")
     p_photos.add_argument("-v", "--verbose", action="store_true", help="stream COLMAP output")
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def _dispatch(args) -> int:
     try:
         if args.command == "info":
             return _cmd_info(args)
@@ -205,6 +258,130 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+_WELCOME = f"""
+=====================================================================
+ ScanToBIM {__version__} - Punktwolken & Fotos -> 3D-Modelle mit sauberen Kanten
+=====================================================================
+
+Dies ist ein Kommandozeilen-Programm. Alle Funktionen erreichen Sie
+in der Eingabeaufforderung oder PowerShell, zum Beispiel:
+
+  scantobim.exe reconstruct scan.laz -o modell.html --texture
+  scantobim.exe analyze getriebe.e57 -o analyse.json
+  scantobim.exe --help
+
+Tipp: Im Explorer in den Ordner der EXE wechseln, oben in die
+Adresszeile "cmd" tippen und Enter druecken - schon sind Sie dort.
+
+Sie koennen aber auch direkt hier weitermachen (gefuehrter Modus):
+Punktwolke einfach mit der Maus in dieses Fenster ziehen (oder den
+Pfad eintippen) und Enter druecken. Alternativ Dateien im Explorer
+direkt auf die scantobim.exe ziehen.
+"""
+
+_FORMATS = [
+    ("HTML", ".html", "interaktiver 3D-Viewer - einfach im Browser oeffnen"),
+    ("STEP", ".stp", "CAD (HiCAD, Inventor, SolidWorks, ...)"),
+    ("IFC", ".ifc", "BIM (Revit, ArchiCAD, ...)"),
+    ("GLB", ".glb", "3D-Austauschformat (Blender, Windows 3D-Viewer)"),
+]
+
+_SCENES = [
+    ("Gebaeude aussen", "building"),
+    ("Innenraum", "indoor"),
+    ("Einzelobjekt / Bauteil", "object"),
+]
+
+
+def _clean_path(raw: str) -> Path:
+    """Normalize a path typed or dragged into the console (strips quotes)."""
+    return Path(raw.strip().strip('"').strip("'"))
+
+
+def _ask_choice(title: str, options: list[tuple], describe) -> int:
+    """Numbered menu; empty input selects the first entry. Returns the index."""
+    print(f"\n{title}")
+    for i, opt in enumerate(options):
+        default = "  (Standard)" if i == 0 else ""
+        print(f"  [{i + 1}] {describe(opt)}{default}")
+    while True:
+        try:
+            raw = input(f"Auswahl [1-{len(options)}, Enter = 1] > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return 0
+        if not raw:
+            return 0
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return int(raw) - 1
+        print(f"  bitte 1-{len(options)} eingeben")
+
+
+def _interactive(files: list[Path] | None = None) -> int:
+    """Guided mode for the double-clicked exe / files dragged onto it."""
+    print(_WELCOME)
+    files = list(files or [])
+    if files:
+        for f in files:
+            print(f"  Eingabe: {f}")
+    else:
+        while True:
+            prompt = "Datei> " if not files else "weitere Datei (Enter = fertig)> "
+            try:
+                raw = input(prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                return 0
+            if not raw:
+                if files:
+                    break
+                return 0
+            path = _clean_path(raw)
+            if not path.exists():
+                print(f"  Datei nicht gefunden: {path}")
+                continue
+            if path.suffix.lower() not in _CLOUD_EXTS:
+                print(f"  kein unterstuetztes Punktwolken-Format: {path.suffix}\n"
+                      f"  unterstuetzt: {' '.join(sorted(_CLOUD_EXTS))}")
+                continue
+            files.append(path)
+
+    fmt = _FORMATS[_ask_choice(
+        "Ausgabeformat:", _FORMATS, lambda o: f"{o[0]:5} - {o[2]}"
+    )]
+    preset = _SCENES[_ask_choice(
+        "Was wurde gescannt?", _SCENES, lambda o: o[0]
+    )][1]
+
+    out = files[0].with_name(files[0].stem + "_modell" + fmt[1])
+    report = files[0].with_name(files[0].stem + "_bericht.json")
+    cmd = ["reconstruct", *(str(f) for f in files),
+           "-o", str(out), "--preset", preset, "--report", str(report)]
+    if fmt[1] in (".html", ".glb"):
+        cmd.append("--texture")
+    if len(files) > 1:
+        registered = _ask_choice(
+            "Mehrere Scans - liegen sie schon im gleichen Koordinatensystem?",
+            [("Ja - direkt verschmelzen",), ("Nein - automatisch ausrichten (ICP)",)],
+            lambda o: o[0],
+        )
+        if registered == 1:
+            cmd.append("--register-inputs")
+
+    print()
+    try:
+        code = main(cmd)
+    except Exception:  # noqa: BLE001 — the window must stay readable
+        import traceback
+
+        traceback.print_exc()
+        return 1
+    if code == 0:
+        print(f"\nFertig! Modell:  {out}")
+        print(f"        Bericht: {report}")
+        if fmt[1] == ".html":
+            print("Die HTML-Datei einfach doppelklicken - sie oeffnet im Browser.")
+    return code
 
 
 def _cmd_info(args) -> int:
@@ -300,6 +477,9 @@ def _cmd_reconstruct(args) -> int:
         if ext in (".stp", ".step", ".ifc", ".ply", ".stl"):
             print(f"note: {ext} carries no texture — texturing skipped "
                   "(use .glb/.html/.obj)")
+        elif args.texture_photos is None and cloud.colors is None:
+            print("note: the input cloud carries no RGB colors — texturing "
+                  "skipped (capture with RGB or use --texture-photos)")
         else:
             transform = None
             if "alignment" in result.report:

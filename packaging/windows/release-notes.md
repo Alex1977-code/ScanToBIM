@@ -1,8 +1,14 @@
 ## ScanToBIM für Windows
 
-**Download:** `scantobim-windows-x64.zip` entpacken und `scantobim.exe` in der Eingabeaufforderung nutzen — keine Installation, kein Python nötig.
+**Download:** `scantobim-windows-x64.zip` entpacken — keine Installation, kein Python nötig.
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
+
+### Neu in 1.6.1
+
+- **Doppelklick startet jetzt einen geführten Modus** — das Konsolenfenster bleibt offen, Punktwolke einfach ins Fenster ziehen, Ausgabeformat wählen, fertig. (Vorher: Fenster schloss sich sofort mit einer Fehlermeldung.)
+- **Drag & Drop**: Punktwolken-Dateien im Explorer direkt auf `scantobim.exe` ziehen — Modell + Messbericht entstehen neben der Eingabedatei.
+- `--texture` bricht bei Punktwolken ohne Farbwerte nicht mehr ab, sondern schreibt das Modell untexturiert mit Hinweis.
 
 ### Funktionen
 

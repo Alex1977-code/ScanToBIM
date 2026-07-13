@@ -11,6 +11,16 @@ Windows SmartScreen kann beim ersten Start warnen, weil die Datei
 nicht code-signiert ist:
   "Weitere Informationen" -> "Trotzdem ausfuehren"
 
+Schnellstart ohne Kommandozeile
+-------------------------------
+* Doppelklick auf scantobim.exe startet einen gefuehrten Modus:
+  Punktwolke einfach mit der Maus ins Fenster ziehen, Enter,
+  Ausgabeformat waehlen - fertig. Das Fenster bleibt offen.
+* Noch schneller: eine oder mehrere Punktwolken-Dateien im Explorer
+  direkt AUF die scantobim.exe ziehen (Drag & Drop). Das Modell und
+  der Messbericht werden neben der Eingabedatei abgelegt
+  (scan_modell.html + scan_bericht.json).
+
 Benutzung (Eingabeaufforderung oder PowerShell)
 -----------------------------------------------
   scantobim.exe --help
