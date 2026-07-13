@@ -134,6 +134,35 @@ def test_cli_analyze(tmp_path, capsys):
     assert "shaft:" in capsys.readouterr().out
 
 
+def test_cli_analyze_gear_mesh(tmp_path, capsys):
+    """Gears in the analysis mesh carry true involute tooth geometry."""
+    from tests.synthetic import make_gear_scan
+
+    src = write_point_cloud(make_gear_scan(), tmp_path / "gear.ply")
+    mesh_path = tmp_path / "gear.glb"
+    code = main(
+        ["analyze", str(src), "-o", str(tmp_path / "g.json"),
+         "--mesh", str(mesh_path), "--no-steel"]
+    )
+    assert code == 0
+    # An involute gear body has far more geometry than the old stand-in tube.
+    assert mesh_path.stat().st_size > 20000
+    report = json.loads((tmp_path / "g.json").read_text())
+    assert report["gears"][0]["teeth"] == 24
+
+
+def test_cli_analyze_steel_mesh(tmp_path, capsys):
+    """Steel members are exported as extruded catalog profiles."""
+    from tests.synthetic import make_ipe_beam_scan
+
+    src = write_point_cloud(make_ipe_beam_scan(), tmp_path / "beam.ply")
+    mesh_path = tmp_path / "beam.glb"
+    code = main(["analyze", str(src), "-o", str(tmp_path / "s.json"), "--mesh", str(mesh_path)])
+    assert code == 0
+    assert mesh_path.stat().st_size > 0
+    assert "IPE 200" in capsys.readouterr().out
+
+
 def test_cli_reconstruct_with_texture(tmp_path, capsys):
     cloud = make_box_scan(density=700, noise=0.004)
     rng = np.random.default_rng(0)
@@ -204,11 +233,11 @@ def _feed_input(monkeypatch, answers):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
 
 
-def test_cli_drag_and_drop(tmp_path, capsys, monkeypatch):
-    """A bare file argument (file dragged onto the exe) runs the guided mode."""
+def test_cli_wizard_with_files(tmp_path, capsys, monkeypatch):
+    """`scantobim wizard scan.ply` runs the guided console reconstruction."""
     src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
     _feed_input(monkeypatch, ["", ""])  # format: HTML (default), scene: default
-    assert main([str(src)]) == 0
+    assert main(["wizard", str(src)]) == 0
     html = tmp_path / "scan_modell.html"
     assert html.stat().st_size > 5000
     report = json.loads((tmp_path / "scan_bericht.json").read_text())
@@ -216,39 +245,63 @@ def test_cli_drag_and_drop(tmp_path, capsys, monkeypatch):
     assert "Fertig!" in capsys.readouterr().out
 
 
-def test_cli_interactive_frozen_no_args(tmp_path, capsys, monkeypatch):
-    """Double-clicked exe: welcome screen, prompt for a file, pause at the end."""
-    import sys as _sys
-
+def test_cli_wizard_prompts_for_file(tmp_path, capsys, monkeypatch):
+    """Wizard without arguments: welcome screen, prompt for a file."""
     src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
-    monkeypatch.setattr(_sys, "frozen", True, raising=False)
     _feed_input(
         monkeypatch,
         [f'"{src}"',  # dragged into the window (Windows quotes paths)
          "",          # no more files
          "2",         # STEP output
-         "1",         # scene: building
-         ""],         # final "Enter zum Beenden" pause
+         "1"],        # scene: building
     )
-    assert main([]) == 0
+    assert main(["wizard"]) == 0
     stp = tmp_path / "scan_modell.stp"
     assert stp.read_text().startswith("ISO-10303-21;")
-    assert "gefuehrter Modus" in capsys.readouterr().out
+    assert "Konsolen-Modus" in capsys.readouterr().out
 
 
-def test_cli_interactive_rejects_bad_paths(tmp_path, capsys, monkeypatch):
+def test_cli_wizard_rejects_bad_paths(tmp_path, capsys, monkeypatch):
     """Nonexistent paths and unknown formats re-prompt instead of crashing."""
-    import sys as _sys
-
     src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
     bogus = tmp_path / "notes.docx"
     bogus.write_text("x")
-    monkeypatch.setattr(_sys, "frozen", True, raising=False)
     _feed_input(
         monkeypatch,
-        [str(tmp_path / "missing.ply"), str(bogus), str(src), "", "4", "", ""],
+        [str(tmp_path / "missing.ply"), str(bogus), str(src), "", "4", ""],
     )
-    assert main([]) == 0
+    assert main(["wizard"]) == 0
     assert (tmp_path / "scan_modell.glb").stat().st_size > 0
     out = capsys.readouterr().out
     assert "nicht gefunden" in out and "kein unterstuetztes" in out
+
+
+def test_cli_frozen_double_click_opens_gui(tmp_path, monkeypatch):
+    """No arguments + frozen exe → the GUI is launched."""
+    import sys as _sys
+
+    import scantobim.cli as cli
+
+    calls = {}
+
+    def fake_gui(files, port=8317, open_browser=True):
+        calls["files"] = files
+        return 0
+
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli, "_launch_gui", fake_gui)
+    assert main([]) == 0
+    assert calls["files"] == []
+
+
+def test_cli_file_args_open_gui_preloaded(tmp_path, monkeypatch):
+    """Dragging clouds onto the exe preloads them into the GUI."""
+    import scantobim.cli as cli
+
+    src = write_point_cloud(make_box_scan(density=200), tmp_path / "scan.ply")
+    calls = {}
+    monkeypatch.setattr(
+        cli, "_launch_gui", lambda files, **kw: calls.setdefault("files", files) and 0 or 0
+    )
+    assert main([str(src)]) == 0
+    assert calls["files"] == [src]

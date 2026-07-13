@@ -47,27 +47,36 @@ def _pause() -> None:
         pass
 
 
+def _launch_gui(files: list[Path], port: int = 8317, open_browser: bool = True) -> int:
+    """Start the local GUI; on failure keep the error readable in the exe."""
+    try:
+        from scantobim.gui import run_gui
+
+        return run_gui(port=port, initial_files=files, open_browser=open_browser)
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:  # noqa: BLE001 — window must stay readable
+        print(f"error: {exc}", file=sys.stderr)
+        if _is_frozen():
+            _pause()
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Double-clicked exe (no arguments): guided mode instead of a usage error
-    # that vanishes with the console window.
+    # Double-clicked exe (no arguments): open the graphical interface.
     if not argv:
         if _is_frozen():
-            code = _interactive()
-            _pause()
-            return code
+            return _launch_gui([])
 
     # Files dragged onto the exe (or `scantobim scan.laz` without a command):
-    # every argument is an existing point cloud file -> guided reconstruction.
+    # open the GUI with those clouds preloaded.
     elif all(
         Path(a).suffix.lower() in _CLOUD_EXTS and Path(a).exists() for a in argv
     ):
-        code = _interactive([Path(a) for a in argv])
-        if _is_frozen():
-            _pause()
-        return code
+        return _launch_gui([Path(a) for a in argv])
 
     parser = _build_parser()
     if not argv:
@@ -114,9 +123,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_rec.add_argument(
         "--preset", default="building",
-        choices=["building", "indoor", "object", "fast"],
-        help="parameter preset (default: building)",
+        choices=["building", "indoor", "object", "detail", "fast"],
+        help="parameter preset (default: building; 'detail' keeps small "
+        "structures and reconstructs columns/pipes as true cylinders)",
     )
+    p_rec.add_argument("--cylinders", action="store_true",
+                       help="also reconstruct cylindrical members (columns, "
+                       "pipes) from the residual (included in --preset detail)")
     p_rec.add_argument("--voxel", type=float, default=None,
                        help="voxel size for thinning in input units (default: auto, 0 = off)")
     p_rec.add_argument("--dist", type=float, default=None,
@@ -200,6 +213,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_br.add_argument("input", type=Path, nargs="+", help="point cloud(s) of the bridge")
     p_br.add_argument("-o", "--output", type=Path, default=None,
                       help="write the analysis report to this JSON file")
+    p_br.add_argument("--mesh", type=Path, default=None,
+                      help="write a solid 3D model of the bridge (deck, piers, "
+                      "arch, pylons, cables) to .glb/.html/.obj/.stl")
 
     p_sm = sub.add_parser(
         "sheetmetal",
@@ -222,6 +238,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sm.add_argument("--k-factor", type=float, default=0.44,
                       help="neutral axis k-factor for the bend allowance "
                       "(default: 0.44)")
+
+    p_gui = sub.add_parser(
+        "gui", help="start the graphical interface (local web app in the browser)"
+    )
+    p_gui.add_argument("files", type=Path, nargs="*",
+                       help="point cloud(s) to preload")
+    p_gui.add_argument("--port", type=int, default=8317,
+                       help="port on 127.0.0.1 (default: 8317)")
+    p_gui.add_argument("--no-browser", action="store_true",
+                       help="do not open the browser automatically")
+
+    p_wiz = sub.add_parser(
+        "wizard", help="guided console mode (no browser needed)"
+    )
+    p_wiz.add_argument("files", type=Path, nargs="*",
+                       help="point cloud(s) to reconstruct")
 
     p_photos = sub.add_parser(
         "photos", help="photos → dense point cloud via COLMAP (must be installed)"
@@ -252,6 +284,15 @@ def _dispatch(args) -> int:
             return _cmd_sheetmetal(args)
         if args.command == "bridge":
             return _cmd_bridge(args)
+        if args.command == "gui":
+            return _launch_gui(
+                list(args.files), port=args.port, open_browser=not args.no_browser
+            )
+        if args.command == "wizard":
+            code = _interactive(list(args.files) or None)
+            if _is_frozen():
+                _pause()
+            return code
         if args.command == "photos":
             return _cmd_photos(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
@@ -265,20 +306,16 @@ _WELCOME = f"""
  ScanToBIM {__version__} - Punktwolken & Fotos -> 3D-Modelle mit sauberen Kanten
 =====================================================================
 
-Dies ist ein Kommandozeilen-Programm. Alle Funktionen erreichen Sie
-in der Eingabeaufforderung oder PowerShell, zum Beispiel:
+Grafische Oberflaeche:  scantobim.exe gui   (oeffnet den Browser)
+Kommandozeile, z. B.:
 
   scantobim.exe reconstruct scan.laz -o modell.html --texture
   scantobim.exe analyze getriebe.e57 -o analyse.json
   scantobim.exe --help
 
-Tipp: Im Explorer in den Ordner der EXE wechseln, oben in die
-Adresszeile "cmd" tippen und Enter druecken - schon sind Sie dort.
-
-Sie koennen aber auch direkt hier weitermachen (gefuehrter Modus):
-Punktwolke einfach mit der Maus in dieses Fenster ziehen (oder den
-Pfad eintippen) und Enter druecken. Alternativ Dateien im Explorer
-direkt auf die scantobim.exe ziehen.
+Dies ist der gefuehrte Konsolen-Modus: Punktwolke einfach mit der
+Maus in dieses Fenster ziehen (oder den Pfad eintippen) und Enter
+druecken.
 """
 
 _FORMATS = [
@@ -449,6 +486,8 @@ def _cmd_reconstruct(args) -> int:
         cfg.watertight = True
     if args.ghost_tol is not None:
         cfg.ghost_offset_tol = args.ghost_tol
+    if args.cylinders:
+        cfg.cylinder_detection = True
     if args.align:
         cfg.align_axes = True
     if args.seed is not None:
@@ -463,6 +502,9 @@ def _cmd_reconstruct(args) -> int:
     print(f"  angles:    {rep['plane_angles']}")
     print(f"  corners:   {rep['exact_corners']}")
     print(f"  openings:  {openings}")
+    if rep.get("cylinders"):
+        dias = ", ".join(f"⌀{c['radius'] * 2:.3f}" for c in rep["cylinders"])
+        print(f"  cylinders: {len(rep['cylinders'])} [{dias}]")
     print(f"  classes:   {q['surface_count_by_class']}")
     if "volume" in q:
         print(f"  volume:    {q['volume']} (watertight, {q['orientation']} normals)")
@@ -619,22 +661,55 @@ def _cmd_analyze(args) -> int:
         print(f"wrote {args.output}")
 
     if args.mesh is not None:
+        from scantobim.core.geometry3d import (
+            cone_mesh,
+            involute_gear_mesh,
+            steel_member_mesh,
+        )
         from scantobim.core.mesh import merge_meshes
 
         parts = []
+        names: dict[int, str] = {}
         for i, c in enumerate(objects["cylinders"]):
             parts.append(
                 cylinder_mesh(c.center, c.axis, c.radius, c.length, group=i)
             )
+            names[i] = f"zylinder_{i}_d{c.radius * 2000:.0f}mm"
         for j, g in enumerate(objects["gears"]):
+            # A coaxial smaller cylinder (the shaft) becomes the gear's bore.
+            bore = 0.0
+            r_pitch = g.pitch_diameter / 2
+            for c in objects["cylinders"]:
+                if abs(float(c.axis @ g.axis)) < 0.98 or c.radius > 0.7 * r_pitch:
+                    continue
+                rel = g.center - c.center
+                if np.linalg.norm(rel - (rel @ c.axis) * c.axis) < 0.2 * r_pitch:
+                    bore = max(bore, c.radius)
             parts.append(
-                cylinder_mesh(
-                    g.center, g.axis, g.tip_diameter / 2, g.width,
-                    color=(230, 180, 120), group=1000 + j,
+                involute_gear_mesh(
+                    g.center, g.axis, g.teeth, g.module, g.width,
+                    bore_radius=bore, group=1000 + j,
                 )
             )
+            names[1000 + j] = f"zahnrad_z{g.teeth}_m{g.module * 1000:.2f}"
+        for k, cn in enumerate(objects.get("cones", [])):
+            half = np.deg2rad(cn.half_angle_deg)
+            offset = cn.r_min / max(np.tan(half), 1e-9)
+            parts.append(
+                cone_mesh(
+                    cn.apex, cn.axis, cn.r_min, cn.r_max, cn.height,
+                    offset=offset, group=3000 + k,
+                )
+            )
+            names[3000 + k] = f"kegel_{cn.half_angle_deg:.0f}deg"
+        if not args.no_steel:
+            for k, member in enumerate(members):
+                parts.append(steel_member_mesh(member, group=2000 + k))
+                names[2000 + k] = member.profile.replace(" ", "_")
         if parts:
-            write_mesh(merge_meshes(parts), args.mesh)
+            model = merge_meshes(parts)
+            model.group_names = names
+            write_mesh(model, args.mesh)
             print(f"wrote {args.mesh}")
         else:
             print("no primitives detected — skipping mesh output")
@@ -724,6 +799,14 @@ def _cmd_bridge(args) -> int:
     cloud = _read_inputs(args.input, register=False)
     print("analyzing bridge structure …")
     report = analyze_bridge(cloud)
+
+    if args.mesh is not None:
+        from scantobim.core.bridge import bridge_model_mesh
+
+        model = bridge_model_mesh(report)
+        write_mesh(model, args.mesh)
+        print(f"wrote {args.mesh} ({len(model.faces)} triangles, "
+              f"{len(model.group_names or {})} Bauteile)")
     report.pop("_objects", None)
 
     deck = report["deck"]

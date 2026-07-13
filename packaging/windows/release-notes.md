@@ -4,11 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
-### Neu in 1.6.1
+### Neu in 1.7.0
 
-- **Doppelklick startet jetzt einen geführten Modus** — das Konsolenfenster bleibt offen, Punktwolke einfach ins Fenster ziehen, Ausgabeformat wählen, fertig. (Vorher: Fenster schloss sich sofort mit einer Fehlermeldung.)
-- **Drag & Drop**: Punktwolken-Dateien im Explorer direkt auf `scantobim.exe` ziehen — Modell + Messbericht entstehen neben der Eingabedatei.
-- `--texture` bricht bei Punktwolken ohne Farbwerte nicht mehr ab, sondern schreibt das Modell untexturiert mit Hinweis.
+- **Professionelle grafische Oberfläche**: Doppelklick auf `scantobim.exe` öffnet die GUI im Browser (lokal, ohne Internet) — Drag & Drop, Modus-Auswahl, Live-Protokoll, integrierter 3D-Viewer, Messbericht, alle Exporte als Download. Auf die EXE gezogene Dateien sind beim Start bereits geladen. Konsolen-Fans: `scantobim.exe wizard`.
+- **Zahnräder mit korrekter Zahngeometrie**: `analyze --mesh` schreibt Stirnräder als echte Evolventenverzahnung (DIN 867, Eingriffswinkel 20°), inkl. Bohrung aus der koaxialen Welle.
+- **Stahltragwerke als korrektes 3D-Modell**: erkannte Profile werden als extrudierte Katalog-Querschnitte (I/U/L/Hohlprofil mit Steg-/Flanschdicken nach DIN 1025/1026) in der erkannten Einbaulage ausgegeben.
+- **Brücken als korrektes 3D-Modell** (`bridge --mesh`): Überbau, Pfeiler, Widerlager, Bogen-Tonnengewölbe, Pylone und Seile als Volumenkörper mit benannten Bauteilgruppen.
+- **Detailgetreue Rekonstruktion** (`--preset detail`): behält kleine Strukturen und rekonstruiert Stützen/Rohre als echte Zylinder (`--cylinders` für jedes Preset).
 
 ### Funktionen
 

@@ -137,3 +137,28 @@ def test_rejects_pure_noise():
     cloud = PointCloud(points=rng.normal(0, 3.0, (3000, 3)))
     with pytest.raises(ValueError):
         reconstruct(cloud, PipelineConfig())
+
+
+def test_detail_preset_reconstructs_column():
+    """Preset 'detail': a round column becomes a true cylinder in the model."""
+    from tests.synthetic import make_hall_with_column_scan
+
+    cloud = make_hall_with_column_scan()
+    result = reconstruct(cloud, PipelineConfig.preset("detail"))
+    rep = result.report
+    assert rep["planes"] >= 6
+    assert len(rep.get("cylinders", [])) == 1
+    cyl = rep["cylinders"][0]
+    assert abs(cyl["radius"] - 0.25) < 0.01
+    assert abs(cyl["length"] - 3.0) < 0.2
+    assert abs(abs(cyl["axis"][2]) - 1.0) < 0.02  # vertical
+    # The column's points must no longer sit in the residual.
+    assert any(n.startswith("zylinder") for n in result.mesh.group_names.values())
+
+
+def test_cylinder_detection_off_by_default():
+    from tests.synthetic import make_hall_with_column_scan
+
+    cloud = make_hall_with_column_scan(density=700)
+    result = reconstruct(cloud, PipelineConfig.preset("building"))
+    assert "cylinders" not in result.report

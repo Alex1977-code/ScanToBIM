@@ -15,6 +15,17 @@ Dreiecksnetze klassischer Flächenrekonstruktion.
 
 > English summary at the bottom of this document.
 
+## Grafische Oberfläche
+
+`scantobim gui` (oder ein Doppelklick auf die Windows-EXE) startet eine
+**professionelle grafische Oberfläche** im Browser — lokal, ohne Internet,
+ohne Installation: Punktwolke per Drag & Drop hineinziehen, Modus wählen
+(Gebäude / Maschinenbau & Stahl / Blech / Brücke), Optionen setzen,
+**Modell erstellen**. Ergebnis: interaktiver 3D-Viewer, Messbericht,
+Live-Protokoll und alle Exporte (STEP, IFC, GLB, OBJ, DXF) als Download.
+Dateien, die im Explorer auf die EXE gezogen werden, sind beim Start
+bereits geladen. Wer die Konsole bevorzugt: `scantobim wizard`.
+
 ## Warum saubere Kanten?
 
 Klassische Rekonstruktion (Poisson, Ball-Pivoting, Marching Cubes) mittelt
@@ -71,6 +82,8 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 | 📸 **Foto-Projektion** (`--texture-photos`) | Noch schärfer: Die Originalfotos werden über die COLMAP-Kameraposen direkt auf das Modell projiziert – pro Texel wählt ScanToBIM das am besten blickende, **nicht verdeckte** Foto (Verdeckung wird gegen das Modell selbst per Ray-Test geprüft). Volle Fotoauflösung auf dem Modell. |
 | ⚙️ **STEP-Export** (`-o model.stp`) | Echtes CAD-B-Rep (AP214): analytische Ebenen, exakte Kantenzüge, Öffnungen als Innenkonturen; wasserdichte Modelle als Volumenkörper (`MANIFOLD_SOLID_BREP`). Importierbar in SolidWorks, Inventor, Fusion, FreeCAD, AutoCAD und **HiCAD**. |
 | 🏗️ **IFC-Export** (`-o model.ifc`) | IFC4-Bauwerksmodell: Wände als `IfcWall`, Böden als `IfcSlab`, Decken als `IfcCovering` – inkl. Projekt/Gebäude/Geschoss-Struktur und Fenster-Öffnungen. Öffnet in Revit, ArchiCAD, Solibri, BlenderBIM. |
+| 🖥️ **Grafische Oberfläche** (`scantobim gui`) | Lokale Web-App: Drag & Drop, Modus-Karten, Live-Protokoll, integrierter 3D-Viewer, Messbericht, Export-Downloads – ganz ohne Kommandozeile. |
+| 🔍 **Detailgetreu** (`--preset detail`) | Behält kleine Strukturen (mehr Ebenen, feinere Vereinfachung) und rekonstruiert **Stützen und Rohre als echte Zylinder** aus dem Residuum (`--cylinders` für jedes Preset). |
 
 ![Viewer](docs/images/viewer.png)
 
@@ -146,12 +159,19 @@ direkt aus der Punktwolke – Reverse Engineering für Bestandsanlagen:
 | **Kegel** | Trichter, Reduzierstücke, Schurren: Spitze, Achse, halber Öffnungswinkel, Durchmesser klein/groß, Höhe (Tangentialebenen-RANSAC mit Kleinkreis-Fit auf der Einheitskugel). |
 | **Stahlprofile** | Längliche Bauteil-Cluster werden vermessen (Achse, h × b, Länge, Querschnitts-Belegung) und gegen die Kataloge **IPE / HEA / HEB / UPN / SHS / RHS / L** (DIN 1025/1026, EN 10219/10056) gematcht – inkl. Abweichung vom Katalogmaß. |
 
-```bash
-# Getriebe / Anlage analysieren: JSON-Bericht + Primitiv-Mesh
-scantobim analyze getriebe.e57 -o analyse.json --mesh primitive.glb
+`--mesh` schreibt das Ergebnis als **korrektes 3D-Modell**: Zahnräder mit
+**echter Evolventenverzahnung** (DIN 867: Eingriffswinkel 20°, Kopfhöhe m,
+Fußhöhe 1,25 m, Bohrung aus der koaxialen Welle), Stahlbauteile als
+**extrudierte Katalog-Querschnitte** (I/U/L/Hohlprofil mit Steg- und
+Flanschdicken nach DIN 1025/1026, in der erkannten Einbaulage), Wellen,
+Kegel und Zylinder als geschlossene Volumenkörper.
 
-# Stahltragwerk: Profile identifizieren
-scantobim analyze halle.laz -o traeger.json
+```bash
+# Getriebe / Anlage analysieren: JSON-Bericht + korrektes 3D-Modell
+scantobim analyze getriebe.e57 -o analyse.json --mesh modell.glb
+
+# Stahltragwerk: Profile identifizieren, Modell als HTML-Viewer
+scantobim analyze halle.laz -o traeger.json --mesh tragwerk.html
 ```
 
 Hinweis Genauigkeit: freistehende Räder werden am genauesten vermessen; im
@@ -172,8 +192,14 @@ Haupttypen – und liefert die Kenngrößen der Bauwerksprüfung:
 | **Pylone & Seile** | Pylone über kontinuierliche Vertikalbelegung (robust gegen kreuzende Seilfächer), Seile über Linien-RANSAC: Länge, Durchmesser, Neigung – Hänger (steil) vs. Schrägseile (flach). |
 | **Typ-Klassifikation** | Balken-/Platten-, Bogen-, Schrägseil-, Hängebrücke aus den gefundenen Komponenten. |
 
+`--mesh` baut aus den Messwerten ein **korrektes 3D-Modell** des Bauwerks:
+Überbau-Platte, Pfeiler und Widerlager als Volumenkörper, der Bogen als
+gekrümmtes Tonnengewölbe (Kreissektor über die gemessene Winkelspanne),
+Pylone und Seile – jedes Bauteil als benannte Gruppe (`pfeiler_1`,
+`bogen`, `seil_3` …).
+
 ```bash
-scantobim bridge bruecke.laz -o bauwerk.json
+scantobim bridge bruecke.laz -o bauwerk.json --mesh bruecke.html
 ```
 
 ## Anschlussdetails (Stahlbau)
@@ -282,6 +308,13 @@ scantobim info scan.laz
 
 # Rekonstruktion: Gebäude von außen
 scantobim reconstruct scan.laz -o model.glb --preset building --report report.json
+
+# Grafische Oberfläche (Browser) bzw. geführter Konsolen-Modus
+scantobim gui
+scantobim wizard scan.laz
+
+# Detailgetreu: kleine Strukturen + Stützen/Rohre als echte Zylinder
+scantobim reconstruct halle.laz -o modell.html --preset detail
 
 # Innenraum-Scan (Normalen zeigen nach innen)
 scantobim reconstruct raum.e57 -o raum.obj --preset indoor

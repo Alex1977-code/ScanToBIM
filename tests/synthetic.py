@@ -540,3 +540,31 @@ def add_outliers(cloud: PointCloud, fraction: float = 0.01, seed: int = 9) -> Po
     n = int(len(cloud) * fraction)
     junk = rng.uniform(lo - 0.2 * span, hi + 0.2 * span, size=(n, 3))
     return PointCloud(points=np.vstack([cloud.points, junk]), source=cloud.source)
+
+
+def make_hall_with_column_scan(
+    size=(6.0, 5.0, 3.0),
+    column_radius: float = 0.25,
+    column_center=(2.0, 2.0),
+    density: float = 900.0,
+    noise: float = 0.004,
+    seed: int = 33,
+) -> PointCloud:
+    """A box hall with one round column from floor to ceiling."""
+    rng = np.random.default_rng(seed)
+    box = make_box_scan(size=size, density=density, noise=noise, seed=seed)
+    # Column lateral surface.
+    n = int(density * 2 * np.pi * column_radius * size[2])
+    theta = rng.uniform(0, 2 * np.pi, n)
+    zc = rng.uniform(0, size[2], n)
+    r = column_radius + rng.normal(0, noise, n)
+    pts = np.column_stack(
+        [
+            column_center[0] + r * np.cos(theta),
+            column_center[1] + r * np.sin(theta),
+            zc,
+        ]
+    )
+    return PointCloud(
+        points=np.vstack([box.points, pts]), source="synthetic hall with column"
+    )

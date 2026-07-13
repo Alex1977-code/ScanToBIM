@@ -68,6 +68,10 @@ class PipelineConfig:
     ransac_iterations: int = 600
     seed: int = 7
 
+    # --- detail geometry: cylinders (columns, pipes) in the residual ---
+    cylinder_detection: bool = False
+    max_cylinders: int = 16
+
     # --- regularization ---
     regularize: bool = True
     parallel_tol_deg: float = 8.0
@@ -116,7 +120,24 @@ class PipelineConfig:
             )
         if name == "fast":
             return cls(ransac_iterations=250, max_planes=32, sor_neighbors=8)
-        raise ValueError(f"Unknown preset {name!r} (use building/indoor/object/fast)")
+        if name == "detail":
+            # Detail-faithful: keep small regions, more planes, finer
+            # simplification, and reconstruct cylindrical members (columns,
+            # pipes) in the residual as true cylinders.
+            return cls(
+                orient="outward",
+                min_inlier_ratio=0.004,
+                min_inliers_abs=40,
+                max_planes=128,
+                ransac_iterations=1200,
+                alpha_factor=3.5,
+                simplify_factor=1.5,
+                min_opening_factor=6.0,
+                cylinder_detection=True,
+            )
+        raise ValueError(
+            f"Unknown preset {name!r} (use building/indoor/object/detail/fast)"
+        )
 
 
 @dataclass
@@ -272,6 +293,13 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
     if not cfg.color_surfaces:
         mesh.vertex_colors = None
 
+    # ---- 6b. detail geometry: cylinders in the residual ---------------------
+    cylinders = []
+    if cfg.cylinder_detection:
+        cylinders, unassigned = _detect_residual_cylinders(
+            work, unassigned, dist_thresh, cfg
+        )
+
     residual = work.select(unassigned)
 
     # ---- 7. world alignment (optional) --------------------------------------
@@ -288,6 +316,9 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
             geo.outer = geo.outer @ rot.T + trans
             geo.holes = [h @ rot.T + trans for h in geo.holes]
             geo.normal = rot @ geo.normal
+        for c in cylinders:
+            c.center = rot @ c.center + trans
+            c.axis = rot @ c.axis
         report["alignment"] = [[round(float(v), 8) for v in row] for row in final_t]
 
     # ---- 8. semantics: classification + quantity takeoff --------------------
@@ -336,6 +367,34 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
         [mean_z[g] for g in surface_ids if class_of[g] in ("floor", "slab", "ceiling")]
     )
 
+    # ---- 8b. add detail cylinders as true solids ----------------------------
+    if cylinders:
+        from scantobim.core.machinery import cylinder_mesh
+
+        cyl_parts = []
+        names = dict(mesh.group_names or {})
+        for k, c in enumerate(cylinders):
+            gid = 10000 + k
+            cyl_parts.append(
+                cylinder_mesh(
+                    c.center, c.axis, c.radius, c.length,
+                    color=(186, 178, 168), group=gid,
+                )
+            )
+            names[gid] = f"zylinder_{k:03d}"
+        mesh = merge_meshes([mesh] + cyl_parts)
+        mesh.group_names = names
+        report["cylinders"] = [
+            {
+                "radius": round(c.radius, 4),
+                "length": round(c.length, 3),
+                "axis": [round(float(x), 4) for x in c.axis],
+                "center": [round(float(x), 4) for x in c.center],
+                "rms": round(c.rms, 5),
+            }
+            for c in cylinders
+        ]
+
     report["mesh"] = {
         "vertices": len(mesh.vertices),
         "triangles": len(mesh.faces),
@@ -347,6 +406,31 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
     return ReconstructionResult(
         mesh=mesh, residual=residual, surfaces=geometries, report=report
     )
+
+
+def _detect_residual_cylinders(work, unassigned, dist_thresh, cfg):
+    """Cylinders (columns, pipes, ducts) among the plane-residual points."""
+    from scantobim.core.machinery import detect_cylinders
+
+    idx = np.flatnonzero(unassigned)
+    if len(idx) < 200:
+        return [], unassigned
+    pts = work.points[idx]
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    cyls, sub_unassigned = detect_cylinders(
+        pts,
+        work.normals[idx],
+        distance_threshold=dist_thresh,
+        min_inliers=max(150, int(cfg.min_inlier_ratio * len(work.points))),
+        max_cylinders=cfg.max_cylinders,
+        max_radius=0.5 * float(np.max(hi - lo)),
+        seed=cfg.seed,
+    )
+    for c in cyls:
+        c.inliers = idx[c.inliers]  # back into work-cloud indexing
+    new_unassigned = np.zeros(len(work.points), dtype=bool)
+    new_unassigned[idx[sub_unassigned]] = True
+    return cyls, new_unassigned
 
 
 def _reconstruct_watertight(work, planes, spacing, cfg, report, t0):

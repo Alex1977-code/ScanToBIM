@@ -104,9 +104,11 @@ def analyze_bridge(cloud: PointCloud, seed: int = 7) -> dict:
         np.abs(station) < 0.55 * deck.length
     )
 
-    piers, abutments = _find_substructure(work, below_mask, deck, spacing)
-    arch = _find_arch(work, below_mask, deck, spacing, seed)
-    pylons, cables = _find_cables_and_pylons(work, above_mask, deck, spacing, seed)
+    piers, abutment_objs = _find_substructure(work, below_mask, deck, spacing)
+    abutments = len(abutment_objs)
+    arch, arch_geom = _find_arch(work, below_mask, deck, spacing, seed)
+    pylon_objs, cables = _find_cables_and_pylons(work, above_mask, deck, spacing, seed)
+    pylons = len(pylon_objs)
 
     spans = _span_layout(deck, piers)
     bridge_type = _classify(deck, piers, arch, pylons, cables)
@@ -144,7 +146,15 @@ def analyze_bridge(cloud: PointCloud, seed: int = 7) -> dict:
             }
             for c in cables
         ],
-        "_objects": {"deck": deck, "piers": piers, "cables": cables},
+        "_objects": {
+            "deck": deck,
+            "piers": piers,
+            "cables": cables,
+            "abutments": abutment_objs,
+            "pylons": pylon_objs,
+            "arch": arch_geom,
+            "deck_thickness": deck_thickness_guess(deck, spacing),
+        },
     }
     return report
 
@@ -202,7 +212,7 @@ def _find_deck(work, spacing: float, seed: int) -> BridgeDeck | None:
 
 def _find_substructure(work, below_mask, deck: BridgeDeck, spacing: float):
     piers: list[Pier] = []
-    abutments = 0
+    abutments: list[dict] = []
     idx = np.flatnonzero(below_mask)
     if len(idx) < 200:
         return piers, abutments
@@ -223,7 +233,15 @@ def _find_substructure(work, below_mask, deck: BridgeDeck, spacing: float):
         station = float((centroid - deck.center) @ deck.axis)
         at_end = abs(station) > 0.4 * deck.length
         if at_end and footprint > 0.5 * deck.width:
-            abutments += 1
+            abutments.append(
+                {
+                    "station": station,
+                    "center_xy": centroid[:2],
+                    "footprint": footprint,
+                    "z_min": float(cpts[:, 2].min()),
+                    "z_max": float(cpts[:, 2].max()),
+                }
+            )
             continue
         if footprint > 1.2 * deck.width:
             continue  # terrain / embankment, not a pier
@@ -244,7 +262,7 @@ def _find_substructure(work, below_mask, deck: BridgeDeck, spacing: float):
 def _find_arch(work, below_mask, deck: BridgeDeck, spacing: float, seed: int):
     idx = np.flatnonzero(below_mask)
     if len(idx) < 500:
-        return None
+        return None, None
     cylinders, _ = detect_cylinders(
         work.points[idx],
         work.normals[idx],
@@ -266,12 +284,28 @@ def _find_arch(work, below_mask, deck: BridgeDeck, spacing: float, seed: int):
             - np.quantile((pts - deck.center) @ deck.axis, 0.01)
         )
         rise = float(pts[:, 2].max() - pts[:, 2].min())
+        # Geometry for the 3D model: angular extent of the barrel about its
+        # axis (0 = crown / straight up) and its width across the bridge.
+        e2 = np.array([0.0, 0.0, 1.0]) - float(c.axis[2]) * c.axis
+        e2 /= max(np.linalg.norm(e2), 1e-12)
+        e1 = np.cross(e2, c.axis)
+        rel = pts - c.center
+        theta = np.arctan2(rel @ e1, rel @ e2)
+        t_axial = rel @ c.axis
+        geometry = {
+            "center": c.center,
+            "axis": c.axis,
+            "radius": c.radius,
+            "theta_min": float(np.quantile(theta, 0.01)),
+            "theta_max": float(np.quantile(theta, 0.99)),
+            "width": float(np.quantile(t_axial, 0.99) - np.quantile(t_axial, 0.01)),
+        }
         return {
             "radius": round(c.radius, 3),
             "span": round(span, 3),
             "rise": round(rise, 3),
-        }
-    return None
+        }, geometry
+    return None, None
 
 
 def _find_cables_and_pylons(work, above_mask, deck: BridgeDeck, spacing: float, seed: int):
@@ -280,11 +314,11 @@ def _find_cables_and_pylons(work, above_mask, deck: BridgeDeck, spacing: float, 
     Cables attach to the pylon, so connectivity clustering would merge them
     into one blob — the two detectors below are immune to that.
     """
-    pylons = 0
+    pylon_objs: list[dict] = []
     cables: list[Cable] = []
     idx = np.flatnonzero(above_mask)
     if len(idx) < 200:
-        return pylons, cables
+        return pylon_objs, cables
     pts = work.points[idx]
 
     # ---- pylons: xy cells with a large vertical extent -----------------
@@ -313,7 +347,18 @@ def _find_cables_and_pylons(work, above_mask, deck: BridgeDeck, spacing: float, 
                 continuous[ci] = True
         groups = _cell_groups(uniq[continuous])
         big_groups = [g for g in groups if len(g) >= 4]
-        pylons = len(big_groups)
+        cell_index = {tuple(c): i for i, c in enumerate(uniq)}
+        for g in big_groups:
+            gc = np.array(g, dtype=np.float64)
+            gi = [cell_index[c] for c in g]
+            pylon_objs.append(
+                {
+                    "center": ((gc.min(axis=0) + gc.max(axis=0) + 1.0) / 2.0 * cell),
+                    "size": np.maximum((gc.max(axis=0) - gc.min(axis=0) + 1.0) * cell, 0.3),
+                    "z_min": float(np.min(z_min[gi])),
+                    "z_max": float(np.max(z_max[gi])),
+                }
+            )
         pylon_cells = {c for g in big_groups for c in g}
         cell_is_pylon = np.array(
             [tuple(c) in pylon_cells for c in uniq], dtype=bool
@@ -385,7 +430,7 @@ def _find_cables_and_pylons(work, above_mask, deck: BridgeDeck, spacing: float, 
             if not duplicate:
                 cables.append(candidate)
         remaining = remaining[~best_mask]
-    return pylons, cables
+    return pylon_objs, cables
 
 
 def _cell_groups(cells: np.ndarray) -> list[list[tuple]]:
@@ -427,3 +472,109 @@ def _classify(deck, piers, arch, pylons, cables) -> str:
     if piers:
         return "Balkenbruecke"
     return "Platten-/Balkenbruecke (Einfeld)"
+
+
+# ---------------------------------------------------------------- 3D model
+
+def bridge_model_mesh(report: dict) -> "Mesh":
+    """Build a solid 3D model of the bridge from the analysis result.
+
+    Every detected element becomes a true volume: deck slab, piers,
+    abutments, arch barrel (swept annular sector), pylons and cables —
+    with named groups so CAD/viewers can address single members.
+    """
+    from scantobim.core.geometry3d import box_mesh, extrude_polygon
+    from scantobim.core.machinery import cylinder_mesh
+    from scantobim.core.mesh import merge_meshes
+
+    objects = report["_objects"]
+    deck: BridgeDeck = objects["deck"]
+    piers: list[Pier] = objects["piers"]
+    cables: list[Cable] = objects["cables"]
+    thickness = objects["deck_thickness"]
+
+    parts = []
+    names: dict[int, str] = {}
+
+    # Deck slab: top face at the measured elevation.
+    deck_center = np.array(
+        [deck.center[0], deck.center[1], deck.elevation - thickness / 2.0]
+    )
+    parts.append(
+        box_mesh(
+            deck_center, deck.axis, (deck.length, deck.width, thickness),
+            color=(205, 205, 210), group=0,
+        )
+    )
+    names[0] = "ueberbau"
+
+    for i, p in enumerate(piers):
+        side = max(p.footprint / np.sqrt(2.0), 0.3)
+        center = np.array([p.position[0], p.position[1], p.bearing[2] - p.height / 2.0])
+        parts.append(
+            box_mesh(
+                center, deck.axis, (side, side, p.height),
+                color=(168, 166, 160), group=10 + i,
+            )
+        )
+        names[10 + i] = f"pfeiler_{i + 1}"
+
+    for i, a in enumerate(objects.get("abutments", [])):
+        depth = max(a["footprint"] / np.sqrt(2.0), 0.5)
+        height = max(a["z_max"] - a["z_min"], thickness)
+        center = np.array([a["center_xy"][0], a["center_xy"][1], a["z_min"] + height / 2.0])
+        parts.append(
+            box_mesh(
+                center, deck.axis, (depth, max(deck.width, a["footprint"] / 2), height),
+                color=(168, 166, 160), group=40 + i,
+            )
+        )
+        names[40 + i] = f"widerlager_{i + 1}"
+
+    arch = objects.get("arch")
+    if arch is not None:
+        r, t = arch["radius"], max(0.04 * arch["radius"], thickness / 2)
+        e2 = np.array([0.0, 0.0, 1.0]) - float(arch["axis"][2]) * arch["axis"]
+        e2 /= max(np.linalg.norm(e2), 1e-12)
+        e1 = np.cross(e2, arch["axis"])
+        theta = np.linspace(arch["theta_min"], arch["theta_max"], 40)
+        # Annular sector in the (e1, e2) plane; theta measured from vertical.
+        outer_arc = np.column_stack([(r + t / 2) * np.sin(theta), (r + t / 2) * np.cos(theta)])
+        inner_arc = np.column_stack([(r - t / 2) * np.sin(theta), (r - t / 2) * np.cos(theta)])
+        ring = np.vstack([outer_arc, inner_arc[::-1]])
+        parts.append(
+            extrude_polygon(
+                ring, arch["center"], e1, e2, arch["axis"], arch["width"],
+                color=(176, 170, 158), group=60,
+            )
+        )
+        names[60] = "bogen"
+
+    for i, py in enumerate(objects.get("pylons", [])):
+        height = py["z_max"] - py["z_min"]
+        center = np.array([py["center"][0], py["center"][1], py["z_min"] + height / 2.0])
+        parts.append(
+            box_mesh(
+                center, deck.axis, (py["size"][0], py["size"][1], height),
+                color=(150, 155, 165), group=70 + i,
+            )
+        )
+        names[70 + i] = f"pylon_{i + 1}"
+
+    for i, c in enumerate(cables):
+        direction = c.end - c.start
+        length = float(np.linalg.norm(direction))
+        if length < 1e-9:
+            continue
+        parts.append(
+            cylinder_mesh(
+                (c.start + c.end) / 2.0, direction / length,
+                max(c.diameter / 2.0, 0.02), length,
+                color=(90, 95, 105), segments=16, group=100 + i,
+            )
+        )
+        names[100 + i] = f"seil_{i + 1}"
+
+    model = merge_meshes(parts)
+    model.group_names = names
+    return model

@@ -58,6 +58,50 @@ def test_cable_stayed_bridge():
         assert 0.02 < c["diameter"] < 0.12
 
 
+def test_bridge_model_mesh_beam():
+    """Beam bridge → solid model: deck slab + 2 piers + 2 abutments."""
+    from scantobim.core.bridge import bridge_model_mesh
+    from scantobim.core.semantics import signed_volume
+
+    report = analyze_bridge(make_beam_bridge_scan())
+    model = bridge_model_mesh(report)
+    names = set(model.group_names.values())
+    assert "ueberbau" in names
+    assert {"pfeiler_1", "pfeiler_2"} <= names
+    assert sum(1 for n in names if n.startswith("widerlager")) == 2
+    lo, hi = model.vertices.min(axis=0), model.vertices.max(axis=0)
+    assert abs(hi[2] - 8.0) < 0.3  # top of deck at the measured elevation
+    assert hi[2] - lo[2] > 6.0  # piers reach the ground
+    assert signed_volume(model) > 0
+
+
+def test_bridge_model_mesh_arch():
+    from scantobim.core.bridge import bridge_model_mesh
+
+    report = analyze_bridge(make_arch_bridge_scan())
+    model = bridge_model_mesh(report)
+    assert "bogen" in set(model.group_names.values())
+    # The barrel must span most of the deck width across the bridge.
+    arch_faces = model.face_groups == 60
+    arch_verts = model.vertices[np.unique(model.faces[arch_faces])]
+    ext = arch_verts.max(axis=0) - arch_verts.min(axis=0)
+    assert max(ext[0], ext[1]) > 0.5 * report["deck"]["width"]
+
+
+def test_bridge_model_mesh_cable_stayed():
+    from scantobim.core.bridge import bridge_model_mesh
+
+    report = analyze_bridge(make_cable_stayed_bridge_scan())
+    model = bridge_model_mesh(report)
+    names = model.group_names.values()
+    assert sum(1 for n in names if n.startswith("seil")) == 8
+    assert sum(1 for n in names if n.startswith("pylon")) == 1
+    # Pylon rises above the deck.
+    pylon_group = [g for g, n in model.group_names.items() if n == "pylon_1"][0]
+    pv = model.vertices[np.unique(model.faces[model.face_groups == pylon_group])]
+    assert pv[:, 2].max() > report["deck"]["elevation"] + 3.0
+
+
 def test_no_deck_raises():
     from scantobim.core.cloud import PointCloud
 

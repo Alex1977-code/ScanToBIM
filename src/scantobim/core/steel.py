@@ -84,6 +84,9 @@ class SteelMember:
     centroid: np.ndarray
     axis: np.ndarray
     deviation: float  # max relative deviation from catalog h/b
+    section_u: np.ndarray | None = None  # 3D width axis of the cross section
+    section_v: np.ndarray | None = None  # 3D height axis of the cross section
+    section_center: np.ndarray | None = None  # bbox center of the section
 
 
 def match_profile(
@@ -139,6 +142,24 @@ def measure_member(points: np.ndarray) -> SteelMember | None:
 
     family = _classify_family(q, height, width)
     profile, deviation = match_profile(height, width, family)
+
+    # Recover the 3D frame of the aligned section: solve cross ≈ q·[u; v] + c.
+    # All 2D steps were rotations/swaps, so the fit is exact up to noise.
+    design = np.column_stack([q, np.ones(len(q))])
+    basis, *_ = np.linalg.lstsq(design, cross, rcond=None)
+    u3 = basis[0] / max(np.linalg.norm(basis[0]), 1e-12)
+    v3 = basis[1] / max(np.linalg.norm(basis[1]), 1e-12)
+    section_center = centroid + basis[2]
+    # Canonical orientation for asymmetric sections (mirror-equivalent under
+    # proper rotation, so only sign flips are needed): U web on -u,
+    # L legs on -u/-v — the material-heavy side.
+    if family in ("U", "L") and (q[:, 0] > 0).sum() > (q[:, 0] <= 0).sum():
+        u3 = -u3
+    if family == "L" and (q[:, 1] > 0).sum() > (q[:, 1] <= 0).sum():
+        v3 = -v3
+    if float(np.linalg.det(np.column_stack([u3, v3, axis]))) < 0:
+        axis = -axis  # keep the frame right-handed; axis sign is free
+
     return SteelMember(
         profile=profile,
         family=family,
@@ -148,6 +169,9 @@ def measure_member(points: np.ndarray) -> SteelMember | None:
         centroid=centroid,
         axis=axis,
         deviation=deviation,
+        section_u=u3,
+        section_v=v3,
+        section_center=section_center,
     )
 
 
