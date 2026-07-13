@@ -180,3 +180,32 @@ def test_unknown_format(tmp_path, mesh):
     p.write_text("")
     with pytest.raises(ValueError, match="Unsupported"):
         read_point_cloud(p)
+
+
+def test_e57_roundtrip_with_colors(tmp_path):
+    """Colorized scanner E57 (like real exports) reads with points + RGB."""
+    pye57 = pytest.importorskip("pye57")
+    import numpy as np
+
+    from tests.synthetic import make_box_scan
+
+    cloud = make_box_scan(density=300, noise=0.004)
+    rng = np.random.default_rng(1)
+    colors = rng.integers(40, 220, (len(cloud.points), 3))
+    e57 = pye57.E57(str(tmp_path / "scan.e57"), mode="w")
+    e57.write_scan_raw(
+        {
+            "cartesianX": cloud.points[:, 0],
+            "cartesianY": cloud.points[:, 1],
+            "cartesianZ": cloud.points[:, 2],
+            "colorRed": colors[:, 0].astype(np.uint8),
+            "colorGreen": colors[:, 1].astype(np.uint8),
+            "colorBlue": colors[:, 2].astype(np.uint8),
+        }
+    )
+    e57.close()
+
+    got = read_point_cloud(tmp_path / "scan.e57")
+    assert len(got) == len(cloud.points)
+    assert got.colors is not None and got.colors.dtype.kind == "u"
+    assert got.colors.min() >= 40 and got.colors.max() <= 220

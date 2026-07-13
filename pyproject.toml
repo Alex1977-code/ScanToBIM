@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scantobim"
-version = "1.7.0"
+version = "1.7.1"
 description = "Scan-to-BIM reconstruction: turn LiDAR point clouds and photos into clean-edged 3D models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,7 +33,7 @@ laz = ["lazrs>=0.5"]          # compressed .laz support for laspy
 e57 = ["pye57>=0.4"]          # ASTM E57 scanner exchange format
 photos = ["Pillow>=10"]       # photo projection texturing (reads the images)
 viz = ["open3d>=0.18"]        # optional: Poisson fallback + interactive viewer
-dev = ["pytest>=7", "lazrs>=0.5", "Pillow>=10"]
+dev = ["pytest>=7", "lazrs>=0.5", "Pillow>=10", "pye57>=0.4"]
 
 [project.scripts]
 scantobim = "scantobim.cli:main"

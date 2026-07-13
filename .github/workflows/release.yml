@@ -25,7 +25,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install .[laz,photos] pyinstaller
+        run: pip install .[laz,photos,e57] pyinstaller
 
       - name: Run test suite
         run: |
@@ -35,15 +35,36 @@ jobs:
       - name: Build exe
         run: >
           pyinstaller --onefile --console --name scantobim
-          --collect-all laspy --collect-all lazrs
+          --collect-all laspy --collect-all lazrs --collect-all pye57
           packaging/windows/launcher.py
 
       - name: Smoke test the exe
         shell: bash
         run: |
           python -c "import sys; sys.path.insert(0, 'tests'); from synthetic import make_box_scan; from scantobim.io.writers import write_point_cloud; write_point_cloud(make_box_scan(density=500, noise=0.004), 'smoke.ply')"
+          python - <<'PYEOF'
+          import sys
+          sys.path.insert(0, "tests")
+          import numpy as np
+          import pye57
+          from synthetic import make_box_scan
+          cloud = make_box_scan(density=300, noise=0.004)
+          rgb = np.random.default_rng(1).integers(40, 220, (len(cloud.points), 3))
+          e57 = pye57.E57("smoke.e57", mode="w")
+          e57.write_scan_raw({
+              "cartesianX": cloud.points[:, 0],
+              "cartesianY": cloud.points[:, 1],
+              "cartesianZ": cloud.points[:, 2],
+              "colorRed": rgb[:, 0].astype(np.uint8),
+              "colorGreen": rgb[:, 1].astype(np.uint8),
+              "colorBlue": rgb[:, 2].astype(np.uint8),
+          })
+          e57.close()
+          PYEOF
           ./dist/scantobim.exe --version
           ./dist/scantobim.exe info smoke.ply
+          ./dist/scantobim.exe info smoke.e57
+          ./dist/scantobim.exe reconstruct smoke.e57 -o smoke_e57.html --texture --seed 1
           ./dist/scantobim.exe reconstruct smoke.ply -o smoke.glb --seed 1 --report smoke.json
           ./dist/scantobim.exe reconstruct smoke.ply -o smoke.stp --seed 1
           python - <<'EOF'
