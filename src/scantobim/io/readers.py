@@ -36,30 +36,156 @@ _PLY_TYPES = {
 }
 
 
-def read_point_cloud(path: str | Path) -> PointCloud:
-    """Read a point cloud, dispatching on the file extension."""
+def read_point_cloud(
+    path: str | Path, max_points: int | None = None
+) -> PointCloud:
+    """Read a point cloud, dispatching on the file extension.
+
+    ``max_points`` bounds memory on huge scans: LAS/LAZ are read block-wise
+    and thinned on the fly (adaptive voxel grid keeping real measured
+    points), E57 scan-by-scan; other formats are thinned after loading.
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
     ext = path.suffix.lower()
     if ext in (".las", ".laz"):
-        return _read_las(path)
-    if ext == ".ply":
-        return _read_ply(path)
-    if ext == ".pcd":
-        return _read_pcd(path)
-    if ext == ".e57":
-        return _read_e57(path)
-    if ext in (".xyz", ".pts", ".txt", ".csv", ".asc"):
-        return _read_text(path)
-    raise ValueError(
-        f"Unsupported point cloud format: {ext!r} "
-        "(supported: .las .laz .ply .pcd .e57 .xyz .pts .txt .csv .asc)"
-    )
+        cloud = _read_las(path, max_points=max_points)
+    elif ext == ".ply":
+        cloud = _read_ply(path)
+    elif ext == ".pcd":
+        cloud = _read_pcd(path)
+    elif ext == ".e57":
+        cloud = _read_e57(path, max_points=max_points)
+    elif ext in (".xyz", ".pts", ".txt", ".csv", ".asc"):
+        cloud = _read_text(path)
+    else:
+        raise ValueError(
+            f"Unsupported point cloud format: {ext!r} "
+            "(supported: .las .laz .ply .pcd .e57 .xyz .pts .txt .csv .asc)"
+        )
+    return thin_cloud(cloud, max_points)
 
 
-def _read_las(path: Path) -> PointCloud:
+def thin_cloud(cloud: PointCloud, max_points: int | None) -> PointCloud:
+    """Thin a cloud to at most ~``max_points`` on an adaptive voxel grid."""
+    if max_points is None or len(cloud) <= max_points:
+        return cloud
+    thinner = StreamingThinner(max_points)
+    thinner.add(cloud.points, cloud.colors, cloud.intensity)
+    return thinner.finish(source=cloud.source)
+
+
+class StreamingThinner:
+    """Block-wise adaptive voxel thinning for huge scans.
+
+    Chunks are appended raw; whenever the buffer exceeds twice the target,
+    it is compacted: one representative *measured* point per voxel cell,
+    growing the voxel size until the buffer fits. Peak memory stays at
+    ~2× the target regardless of input size.
+    """
+
+    def __init__(self, target_points: int):
+        self.target = int(target_points)
+        self.voxel = 0.0
+        self._pts: list[np.ndarray] = []
+        self._colors: list[np.ndarray] | None = []
+        self._intensity: list[np.ndarray] | None = []
+        self._count = 0
+
+    def add(
+        self,
+        points: np.ndarray,
+        colors: np.ndarray | None = None,
+        intensity: np.ndarray | None = None,
+    ) -> None:
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        self._pts.append(points)
+        if self._colors is not None:
+            if colors is None:
+                self._colors = None  # one colorless block → no colors at all
+            else:
+                self._colors.append(np.asarray(colors, dtype=np.uint8))
+        if self._intensity is not None:
+            if intensity is None:
+                self._intensity = None
+            else:
+                self._intensity.append(np.asarray(intensity, dtype=np.float32))
+        self._count += len(points)
+        if self._count > 2 * self.target:
+            self._compact()
+
+    def _compact(self) -> None:
+        pts = np.vstack(self._pts)
+        colors = np.vstack(self._colors) if self._colors else None
+        intensity = np.concatenate(self._intensity) if self._intensity else None
+        if self.voxel <= 0:
+            lo, hi = pts.min(axis=0), pts.max(axis=0)
+            diag = float(np.linalg.norm(hi - lo))
+            self.voxel = max(diag / 1000.0, 1e-9)
+        while True:
+            keys = np.floor(pts / self.voxel).astype(np.int64)
+            _, first = np.unique(keys, axis=0, return_index=True)
+            if len(first) <= self.target:
+                break
+            self.voxel *= 1.4
+        first.sort()
+        pts = pts[first]
+        self._pts = [pts]
+        self._colors = [colors[first]] if colors is not None else self._colors
+        self._intensity = (
+            [intensity[first]] if intensity is not None else self._intensity
+        )
+        self._count = len(pts)
+
+    def finish(self, source: str = "") -> PointCloud:
+        if self._count > self.target:
+            self._compact()
+        pts = np.vstack(self._pts) if self._pts else np.zeros((0, 3))
+        colors = np.vstack(self._colors) if self._colors else None
+        intensity = np.concatenate(self._intensity) if self._intensity else None
+        return PointCloud(
+            points=pts, colors=colors, intensity=intensity, source=source
+        )
+
+
+def _read_las(path: Path, max_points: int | None = None) -> PointCloud:
     import laspy
+
+    # Huge files: block-wise reading with on-the-fly thinning instead of
+    # loading hundreds of millions of points at once.
+    if max_points is not None:
+        try:
+            with laspy.open(str(path)) as reader:
+                if reader.header.point_count > max_points:
+                    thinner = StreamingThinner(max_points)
+                    for chunk in reader.chunk_iterator(2_000_000):
+                        pts = np.column_stack(
+                            [np.asarray(chunk.x), np.asarray(chunk.y), np.asarray(chunk.z)]
+                        ).astype(np.float64)
+                        dims = set(chunk.point_format.dimension_names)
+                        colors = None
+                        if {"red", "green", "blue"} <= dims:
+                            rgb = np.column_stack(
+                                [chunk.red, chunk.green, chunk.blue]
+                            ).astype(np.float64)
+                            if rgb.max(initial=0) > 255:
+                                rgb = rgb / 257.0
+                            colors = np.clip(rgb, 0, 255).astype(np.uint8)
+                        intensity = None
+                        if "intensity" in dims:
+                            intensity = np.asarray(chunk.intensity, dtype=np.float32)
+                        thinner.add(pts, colors, intensity)
+                    cloud = thinner.finish(source=str(path))
+                    if cloud.intensity is not None and cloud.intensity.max() > 0:
+                        cloud.intensity = cloud.intensity / cloud.intensity.max()
+                    return cloud
+        except laspy.errors.LaspyException as exc:  # pragma: no cover
+            if path.suffix.lower() == ".laz":
+                raise RuntimeError(
+                    "Reading .laz requires a LAZ backend: pip install lazrs"
+                ) from exc
+            raise
 
     try:
         las = laspy.read(str(path))
@@ -271,7 +397,7 @@ def _read_pcd(path: Path) -> PointCloud:
     return PointCloud(points, colors=colors, intensity=intensity, source=str(path))
 
 
-def _read_e57(path: Path) -> PointCloud:
+def _read_e57(path: Path, max_points: int | None = None) -> PointCloud:
     try:
         import pye57
     except ImportError as exc:
@@ -281,6 +407,36 @@ def _read_e57(path: Path) -> PointCloud:
         ) from exc
 
     e57 = pye57.E57(str(path))
+
+    # Multi-scan files with a point budget: thin after every scan so the
+    # peak memory stays bounded (the final thin_cloud pass in
+    # read_point_cloud handles single huge scans).
+    if max_points is not None and e57.scan_count > 1:
+        thinner = StreamingThinner(max_points)
+        for i in range(e57.scan_count):
+            data = e57.read_scan(
+                i, ignore_missing_fields=True, colors=True, intensity=True
+            )
+            pts = np.column_stack(
+                [data["cartesianX"], data["cartesianY"], data["cartesianZ"]]
+            )
+            colors = None
+            if all(k in data for k in ("colorRed", "colorGreen", "colorBlue")):
+                colors = np.clip(
+                    np.column_stack(
+                        [data["colorRed"], data["colorGreen"], data["colorBlue"]]
+                    ), 0, 255,
+                ).astype(np.uint8)
+            intensity = (
+                np.asarray(data["intensity"], dtype=np.float32)
+                if "intensity" in data else None
+            )
+            thinner.add(pts, colors, intensity)
+        cloud = thinner.finish(source=str(path))
+        if cloud.intensity is not None and cloud.intensity.max() > 0:
+            cloud.intensity = cloud.intensity / cloud.intensity.max()
+        return cloud
+
     clouds = []
     colors_parts = []
     intensity_parts = []

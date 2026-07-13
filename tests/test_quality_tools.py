@@ -192,3 +192,25 @@ def test_floorplan_dimensions(tmp_path):
     dims = [float(m) for m in re.findall(r'\n1\n(\d+\.\d{3})\n', text)]
     assert any(abs(v - 4.0) < 0.02 for v in dims), dims
     assert any(abs(v - 3.0) < 0.02 for v in dims), dims
+
+
+def test_report_html(tmp_path):
+    """The inspection report bundles all numbers, histogram and views."""
+    from tests.synthetic import make_house_scan
+
+    src = write_point_cloud(make_house_scan(), tmp_path / "haus.ply")
+    views = tmp_path / "ansichten"
+    html_path = tmp_path / "pruefbericht.html"
+    code = main(
+        ["reconstruct", str(src), "-o", str(tmp_path / "m.glb"),
+         "--deviation", str(tmp_path / "qa.ply"), "--tolerance", "0.012",
+         "--views", str(views), "--report-html", str(html_path), "--seed", "1"]
+    )
+    assert code == 0
+    text = html_path.read_text(encoding="utf-8")
+    assert "Prüfbericht" in text
+    assert "Modell-Kennzahlen" in text and "Soll-Ist-Abweichung" in text
+    assert "Dach" in text and "Firsthöhe" in text
+    assert text.count("class='bar'") >= 5  # histogram rendered
+    assert text.count("data:image/png;base64,") == 5  # the five views embedded
+    assert html_path.stat().st_size > 100_000  # images really inline

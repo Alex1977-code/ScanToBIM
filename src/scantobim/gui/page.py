@@ -212,6 +212,10 @@ button.ghost:hover{border-color:var(--accent)}
           <div class="t">Brückenbauwerk</div>
           <div class="d">Typ, Felder, Pfeiler, Bogen, Seile — als 3D-Modell</div>
         </div>
+        <div class="mode" data-mode="compare" style="grid-column:1/-1">
+          <div class="t">Epochen-Vergleich (Monitoring)</div>
+          <div class="d">Zwei Scans desselben Objekts: Verformung/Setzung als Heatmap — erst den alten, dann den neuen Scan hinzufügen</div>
+        </div>
       </div>
     </div>
 
@@ -220,7 +224,8 @@ button.ghost:hover{border-color:var(--accent)}
       <div id="opts-reconstruct">
         <label class="sel-label">Szene</label>
         <select id="preset">
-          <option value="building">Gebäude außen</option>
+          <option value="auto">Automatisch — selbstoptimierend (dauert länger)</option>
+          <option value="building" selected>Gebäude außen</option>
           <option value="indoor">Innenraum</option>
           <option value="object">Einzelobjekt / Bauteil</option>
           <option value="detail">Detailgetreu (mehr Flächen + Stützen/Rohre)</option>
@@ -233,6 +238,7 @@ button.ghost:hover{border-color:var(--accent)}
           <label class="opt"><input type="checkbox" id="register"> Mehrere Scans automatisch registrieren (ICP)</label>
           <label class="opt"><input type="checkbox" id="deviation"> Soll-Ist-Abweichungsanalyse (QS-Heatmap + Statistik)</label>
           <label class="opt"><input type="checkbox" id="views"> Orthofoto-Ansichten N/O/S/W + Draufsicht (maßstabsgetreu)</label>
+          <label class="opt"><input type="checkbox" id="reporthtml"> Druckfertiger Prüfbericht (HTML → PDF)</label>
         </div>
         <label class="sel-label">Zusätzliche Exportformate</label>
         <div class="fmt" id="formats">
@@ -348,7 +354,8 @@ document.querySelectorAll(".mode").forEach(el => {
     $("#opts-reconstruct").style.display = state.mode === "reconstruct" ? "" : "none";
     $("#opts-sheetmetal").style.display = state.mode === "sheetmetal" ? "" : "none";
     $("#opts-none").style.display =
-      (state.mode === "analyze" || state.mode === "bridge") ? "" : "none";
+      (state.mode === "analyze" || state.mode === "bridge"
+       || state.mode === "compare") ? "" : "none";
   };
 });
 /* format chips */
@@ -368,6 +375,7 @@ $("#run").onclick = async () => {
     options.register = $("#register").checked && state.files.length > 1;
     options.deviation = $("#deviation").checked;
     options.views = $("#views").checked;
+    options.report_html = $("#reporthtml").checked;
     options.formats = [...document.querySelectorAll("#formats label.on")]
       .map(el => el.dataset.f);
   } else if (state.mode === "sheetmetal") {

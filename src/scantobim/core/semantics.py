@@ -127,3 +127,58 @@ def quantity_takeoff(
         out["volume"] = round(abs(vol), 4)
         out["orientation"] = "outward" if vol > 0 else "inward"
     return out
+
+
+def refine_roof_classes(classes: list[str], mean_zs: list[float]) -> list[str]:
+    """Sloped surfaces in the upper part of the model are roof faces."""
+    if not classes:
+        return classes
+    z_low, z_high = min(mean_zs), max(mean_zs)
+    span = max(z_high - z_low, 1e-9)
+    return [
+        "roof" if c == "sloped" and (z - z_low) / span >= 0.5 else c
+        for c, z in zip(classes, mean_zs)
+    ]
+
+
+def roof_report(geometries, areas: dict[int, float]) -> dict:
+    """Roof metrics: per-face slope/azimuth/area, ridge and eaves heights.
+
+    ``geometries`` are the SurfaceGeometry objects classified ``roof``;
+    ``areas`` maps plane index → measured area.
+    """
+    faces = []
+    ridge = -np.inf
+    eaves = np.inf
+    total = 0.0
+    for geo in geometries:
+        n = geo.normal / max(np.linalg.norm(geo.normal), 1e-12)
+        slope = float(np.degrees(np.arccos(min(abs(float(n[2])), 1.0))))
+        horiz = np.array([n[0], n[1]])
+        azimuth = None
+        if np.linalg.norm(horiz) > 1e-9:
+            # Compass azimuth of the direction the face looks towards
+            # (N = 0°, E = 90°).
+            azimuth = float(np.degrees(np.arctan2(horiz[0], horiz[1]))) % 360.0
+        z_top = float(geo.outer[:, 2].max())
+        z_bottom = float(geo.outer[:, 2].min())
+        area = float(areas.get(geo.plane_index, 0.0))
+        ridge = max(ridge, z_top)
+        eaves = min(eaves, z_bottom)
+        total += area
+        faces.append(
+            {
+                "name": geo.name or f"roof_{geo.plane_index:03d}",
+                "slope_deg": round(slope, 2),
+                "azimuth_deg": round(azimuth, 1) % 360.0 if azimuth is not None else None,
+                "area": round(area, 3),
+                "top": round(z_top, 3),
+                "bottom": round(z_bottom, 3),
+            }
+        )
+    return {
+        "faces": faces,
+        "ridge_height": round(float(ridge), 3),
+        "eaves_height": round(float(eaves), 3),
+        "total_area": round(total, 3),
+    }

@@ -162,3 +162,44 @@ def test_cylinder_detection_off_by_default():
     cloud = make_hall_with_column_scan(density=700)
     result = reconstruct(cloud, PipelineConfig.preset("building"))
     assert "cylinders" not in result.report
+
+
+def test_detail_recovery_finds_small_surfaces():
+    """A 0.5 m cabinet is below the main size gate but must be recovered."""
+    from tests.synthetic import make_hall_with_cabinet_scan
+
+    cloud = make_hall_with_cabinet_scan()
+
+    plain = reconstruct(cloud, PipelineConfig.preset("building"))
+    assert plain.report["planes"] == 6  # main pass skips the cabinet
+
+    cfg = PipelineConfig.preset("building")
+    cfg.detail_recovery = True
+    result = reconstruct(cloud, cfg)
+    ok = [s for s in result.report["surfaces"] if s.get("status") == "ok"]
+    cabinet_faces = [s for s in ok if s["plane"] >= 6]
+    # All five cabinet faces polygonize at their true 0.25 m² size;
+    # noise slivers are rejected during polygonization and never surface.
+    assert len(cabinet_faces) == 5
+    for s in cabinet_faces:
+        assert abs(s["area"] - 0.25) < 0.02
+    assert result.report["residual_points"] < 0.4 * plain.report["residual_points"]
+
+
+def test_auto_reconstruct_picks_best():
+    """Auto-tuning must score all candidates and return a clean model."""
+    from scantobim.core.autotune import auto_reconstruct
+    from tests.synthetic import make_hall_with_cabinet_scan
+
+    logs = []
+    result = auto_reconstruct(
+        make_hall_with_cabinet_scan(density=700), seed=1, log=logs.append
+    )
+    board = result.report["auto_tuning"]
+    assert len([e for e in board if "score" in e]) >= 3
+    assert sum(1 for e in board if e.get("selected")) == 1
+    winner = next(e for e in board if e.get("selected"))
+    # The winner must explain the scene well.
+    assert winner["unexplained"] < 0.1
+    assert result.report["planes"] >= 6
+    assert any("gewinnt" in line for line in logs)

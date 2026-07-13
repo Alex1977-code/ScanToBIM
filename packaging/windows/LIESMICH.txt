@@ -45,6 +45,12 @@ Benutzung (Eingabeaufforderung oder PowerShell)
   :: Qualitaetssicherung: Soll-Ist-Abweichung + massstabsgetreue Ansichten
   scantobim.exe reconstruct scan.laz -o modell.html --deviation qa.ply --views ansichten
 
+  :: Selbstoptimierend + druckfertiger Pruefbericht
+  scantobim.exe reconstruct scan.laz -o modell.html --preset auto --report-html pruefbericht.html
+
+  :: Verformungsmonitoring: zwei Aufnahmen desselben Objekts vergleichen
+  scantobim.exe compare epoche1.e57 epoche2.e57 -o verformung.json --heatmap verformung.ply
+
   :: Maschinenbau: Wellen, Zahnraeder, Getriebe, Stahlprofile, Anschluesse
   scantobim.exe analyze getriebe.e57 -o analyse.json --mesh primitive.glb
 

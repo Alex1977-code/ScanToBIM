@@ -99,3 +99,49 @@ def test_pipeline_openings_can_be_disabled(wall_with_window):
     cfg.detect_openings = False
     result = reconstruct(wall_with_window, cfg)
     assert all(s.get("openings", 0) == 0 for s in result.report["surfaces"])
+
+
+def test_window_classified_with_sill_height():
+    from scantobim import PipelineConfig, reconstruct
+    from tests.synthetic import make_l_room_scan
+
+    result = reconstruct(
+        make_l_room_scan(density=900, noise=0.004, window=True),
+        PipelineConfig.preset("indoor"),
+    )
+    rep = result.report
+    details = rep["opening_details"]
+    assert len(details) == 1
+    win = details[0]
+    assert win["type"] == "fenster"
+    # Alpha-shape hole boundaries overshoot by ~one resolution cell.
+    assert abs(win["width"] - 1.4) < 0.15
+    assert abs(win["height"] - 1.0) < 0.15
+    assert abs(win["sill_height"] - 0.9) < 0.1  # Brüstungshöhe
+    assert rep["quantities"]["windows"] == 1
+
+
+def test_door_classified():
+    """A floor-to-lintel opening (5 cm threshold) is a door, not a window."""
+    import numpy as np
+
+    from scantobim import PipelineConfig, reconstruct
+    from scantobim.core.cloud import PointCloud
+    from tests.synthetic import make_box_scan
+
+    cloud = make_box_scan(density=900, noise=0.004)
+    pts = cloud.points
+    door = (
+        (np.abs(pts[:, 1]) < 0.05)
+        & (pts[:, 0] > 1.5) & (pts[:, 0] < 2.4)
+        & (pts[:, 2] > 0.2) & (pts[:, 2] < 2.2)
+    )
+    result = reconstruct(
+        PointCloud(points=pts[~door]), PipelineConfig.preset("building")
+    )
+    details = result.report["opening_details"]
+    doors = [d for d in details if d["type"] == "tuer"]
+    assert len(doors) == 1
+    assert abs(doors[0]["height"] - 2.0) < 0.12
+    assert abs(doors[0]["width"] - 0.9) < 0.1
+    assert result.report["quantities"]["doors"] == 1

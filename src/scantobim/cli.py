@@ -104,6 +104,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_info = sub.add_parser("info", help="print statistics about a point cloud")
     p_info.add_argument("input", type=Path)
+    p_info.add_argument("--max-points", type=int, default=None,
+                        help="thin huge scans to at most this many points while "
+                        "reading (bounded memory)")
 
     p_rec = sub.add_parser("reconstruct", help="point cloud(s) → clean-edged 3D model")
     p_rec.add_argument(
@@ -123,9 +126,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_rec.add_argument(
         "--preset", default="building",
-        choices=["building", "indoor", "object", "detail", "fast"],
+        choices=["auto", "building", "indoor", "object", "detail", "fast"],
         help="parameter preset (default: building; 'detail' keeps small "
-        "structures and reconstructs columns/pipes as true cylinders)",
+        "structures; 'auto' tries several parameter sets and keeps the "
+        "objectively best result — slower but self-optimizing)",
     )
     p_rec.add_argument("--cylinders", action="store_true",
                        help="also reconstruct cylindrical members (columns, "
@@ -187,6 +191,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("--views", type=Path, default=None, metavar="DIR",
                        help="write true-to-scale orthographic views (N/E/S/W/top) "
                        "as PNG + world file into this directory")
+    p_rec.add_argument("--max-points", type=int, default=None,
+                       help="thin huge scans to at most this many points while "
+                       "reading (block-wise, bounded memory)")
+    p_rec.add_argument("--report-html", type=Path, default=None, metavar="HTML",
+                       help="print-ready inspection report (A4): all measured "
+                       "values, deviation statistics, views")
     p_rec.add_argument("--seed", type=int, default=None, help="RANSAC random seed")
 
     p_proj = sub.add_parser(
@@ -199,7 +209,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_proj.add_argument("-o", "--output", type=Path, default=None,
                         help="output model (default: <folder>/scantobim_modell.html)")
     p_proj.add_argument("--preset", default="building",
-                        choices=["building", "indoor", "object", "detail", "fast"])
+                        choices=["auto", "building", "indoor", "object", "detail", "fast"])
     p_proj.add_argument("--watertight", action="store_true",
                         help="globally optimized watertight model")
     p_proj.add_argument("--align", action="store_true",
@@ -217,6 +227,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_proj.add_argument("--tolerance", type=float, default=0.005)
     p_proj.add_argument("--views", type=Path, default=None, metavar="DIR",
                         help="true-to-scale orthographic views as PNG")
+    p_proj.add_argument("--max-points", type=int, default=None,
+                        help="thin huge scans to at most this many points")
+    p_proj.add_argument("--report-html", type=Path, default=None, metavar="HTML",
+                        help="print-ready inspection report (A4)")
     p_proj.add_argument("--seed", type=int, default=None)
 
     p_reg = sub.add_parser(
@@ -282,6 +296,26 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="neutral axis k-factor for the bend allowance "
                       "(default: 0.44)")
 
+    p_cmp = sub.add_parser(
+        "compare",
+        help="compare two scan epochs of the same structure: fine-register "
+        "(ICP), then signed displacement along the local normals — "
+        "settlement/deformation monitoring (Verformungsmessung)",
+    )
+    p_cmp.add_argument("reference", type=Path, help="older epoch (stays fixed)")
+    p_cmp.add_argument("current", type=Path, help="newer epoch")
+    p_cmp.add_argument("-o", "--output", type=Path, default=None,
+                       help="write the comparison report to this JSON file")
+    p_cmp.add_argument("--heatmap", type=Path, default=None, metavar="PLY",
+                       help="write the newer epoch colored by displacement "
+                       "(blue = settlement, red = bulging)")
+    p_cmp.add_argument("--no-register", action="store_true",
+                       help="scans share exact coordinates — skip ICP")
+    p_cmp.add_argument("--tolerance", type=float, default=0.005,
+                       help="displacement tolerance in input units (default 0.005)")
+    p_cmp.add_argument("--max-points", type=int, default=None,
+                       help="thin huge scans while reading")
+
     p_gui = sub.add_parser(
         "gui", help="start the graphical interface (local web app in the browser)"
     )
@@ -329,6 +363,8 @@ def _dispatch(args) -> int:
             return _cmd_sheetmetal(args)
         if args.command == "bridge":
             return _cmd_bridge(args)
+        if args.command == "compare":
+            return _cmd_compare(args)
         if args.command == "gui":
             return _launch_gui(
                 list(args.files), port=args.port, open_browser=not args.no_browser
@@ -467,7 +503,7 @@ def _interactive(files: list[Path] | None = None) -> int:
 
 
 def _cmd_info(args) -> int:
-    cloud = read_point_cloud(args.input)
+    cloud = read_point_cloud(args.input, max_points=args.max_points)
     lo, hi = cloud.aabb
     size = hi - lo
     print(f"file:        {args.input}")
@@ -485,12 +521,14 @@ def _cmd_info(args) -> int:
     return 0
 
 
-def _read_inputs(paths: list[Path], register: bool) -> "object":
+def _read_inputs(
+    paths: list[Path], register: bool, max_points: int | None = None
+) -> "object":
     """Read one or more clouds; optionally ICP-register onto the first."""
     clouds = []
     for p in paths:
         print(f"reading {p} …")
-        cloud = read_point_cloud(p)
+        cloud = read_point_cloud(p, max_points=max_points)
         print(f"  {len(cloud):,} points")
         clouds.append(cloud)
     if len(clouds) == 1:
@@ -510,9 +548,11 @@ def _read_inputs(paths: list[Path], register: bool) -> "object":
 
 
 def _cmd_reconstruct(args) -> int:
-    cloud = _read_inputs(args.input, args.register_inputs)
+    cloud = _read_inputs(args.input, args.register_inputs, max_points=args.max_points)
 
-    cfg = PipelineConfig.preset(args.preset)
+    cfg = PipelineConfig.preset(
+        args.preset if args.preset != "auto" else "building"
+    )
     if args.voxel is not None:
         cfg.voxel_size = args.voxel
     if args.dist is not None:
@@ -547,7 +587,23 @@ def _cmd_reconstruct(args) -> int:
               "(normals oriented towards the path)")
 
     print(f"reconstructing (preset: {args.preset}) …")
-    result = reconstruct(cloud, cfg, trajectory=trajectory)
+    if args.preset == "auto":
+        from scantobim.core.autotune import auto_reconstruct
+
+        result = auto_reconstruct(
+            cloud,
+            trajectory=trajectory,
+            seed=args.seed,
+            overrides={
+                "watertight": cfg.watertight,
+                "align_axes": cfg.align_axes,
+                "ghost_offset_tol": cfg.ghost_offset_tol,
+                "cylinder_detection": cfg.cylinder_detection,
+                "detect_openings": cfg.detect_openings,
+            },
+        )
+    else:
+        result = reconstruct(cloud, cfg, trajectory=trajectory)
     rep = result.report
     openings = sum(s.get("openings", 0) for s in rep["surfaces"])
     q = rep["quantities"]
@@ -628,6 +684,15 @@ def _cmd_reconstruct(args) -> int:
         _write_deviation(result, cloud, args.deviation, args.tolerance)
     if args.views is not None:
         _write_views(output_mesh, args.views)
+    if args.report_html is not None:
+        from scantobim.io.report_html import render_report_html
+
+        out = render_report_html(
+            rep, args.report_html,
+            title=f"Prüfbericht — {args.input[0].stem}",
+            views_dir=args.views,
+        )
+        print(f"wrote {out} (druckfertiger Prüfbericht)")
 
     if args.report is not None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -653,7 +718,7 @@ def _cmd_project(args) -> int:
     for line in project.describe():
         print(f"  {line}")
 
-    cloud = read_point_cloud(project.cloud)
+    cloud = read_point_cloud(project.cloud, max_points=args.max_points)
     print(f"  geladen: {len(cloud):,} Punkte"
           + (", mit Farben" if cloud.colors is not None else ""))
 
@@ -663,7 +728,9 @@ def _cmd_project(args) -> int:
         print(f"  Trajektorie: {len(trajectory)} Positionen "
               "(Normalen werden zum Scanner orientiert)")
 
-    cfg = PipelineConfig.preset(args.preset)
+    cfg = PipelineConfig.preset(
+        args.preset if args.preset != "auto" else "building"
+    )
     if args.watertight:
         cfg.watertight = True
     if args.align:
@@ -672,7 +739,15 @@ def _cmd_project(args) -> int:
         cfg.seed = args.seed
 
     print(f"reconstructing (preset: {args.preset}) …")
-    result = reconstruct(cloud, cfg, trajectory=trajectory)
+    if args.preset == "auto":
+        from scantobim.core.autotune import auto_reconstruct
+
+        result = auto_reconstruct(
+            cloud, trajectory=trajectory, seed=args.seed,
+            overrides={"watertight": cfg.watertight, "align_axes": cfg.align_axes},
+        )
+    else:
+        result = reconstruct(cloud, cfg, trajectory=trajectory)
     rep = result.report
     print(f"  planes: {rep['planes']}  angles: {rep['plane_angles']}  "
           f"residual: {rep['residual_points']}")
@@ -768,11 +843,57 @@ def _cmd_project(args) -> int:
         _write_deviation(result, cloud, args.deviation, args.tolerance)
     if args.views is not None:
         _write_views(output_mesh, args.views)
+    if getattr(args, "report_html", None) is not None:
+        from scantobim.io.report_html import render_report_html
+
+        out = render_report_html(
+            rep, args.report_html,
+            title=f"Prüfbericht — {args.directory.name}",
+            views_dir=args.views,
+        )
+        print(f"wrote {out} (druckfertiger Prüfbericht)")
 
     report_path = args.report or output.with_name(output.stem + "_bericht.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(rep, indent=2, default=_json_default))
     print(f"wrote {report_path}")
+    return 0
+
+
+def _cmd_compare(args) -> int:
+    from scantobim.core.compare import compare_epochs
+
+    print(f"reading {args.reference} …")
+    reference = read_point_cloud(args.reference, max_points=args.max_points)
+    print(f"  {len(reference):,} points (Referenz-Epoche)")
+    print(f"reading {args.current} …")
+    current = read_point_cloud(args.current, max_points=args.max_points)
+    print(f"  {len(current):,} points (neue Epoche)")
+
+    if not args.no_register:
+        print("fine-registering the epochs (trimmed ICP) …")
+    stats, heat_cloud, transform = compare_epochs(
+        reference, current,
+        register=not args.no_register,
+        tolerance=args.tolerance,
+    )
+    if not args.no_register:
+        print(f"  Registrierung: Versatz {stats['registration_shift'] * 1000:.1f} mm entfernt")
+    print(
+        f"  Verformung: RMS {stats['rms'] * 1000:.1f} mm | "
+        f"P95 {stats['p95'] * 1000:.1f} mm | max {stats['max'] * 1000:.1f} mm | "
+        f"{stats['within_tolerance'] * 100:.1f}% innerhalb ±{args.tolerance * 1000:.1f} mm"
+    )
+
+    if args.heatmap is not None:
+        write_point_cloud(heat_cloud, args.heatmap)
+        print(f"wrote {args.heatmap} (blau = Setzung, rot = Ausbauchung)")
+    if args.output is not None:
+        report = {"epochs": [str(args.reference), str(args.current)], **stats,
+                  "transform": transform.tolist()}
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2, default=_json_default))
+        print(f"wrote {args.output}")
     return 0
 
 

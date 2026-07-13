@@ -72,6 +72,11 @@ class PipelineConfig:
     cylinder_detection: bool = False
     max_cylinders: int = 16
 
+    # --- detail recovery: second, finer plane pass on the residual ---
+    detail_recovery: bool = False
+    detail_min_inliers: int = 40
+    max_detail_planes: int = 32
+
     # --- regularization ---
     regularize: bool = True
     parallel_tol_deg: float = 8.0
@@ -134,6 +139,7 @@ class PipelineConfig:
                 simplify_factor=1.5,
                 min_opening_factor=6.0,
                 cylinder_detection=True,
+                detail_recovery=True,
             )
         raise ValueError(
             f"Unknown preset {name!r} (use building/indoor/object/detail/fast)"
@@ -248,6 +254,29 @@ def reconstruct(
     if cfg.watertight:
         return _reconstruct_watertight(work, planes, spacing, cfg, report, t0)
 
+    # ---- 3b. detail geometry: cylinders first (more specific than planes —
+    # a column's shell would otherwise be eaten as small planar facets by
+    # the finer plane pass below).
+    cylinders = []
+    if cfg.cylinder_detection:
+        cylinders, unassigned = _detect_residual_cylinders(
+            work, unassigned, dist_thresh, cfg
+        )
+
+    # ---- 3c. detail recovery: a second, finer pass over the residual picks
+    # up small true surfaces (reveals, ledges, niches) that the main pass
+    # skipped because of its size threshold. The noise gates inside
+    # detect_planes keep diffuse clutter out.
+    if cfg.detail_recovery:
+        detail_planes, unassigned = _recover_detail_planes(
+            work, unassigned, dist_thresh, cfg
+        )
+        if detail_planes:
+            _orient_planes(detail_planes, work.points, cfg.orient)
+            planes = planes + detail_planes
+            report["detail_surfaces"] = len(detail_planes)
+            report["planes"] = len(planes)
+
     # ---- 4. exact edge geometry ---------------------------------------------
     contact_radius = cfg.contact_factor * spacing
     adjacency = plane_adjacency(planes, work.points, contact_radius)
@@ -307,13 +336,6 @@ def reconstruct(
     if not cfg.color_surfaces:
         mesh.vertex_colors = None
 
-    # ---- 6b. detail geometry: cylinders in the residual ---------------------
-    cylinders = []
-    if cfg.cylinder_detection:
-        cylinders, unassigned = _detect_residual_cylinders(
-            work, unassigned, dist_thresh, cfg
-        )
-
     residual = work.select(unassigned)
 
     # ---- 7. world alignment (optional) --------------------------------------
@@ -350,6 +372,9 @@ def reconstruct(
     classes = classify_surfaces(
         [plane_normals[g] for g in surface_ids], [mean_z[g] for g in surface_ids]
     )
+    from scantobim.core.semantics import refine_roof_classes
+
+    classes = refine_roof_classes(classes, [mean_z[g] for g in surface_ids])
     class_of = dict(zip(surface_ids, classes))
     mesh.group_names = {g: f"{class_of[g]}_{g:03d}" for g in surface_ids}
     for info in plane_reports:
@@ -380,6 +405,20 @@ def reconstruct(
     report["storeys"] = detect_storeys(
         [mean_z[g] for g in surface_ids if class_of[g] in ("floor", "slab", "ceiling")]
     )
+    roof_faces = [g for g in geometries if g.surface_class == "roof"]
+    if roof_faces:
+        from scantobim.core.semantics import roof_report
+
+        report["roof"] = roof_report(roof_faces, surf_area)
+
+    opening_details = _classify_openings(
+        geometries, float(mesh.vertices[:, 2].min())
+    )
+    if opening_details:
+        report["opening_details"] = opening_details
+        q = report["quantities"]
+        q["windows"] = sum(1 for o in opening_details if o["type"] == "fenster")
+        q["doors"] = sum(1 for o in opening_details if o["type"] == "tuer")
 
     # ---- 8b. add detail cylinders as true solids ----------------------------
     if cylinders:
@@ -420,6 +459,65 @@ def reconstruct(
     return ReconstructionResult(
         mesh=mesh, residual=residual, surfaces=geometries, report=report
     )
+
+
+def _classify_openings(geometries, floor_z: float) -> list[dict]:
+    """Window vs. door for every opening in a wall, with build measurements.
+
+    Doors reach (almost) down to the floor and are man-height; everything
+    else is a window with its sill height (Brüstungshöhe).
+    """
+    details = []
+    up = np.array([0.0, 0.0, 1.0])
+    for geo in geometries:
+        if geo.surface_class != "wall":
+            continue
+        n = geo.normal / max(np.linalg.norm(geo.normal), 1e-12)
+        h_dir = np.cross(up, n)
+        nh = float(np.linalg.norm(h_dir))
+        if nh < 1e-9:
+            continue
+        h_dir /= nh
+        for hole in geo.holes:
+            z_min = float(hole[:, 2].min())
+            z_max = float(hole[:, 2].max())
+            height = z_max - z_min
+            t = hole @ h_dir
+            width = float(t.max() - t.min())
+            sill = z_min - floor_z
+            kind = "tuer" if sill < 0.3 and height > 1.6 else "fenster"
+            details.append(
+                {
+                    "surface": geo.name,
+                    "type": kind,
+                    "width": round(width, 3),
+                    "height": round(height, 3),
+                    "sill_height": round(sill, 3),
+                }
+            )
+    return details
+
+
+def _recover_detail_planes(work, unassigned, dist_thresh, cfg):
+    """Finer plane pass on the residual; returns ``(planes, new_unassigned)``."""
+    idx = np.flatnonzero(unassigned)
+    if len(idx) < 3 * cfg.detail_min_inliers:
+        return [], unassigned
+    detail, sub_unassigned = detect_planes(
+        work.points[idx],
+        work.normals[idx],
+        distance_threshold=0.8 * dist_thresh,
+        normal_threshold_deg=cfg.normal_threshold_deg,
+        min_inliers=cfg.detail_min_inliers,
+        max_planes=cfg.max_detail_planes,
+        ransac_iterations=cfg.ransac_iterations,
+        seed=cfg.seed + 1,
+    )
+    for p in detail:
+        p.inliers = idx[p.inliers]
+    new_unassigned = np.zeros(len(work.points), dtype=bool)
+    new_unassigned[idx[sub_unassigned]] = True
+    return detail, new_unassigned
 
 
 def _detect_residual_cylinders(work, unassigned, dist_thresh, cfg):
@@ -519,6 +617,9 @@ def _reconstruct_watertight(work, planes, spacing, cfg, report, t0):
     classes = classify_surfaces(
         [plane_normals[g] for g in surface_ids], [mean_z[g] for g in surface_ids]
     )
+    from scantobim.core.semantics import refine_roof_classes
+
+    classes = refine_roof_classes(classes, [mean_z[g] for g in surface_ids])
     class_of = dict(zip(surface_ids, classes))
     mesh.group_names = {g: f"{class_of[g]}_{g:03d}" for g in surface_ids}
     for geo in geometries:

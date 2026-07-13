@@ -93,3 +93,31 @@ def test_alignment_identity_without_vertical():
     p = Plane(normal=np.array([1.0, 0.0, 0.0]), d=0.0, inliers=np.arange(100))
     t = compute_alignment([p])
     np.testing.assert_allclose(t, np.eye(4))
+
+
+def test_roof_semantics_gable_house(tmp_path):
+    """Gable roof: two roof faces with slope, ridge and eaves heights."""
+    from scantobim import PipelineConfig, reconstruct
+    from scantobim.io.ifc import write_ifc
+    from tests.synthetic import make_house_scan
+
+    result = reconstruct(
+        make_house_scan(ridge_height=3.5), PipelineConfig.preset("building")
+    )
+    rep = result.report
+    assert rep["quantities"]["surface_count_by_class"].get("roof") == 2
+    roof = rep["roof"]
+    assert abs(roof["ridge_height"] - 3.5) < 0.05
+    assert abs(roof["eaves_height"] - 2.5) < 0.05
+    truth_slope = np.degrees(np.arctan2(1.0, 1.5))  # rise 1.0 over half-span 1.5
+    for face in roof["faces"]:
+        assert abs(face["slope_deg"] - truth_slope) < 1.5
+        assert face["area"] > 5.0
+    # Opposite faces look in opposite compass directions.
+    az = sorted(f["azimuth_deg"] for f in roof["faces"])
+    assert abs(abs(az[1] - az[0]) - 180.0) < 5.0
+    assert abs(roof["total_area"] - 2 * 4.0 * np.hypot(1.5, 1.0)) < 0.5
+
+    # BIM export carries the roof as IfcRoof.
+    text = write_ifc(result.surfaces, tmp_path / "haus.ifc").read_text()
+    assert text.count("IFCROOF(") == 2

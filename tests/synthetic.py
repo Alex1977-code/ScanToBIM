@@ -568,3 +568,59 @@ def make_hall_with_column_scan(
     return PointCloud(
         points=np.vstack([box.points, pts]), source="synthetic hall with column"
     )
+
+
+def make_hall_with_cabinet_scan(
+    size=(4.0, 3.0, 2.5),
+    cabinet: float = 0.5,
+    origin=(1.0, 1.0, 0.0),
+    density: float = 900.0,
+    noise: float = 0.004,
+    seed: int = 3,
+) -> PointCloud:
+    """A box hall with a small cabinet on the floor (detail-recovery target)."""
+    rng = np.random.default_rng(seed)
+    hall = make_box_scan(size=size, density=density, noise=noise)
+    x, y, z = np.eye(3)
+    o = np.asarray(origin, dtype=np.float64)
+    s = cabinet
+    parts = [
+        sample_rect(o + [0, 0, s], x, y, s, s, density, noise, rng),
+        sample_rect(o, x, z, s, s, density, noise, rng),
+        sample_rect(o + [0, s, 0], x, z, s, s, density, noise, rng),
+        sample_rect(o, y, z, s, s, density, noise, rng),
+        sample_rect(o + [s, 0, 0], y, z, s, s, density, noise, rng),
+    ]
+    return PointCloud(
+        points=np.vstack([hall.points] + parts), source="hall with cabinet"
+    )
+
+
+def make_house_scan(
+    footprint=(4.0, 3.0),
+    wall_height: float = 2.5,
+    ridge_height: float = 3.5,
+    density: float = 900.0,
+    noise: float = 0.004,
+    seed: int = 21,
+) -> PointCloud:
+    """A house: four walls + floor + gable roof (two sloped faces)."""
+    rng = np.random.default_rng(seed)
+    sx, sy = footprint
+    box = make_box_scan(
+        size=(sx, sy, wall_height), density=density, noise=noise,
+        seed=seed, open_top=True,
+    )
+    rise = ridge_height - wall_height
+    half = sy / 2.0
+    x = np.array([1.0, 0.0, 0.0])
+    v1 = np.array([0.0, half, rise])
+    v2 = np.array([0.0, -half, rise])
+    slant = float(np.linalg.norm(v1))
+    roof = [
+        sample_rect((0, 0, wall_height), x, v1 / slant, sx, slant, density, noise, rng),
+        sample_rect((0, sy, wall_height), x, v2 / slant, sx, slant, density, noise, rng),
+    ]
+    return PointCloud(
+        points=np.vstack([box.points] + roof), source="synthetic house"
+    )

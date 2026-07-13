@@ -209,3 +209,51 @@ def test_e57_roundtrip_with_colors(tmp_path):
     assert len(got) == len(cloud.points)
     assert got.colors is not None and got.colors.dtype.kind == "u"
     assert got.colors.min() >= 40 and got.colors.max() <= 220
+
+
+def test_streaming_thinner_bounds_and_coverage():
+    """Huge input → bounded output that still covers the whole extent."""
+    from scantobim.io.readers import StreamingThinner
+
+    rng = np.random.default_rng(0)
+    thinner = StreamingThinner(20_000)
+    for _ in range(10):  # 500k points in blocks of 50k
+        pts = rng.uniform(0, 10, (50_000, 3))
+        colors = rng.integers(0, 255, (50_000, 3)).astype("uint8")
+        thinner.add(pts, colors, None)
+    cloud = thinner.finish()
+    assert len(cloud) <= 20_000
+    assert cloud.colors is not None and len(cloud.colors) == len(cloud)
+    lo, hi = cloud.points.min(axis=0), cloud.points.max(axis=0)
+    assert np.all(lo < 0.5) and np.all(hi > 9.5)  # full extent preserved
+
+
+def test_read_las_streamed_with_max_points(tmp_path):
+    """LAS beyond the budget is read block-wise and thinned."""
+    import laspy
+
+    from tests.synthetic import make_box_scan
+
+    cloud = make_box_scan(density=2000, noise=0.004)  # ~92k points
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.scales = np.array([0.0001, 0.0001, 0.0001])
+    las = laspy.LasData(header)
+    las.x, las.y, las.z = cloud.points.T
+    src = tmp_path / "big.las"
+    las.write(str(src))
+    got = read_point_cloud(src, max_points=30_000)
+    assert 5_000 < len(got) <= 30_000
+    lo, hi = got.aabb
+    assert np.all(hi - lo > np.array([3.9, 2.9, 2.4]))  # extent intact
+
+    full = read_point_cloud(src)  # without budget: everything
+    assert len(full) == len(cloud.points)
+
+
+def test_read_ply_thinned(tmp_path):
+    from tests.synthetic import make_box_scan
+
+    cloud = make_box_scan(density=2000, noise=0.004)
+    src = write_point_cloud(cloud, tmp_path / "big.ply")
+    got = read_point_cloud(src, max_points=25_000)
+    assert len(got) <= 25_000

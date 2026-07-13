@@ -109,6 +109,13 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 | 📊 **Soll-Ist-Abweichungsanalyse** (`--deviation qa.ply`) | As-built-QS: Abstand jedes Scanpunkts zum Modell — Statistik (RMS, P95, Maximum, Toleranzquote, mm-Histogramm) im Bericht plus **eingefärbte Abweichungswolke** (blau = hinter der Fläche, weiß = drauf, rot = davor). |
 | 🗺️ **Orthofoto-Ansichten** (`--views ordner/`) | Maßstabsgetreue orthographische **Fassadenansichten** (Nord/Ost/Süd/West) und Draufsicht als PNG — mit World-File (`.pgw`), damit CAD/GIS sie lagerichtig im richtigen Maßstab importieren. Nutzt die Fototextur, wenn vorhanden. |
 | 📏 **Bemaßter Grundriss** | `--floorplan` beschriftet jetzt jede Wand automatisch mit ihrer Länge (Layer `BEMASSUNG`) — der Plan ist direkt prüfbar. |
+| 🤖 **Auto-Tuning** (`--preset auto`) | Selbstoptimierend: mehrere Parametersätze werden rekonstruiert und **objektiv am Scan bewertet** (Soll-Ist-P95 + erklärte Punkte + Modell-Schlankheit); das beste Ergebnis gewinnt, die Rangliste steht im Bericht. |
+| 🧩 **Feinstruktur-Nachlese** | Ein zweiter, feinerer Erkennungspass sammelt kleine echte Flächen (Laibungen, Vorsprünge) aus dem Residuum ein; Rausch-Splitter scheitern weiterhin an den Polygonisierungs-Gates. |
+| 🐘 **Riesige Scans** (`--max-points`) | LAS/LAZ blockweise mit adaptiver Voxel-Ausdünnung, E57 scanweise — hunderte Millionen Punkte bei begrenztem Speicher (die GUI schützt sich automatisch). |
+| 🏠 **Dach-Semantik** | Dachflächen mit **Neigung, Ausrichtung, Fläche, First- und Traufhöhe** im Bericht; `IfcRoof` im BIM-Export. |
+| 🚪 **Fenster/Tür-Erkennung** | Öffnungen werden mit Breite, Höhe und **Brüstungshöhe** als Fenster oder Tür klassifiziert und gezählt. |
+| 📉 **Epochen-Vergleich** (`scantobim compare`) | Verformungs-/Setzungsmonitoring: ICP-Feinregistrierung zweier Aufnahmen, dann vorzeichenbehaftete Verschiebung entlang der lokalen Normalen als Heatmap + Statistik. |
+| 🧾 **Prüfbericht** (`--report-html`) | Druckfertiges A4-Dokument: Kennzahlen, Bauteil-/Dach-/Öffnungslisten, Soll-Ist-Histogramm, eingebettete maßstabsgetreue Ansichten — im Browser als PDF drucken. |
 
 ![Viewer](docs/images/viewer.png)
 

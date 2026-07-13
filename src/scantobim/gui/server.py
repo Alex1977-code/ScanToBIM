@@ -117,6 +117,9 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             deviation=(outdir / "abweichung.ply") if opts.get("deviation") else None,
             tolerance=0.005,
             views=(outdir / "ansichten") if opts.get("views") else None,
+            report_html=(outdir / "pruefbericht.html")
+            if opts.get("report_html") else None,
+            max_points=40_000_000,
             seed=None,
         )
         code = _cmd_project(ns)
@@ -148,9 +151,10 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             )
         return summary
 
-    cloud = _read_inputs(files, bool(opts.get("register")))
+    # Memory guard for the packaged app: huge scans are thinned block-wise.
+    cloud = _read_inputs(files, bool(opts.get("register")), max_points=40_000_000)
     preset = opts.get("preset", "building")
-    cfg = PipelineConfig.preset(preset)
+    cfg = PipelineConfig.preset(preset if preset != "auto" else "building")
     if opts.get("watertight"):
         cfg.watertight = True
     if opts.get("cylinders"):
@@ -159,7 +163,19 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
         cfg.align_axes = True
 
     print(f"Rekonstruktion läuft (Preset: {preset}) …")
-    result = reconstruct(cloud, cfg)
+    if preset == "auto":
+        from scantobim.core.autotune import auto_reconstruct
+
+        result = auto_reconstruct(
+            cloud,
+            overrides={
+                "watertight": cfg.watertight,
+                "align_axes": cfg.align_axes,
+                "cylinder_detection": cfg.cylinder_detection,
+            },
+        )
+    else:
+        result = reconstruct(cloud, cfg)
     rep = result.report
     q = rep["quantities"]
 
@@ -210,6 +226,15 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
         from scantobim.cli import _write_views
 
         _write_views(output_mesh, outdir / "ansichten")
+    if opts.get("report_html"):
+        from scantobim.io.report_html import render_report_html
+
+        render_report_html(
+            rep, outdir / "pruefbericht.html",
+            title=f"Prüfbericht — {files[0].stem}",
+            views_dir=(outdir / "ansichten") if opts.get("views") else None,
+        )
+        print("geschrieben: pruefbericht.html")
     (outdir / "bericht.json").write_text(
         json.dumps(rep, indent=2, default=_json_default)
     )
@@ -310,6 +335,38 @@ def _run_sheetmetal(files: list[Path], opts: dict, outdir: Path) -> dict:
     return summary
 
 
+def _run_compare(files: list[Path], opts: dict, outdir: Path) -> dict:
+    from scantobim.cli import _cmd_compare
+
+    if len(files) != 2:
+        raise ValueError(
+            "Epochen-Vergleich braucht genau zwei Scans (alt, dann neu)"
+        )
+    ns = Namespace(
+        reference=files[0],
+        current=files[1],
+        output=outdir / "verformung.json",
+        heatmap=outdir / "verformung.ply",
+        no_register=False,
+        tolerance=0.005,
+        max_points=40_000_000,
+    )
+    code = _cmd_compare(ns)
+    if code != 0:
+        raise RuntimeError("Epochenvergleich fehlgeschlagen")
+    rep = json.loads((outdir / "verformung.json").read_text())
+    return {
+        "Registrierung": f"{rep['registration_shift'] * 1000:.1f} mm Versatz entfernt",
+        "Verformung RMS": f"{rep['rms'] * 1000:.1f} mm",
+        "Verformung P95": f"{rep['p95'] * 1000:.1f} mm",
+        "Maximum": f"{rep['max'] * 1000:.1f} mm",
+        "Innerhalb Toleranz": (
+            f"{rep['within_tolerance'] * 100:.1f}% (±{rep['tolerance'] * 1000:.0f} mm)"
+        ),
+        "Punkte": rep["points"],
+    }
+
+
 def _run_bridge(files: list[Path], opts: dict, outdir: Path) -> dict:
     from scantobim.cli import _cmd_bridge
 
@@ -341,6 +398,7 @@ _RUNNERS = {
     "analyze": _run_analyze,
     "sheetmetal": _run_sheetmetal,
     "bridge": _run_bridge,
+    "compare": _run_compare,
 }
 
 

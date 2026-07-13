@@ -32,6 +32,7 @@ _CLASS_MAP = {
     "ceiling": ("IFCCOVERING", ".CEILING."),
     "slab": ("IFCSLAB", ".LANDING."),
     "sloped": ("IFCSLAB", ".ROOF."),
+    "roof": ("IFCROOF", ".NOTDEFINED."),
 }
 
 _GUID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$"
@@ -154,7 +155,7 @@ def write_ifc(
         label = getattr(geo, "name", "") or cls
         if entity == "IFCCOVERING":
             args = f"'{ifc_guid()}',$,'{label}',$,$,#{lp},#{pds},$,{predefined}"
-        elif entity == "IFCSLAB":
+        elif entity in ("IFCSLAB", "IFCROOF"):
             args = f"'{ifc_guid()}',$,'{label}',$,$,#{lp},#{pds},$,{predefined}"
         elif entity == "IFCWALL":
             args = f"'{ifc_guid()}',$,'{label}',$,$,#{lp},#{pds},$,$"

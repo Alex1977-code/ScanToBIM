@@ -4,6 +4,16 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.0.0
+
+- **Auto-Tuning** (Preset „Automatisch“): das Programm rekonstruiert mit mehreren Parametersätzen, bewertet jedes Ergebnis objektiv am Scan selbst (Soll-Ist-P95 + erklärte Punkte + Modell-Schlankheit) und behält das beste — transparente Rangliste im Bericht.
+- **Feinstruktur-Nachlese**: ein zweiter, feinerer Erkennungspass sammelt kleine echte Flächen (Laibungen, Vorsprünge, Möbel) aus dem Residuum ein — Rausch-Splitter werden weiterhin verworfen.
+- **Sehr große Punktwolken**: LAS/LAZ werden blockweise gelesen und adaptiv ausgedünnt (`--max-points`, GUI automatisch) — hunderte Millionen Punkte bei begrenztem Speicher.
+- **Dach-Semantik**: Dachflächen mit Neigung, Ausrichtung, Fläche, First- und Traufhöhe im Bericht; `IfcRoof` im BIM-Export.
+- **Fenster/Tür-Klassifikation**: Öffnungen werden mit Breite, Höhe und Brüstungshöhe als Fenster oder Tür erkannt und gezählt.
+- **Epochen-Vergleich** (`scantobim compare`, GUI-Modus): zwei Scans desselben Objekts → ICP-Feinregistrierung + Verformungs-Heatmap (blau = Setzung, rot = Ausbauchung) mit Statistik — Monitoring für Brücken, Hallen, Stahlbau.
+- **Druckfertiger Prüfbericht** (`--report-html`, GUI-Häkchen): alle Kennzahlen, Dach- und Öffnungslisten, Soll-Ist-Histogramm und die maßstabsgetreuen Ansichten in einem A4-Dokument — im Browser öffnen, als PDF drucken.
+
 ### Neu in 1.9.0
 
 - **Textur-Fix**: Wenn die Foto-Projektion ins Leere läuft (Kameraposen in anderem Koordinatensystem, Bilder nicht auffindbar), erkennt das Programm das jetzt selbst (Abdeckungsmessung + Koordinaten-Plausibilitätsprüfung) und fällt **automatisch auf die Punktfarben zurück** — nie wieder ein graues Modell. Die Texturquelle steht sichtbar im Bericht („Textur: foto-projektion (87 % Abdeckung)“ / „punktfarben“).
