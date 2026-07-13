@@ -624,3 +624,34 @@ def make_house_scan(
     return PointCloud(
         points=np.vstack([box.points] + roof), source="synthetic house"
     )
+
+
+def make_outdoor_site_scan(
+    density: float = 700.0,
+    noise: float = 0.004,
+    terrain_roughness: float = 0.05,
+    seed: int = 31,
+) -> PointCloud:
+    """A house on rough terrain with unmodellable clutter (outdoor S20-style)."""
+    rng = np.random.default_rng(seed)
+    house = make_house_scan(density=density, noise=noise, seed=seed)
+    # Rough ground 20 x 16 m around the house (RMS ~5 cm like gravel/lawn).
+    n = int(20 * 16 * density * 0.5)
+    xy = rng.uniform([-8, -6], [12, 10], size=(n, 2))
+    keep = ~((xy[:, 0] > -0.2) & (xy[:, 0] < 4.2) & (xy[:, 1] > -0.2) & (xy[:, 1] < 3.2))
+    xy = xy[keep]
+    ground = np.column_stack([xy, rng.normal(0.0, terrain_roughness, len(xy))])
+    # Vegetation blobs (never planar).
+    blobs = []
+    for cx, cy in [(-4.0, -3.0), (8.0, 6.0), (-5.0, 7.0)]:
+        m = int(3000)
+        blobs.append(
+            np.column_stack([
+                rng.normal(cx, 0.8, m), rng.normal(cy, 0.8, m),
+                np.abs(rng.normal(1.5, 0.8, m)),
+            ])
+        )
+    return PointCloud(
+        points=np.vstack([house.points, ground] + blobs),
+        source="synthetic outdoor site",
+    )

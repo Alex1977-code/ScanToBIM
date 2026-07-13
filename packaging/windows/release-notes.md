@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.1.0 — kalibriert am echten SHARE-SLAM-S20-Scan
+
+- **Gelände-Erkennung**: raue Horizontalflächen (Boden, Schotter, Rasen — Ebenen-RMS > 2,5 cm) werden als **Gelände** klassifiziert statt als Bauteil-„slab“ — sie erzeugen keine Phantom-Öffnungen, keine Geschosse und verfälschen keine Bauteilmengen mehr (`IfcGeographicElement` im BIM-Export).
+- **Dach-Erkennung relativ zur Wandhöhe** statt zur Szenenhöhe: Bäume, Masten und Gelände strecken Außenscans in z — echte Dächer wurden dadurch übersehen. Jetzt gilt: geneigte Fläche oberhalb der Wände = Dach.
+- **Soll-Ist-Analyse für Teilszenen**: getrennte Ausweisung von **Modelltreue** (RMS/P95 nur der modellnahen Punkte, Gelände ausgenommen) und **Modellabdeckung** (Anteil des Scans am Modell) — vorher dominierte nicht modellierte Umgebung (Vegetation, Nachbarobjekte) die Statistik mit Meter-Werten. Die Heatmap-Farbskala löst jetzt den Millimeterbereich am Bauwerk auf.
+- **Auto-Tuning bewertet mit denselben robusten Kennzahlen** — Außen-Clutter kann kein Kandidaten-Ranking mehr verzerren.
+
 ### Neu in 2.0.0
 
 - **Auto-Tuning** (Preset „Automatisch“): das Programm rekonstruiert mit mehreren Parametersätzen, bewertet jedes Ergebnis objektiv am Scan selbst (Soll-Ist-P95 + erklärte Punkte + Modell-Schlankheit) und behält das beste — transparente Rangliste im Bericht.

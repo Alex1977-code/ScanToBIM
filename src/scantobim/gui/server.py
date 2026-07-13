@@ -144,11 +144,10 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             summary["Textur"] = label
         dev = rep.get("deviation")
         if dev:
-            summary["Soll-Ist RMS"] = f"{dev['rms'] * 1000:.1f} mm"
-            summary["Innerhalb Toleranz"] = (
-                f"{dev['within_tolerance'] * 100:.1f}% "
-                f"(±{dev['tolerance'] * 1000:.0f} mm)"
-            )
+            fid = dev.get("fidelity") or dev
+            summary["Modelltreue RMS"] = f"{fid['rms'] * 1000:.1f} mm"
+            if dev.get("coverage") is not None:
+                summary["Modellabdeckung"] = f"{dev['coverage'] * 100:.1f}% des Scans"
         return summary
 
     # Memory guard for the packaged app: huge scans are thinned block-wise.
@@ -258,10 +257,14 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     summary["Textur"] = texture_source
     dev = rep.get("deviation")
     if dev:
-        summary["Soll-Ist RMS"] = f"{dev['rms'] * 1000:.1f} mm"
-        summary["Soll-Ist P95"] = f"{dev['p95'] * 1000:.1f} mm"
-        summary["Innerhalb Toleranz"] = (
-            f"{dev['within_tolerance'] * 100:.1f}% (±{dev['tolerance'] * 1000:.0f} mm)"
+        fid = dev.get("fidelity") or dev
+        summary["Modelltreue RMS"] = f"{fid['rms'] * 1000:.1f} mm"
+        summary["Modelltreue P95"] = f"{fid['p95'] * 1000:.1f} mm"
+        if dev.get("coverage") is not None:
+            summary["Modellabdeckung"] = f"{dev['coverage'] * 100:.1f}% des Scans"
+        summary["Innerhalb Toleranz (modellnah)"] = (
+            f"{fid.get('within_tolerance', dev['within_tolerance']) * 100:.1f}% "
+            f"(±{dev['tolerance'] * 1000:.0f} mm)"
         )
     summary["Dreiecke"] = rep["mesh"]["triangles"]
     summary["Restpunkte"] = rep["residual_points"]

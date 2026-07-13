@@ -81,19 +81,21 @@ def auto_reconstruct(
             result.mesh, cloud, max_points=evaluation_points
         )
         rep = result.report
-        unexplained = rep["residual_points"] / max(rep["preprocessed_points"], 1)
-        # Score: deviation in units of the point spacing (scale-free),
-        # completeness, parsimony. Lower is better.
+        # Fidelity where the model exists + how much of the scan it covers —
+        # robust on partial scenes (outdoor clutter hurts all candidates
+        # alike and cannot mask a badly fitting model).
+        fid = stats.get("fidelity") or stats
+        unexplained = 1.0 - stats.get("coverage", 0.0)
         score = (
-            stats["p95"] / max(spacing, 1e-9)
+            fid["p95"] / max(spacing, 1e-9)
             + 2.0 * unexplained
             + 0.01 * rep["planes"]
         )
         entry = {
             "candidate": name,
             "score": round(float(score), 4),
-            "p95": stats["p95"],
-            "rms": stats["rms"],
+            "p95": fid["p95"],
+            "rms": fid["rms"],
             "unexplained": round(float(unexplained), 4),
             "surfaces": rep["planes"],
         }

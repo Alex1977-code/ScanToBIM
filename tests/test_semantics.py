@@ -121,3 +121,37 @@ def test_roof_semantics_gable_house(tmp_path):
     # BIM export carries the roof as IfcRoof.
     text = write_ifc(result.surfaces, tmp_path / "haus.ifc").read_text()
     assert text.count("IFCROOF(") == 2
+
+
+def test_outdoor_site_terrain_roof_and_deviation_split():
+    """S20-style outdoor scene: terrain classified, roof found above walls,
+    deviation splits fidelity from coverage."""
+    from scantobim import PipelineConfig, reconstruct
+    from scantobim.core.deviation import deviation_analysis
+    from tests.synthetic import make_outdoor_site_scan
+
+    cloud = make_outdoor_site_scan()
+    result = reconstruct(cloud, PipelineConfig.preset("building"))
+    rep = result.report
+    classes = rep["quantities"]["surface_count_by_class"]
+
+    # The rough ground must be terrain, not a building slab.
+    assert classes.get("terrain", 0) >= 1
+    terrain = [s for s in rep["surfaces"] if s.get("class") == "terrain"]
+    assert all(s["rms"] > 0.025 for s in terrain)
+    # The gable roof is found although the scene z-range is stretched.
+    assert classes.get("roof", 0) == 2
+    # Terrain does not create storeys.
+    assert rep["storeys"] == []
+
+    # Deviation: fidelity stays in the mm range although the vegetation
+    # blobs are meters away from any surface.
+    from scantobim.core.deviation import building_only_mesh
+
+    qa_mesh = building_only_mesh(result.mesh)
+    assert len(qa_mesh.faces) < len(result.mesh.faces)  # terrain filtered
+    stats, _ = deviation_analysis(qa_mesh, cloud, tolerance=0.012)
+    assert stats["fidelity"]["rms"] < 0.02
+    assert stats["fidelity"]["within_tolerance"] > 0.9
+    assert stats["coverage"] < 0.999  # the blobs are not covered
+    assert stats["max"] > 0.5  # clutter is far from the model

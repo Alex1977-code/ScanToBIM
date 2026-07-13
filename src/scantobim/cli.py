@@ -899,20 +899,26 @@ def _cmd_compare(args) -> int:
 
 def _write_deviation(result, cloud, deviation_path: Path, tolerance: float) -> None:
     """As-built QA: deviation-colored scan + statistics into the report."""
-    from scantobim.core.deviation import deviation_analysis
+    from scantobim.core.deviation import building_only_mesh, deviation_analysis
 
     rep = result.report
     alignment = np.array(rep["alignment"]) if "alignment" in rep else None
     stats, dev_cloud = deviation_analysis(
-        result.mesh, cloud, tolerance=tolerance, alignment=alignment
+        building_only_mesh(result.mesh), cloud,
+        tolerance=tolerance, alignment=alignment,
     )
     write_point_cloud(dev_cloud, deviation_path)
     rep["deviation"] = stats
+    fid = stats.get("fidelity")
+    if fid:
+        print(
+            f"  Soll-Ist (Modelltreue): RMS {fid['rms'] * 1000:.1f} mm | "
+            f"P95 {fid['p95'] * 1000:.1f} mm | "
+            f"{fid['within_tolerance'] * 100:.1f}% innerhalb ±{tolerance * 1000:.1f} mm"
+        )
     print(
-        f"  Soll-Ist: RMS {stats['rms'] * 1000:.1f} mm | "
-        f"P95 {stats['p95'] * 1000:.1f} mm | "
-        f"{stats['within_tolerance'] * 100:.1f}% innerhalb "
-        f"±{tolerance * 1000:.1f} mm"
+        f"  Modellabdeckung: {stats['coverage'] * 100:.1f}% des Scans liegen "
+        f"innerhalb ±{stats['coverage_band'] * 100:.0f} cm am Modell"
     )
     print(f"wrote {deviation_path} (Abweichungswolke blau-weiss-rot)")
 

@@ -33,6 +33,7 @@ _CLASS_MAP = {
     "slab": ("IFCSLAB", ".LANDING."),
     "sloped": ("IFCSLAB", ".ROOF."),
     "roof": ("IFCROOF", ".NOTDEFINED."),
+    "terrain": ("IFCGEOGRAPHICELEMENT", None),
 }
 
 _GUID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$"

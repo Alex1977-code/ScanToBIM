@@ -18,6 +18,7 @@ from scantobim import __version__
 _CLASS_LABELS = {
     "wall": "Wände", "floor": "Böden", "ceiling": "Decken",
     "slab": "Zwischenebenen", "sloped": "Schrägen", "roof": "Dachflächen",
+    "terrain": "Gelände",
 }
 
 
@@ -134,13 +135,29 @@ def render_report_html(
     # ---- Soll-Ist -------------------------------------------------------
     dev = report.get("deviation")
     if dev:
-        rows = [
-            _row("Geprüfte Punkte", f"{dev['points']:,}".replace(",", " ")),
-            _row("RMS", f"{dev['rms'] * 1000:.1f} mm"),
-            _row("95%-Quantil", f"{dev['p95'] * 1000:.1f} mm"),
+        rows = [_row("Geprüfte Punkte", f"{dev['points']:,}".replace(",", " "))]
+        fid = dev.get("fidelity")
+        if fid:
+            rows += [
+                _row("Modelltreue RMS (modellnahe Punkte)",
+                     f"{fid['rms'] * 1000:.1f} mm"),
+                _row("Modelltreue 95%-Quantil", f"{fid['p95'] * 1000:.1f} mm"),
+                _row(
+                    f"Modellnah innerhalb ±{dev['tolerance'] * 1000:.0f} mm",
+                    f"{fid['within_tolerance'] * 100:.1f}%",
+                ),
+            ]
+        if dev.get("coverage") is not None:
+            rows.append(_row(
+                f"Modellabdeckung des Scans (±{dev.get('coverage_band', 0.1) * 100:.0f} cm)",
+                f"{dev['coverage'] * 100:.1f}%",
+            ))
+        rows += [
+            _row("Gesamt-RMS (inkl. nicht modellierter Umgebung)",
+                 f"{dev['rms'] * 1000:.1f} mm"),
             _row("Maximum", f"{dev['max'] * 1000:.1f} mm"),
             _row(
-                f"Innerhalb ±{dev['tolerance'] * 1000:.0f} mm",
+                f"Gesamt innerhalb ±{dev['tolerance'] * 1000:.0f} mm",
                 f"{dev['within_tolerance'] * 100:.1f}%",
             ),
         ]

@@ -131,6 +131,29 @@ def _diverging_colors(dist: np.ndarray, scale: float) -> np.ndarray:
     return colors.astype(np.uint8)
 
 
+def building_only_mesh(mesh: Mesh) -> Mesh:
+    """Drop terrain faces — QA judges the built surfaces, not the ground."""
+    names = mesh.group_names or {}
+    if mesh.face_groups is None or not any(
+        str(n).startswith("terrain") for n in names.values()
+    ):
+        return mesh
+    keep = np.array(
+        [
+            not str(names.get(int(g), "")).startswith("terrain")
+            for g in mesh.face_groups
+        ]
+    )
+    if not keep.any() or keep.all():
+        return mesh
+    return Mesh(
+        vertices=mesh.vertices,
+        faces=mesh.faces[keep],
+        face_groups=mesh.face_groups[keep],
+        group_names=mesh.group_names,
+    )
+
+
 def deviation_analysis(
     mesh: Mesh,
     cloud: PointCloud,
@@ -159,6 +182,13 @@ def deviation_analysis(
     p95 = float(np.quantile(abs_d, 0.95))
     edges = np.array([0, 0.5, 1, 2, 5, 10, 20, 50, np.inf]) * 1e-3
     hist, _ = np.histogram(abs_d, bins=edges)
+
+    # Partial-scene scans (outdoor surroundings, vegetation) contain points
+    # the model never claimed to explain — separate the two questions:
+    # "how much of the scan does the model cover?" (coverage) and "how well
+    # does it fit where it exists?" (fidelity, points within the near band).
+    near_band = max(5.0 * tolerance, 0.02)
+    near = abs_d <= near_band
     stats = {
         "points": int(len(pts)),
         "tolerance": tolerance,
@@ -167,10 +197,23 @@ def deviation_analysis(
         "mean_abs": round(float(abs_d.mean()), 6),
         "p95": round(p95, 6),
         "max": round(float(abs_d.max()), 6),
+        "coverage": round(float(near.mean()), 4),
+        "coverage_band": near_band,
         "histogram_mm": {
             f"{edges[i] * 1000:g}-{edges[i + 1] * 1000:g}": int(hist[i])
             for i in range(len(hist))
         },
     }
-    colors = _diverging_colors(dist, scale=max(p95, tolerance))
+    scale = max(p95, tolerance)
+    if near.any():
+        near_abs = abs_d[near]
+        fidelity_p95 = float(np.quantile(near_abs, 0.95))
+        stats["fidelity"] = {
+            "points": int(near.sum()),
+            "rms": round(float(np.sqrt((dist[near] ** 2).mean())), 6),
+            "p95": round(fidelity_p95, 6),
+            "within_tolerance": round(float((near_abs <= tolerance).mean()), 4),
+        }
+        scale = max(fidelity_p95, tolerance)  # heatmap resolves the model band
+    colors = _diverging_colors(dist, scale=scale)
     return stats, PointCloud(points=pts, colors=colors, source="deviation")

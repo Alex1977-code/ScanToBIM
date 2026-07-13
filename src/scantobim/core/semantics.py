@@ -130,14 +130,42 @@ def quantity_takeoff(
 
 
 def refine_roof_classes(classes: list[str], mean_zs: list[float]) -> list[str]:
-    """Sloped surfaces in the upper part of the model are roof faces."""
+    """Sloped surfaces above the walls are roof faces.
+
+    The reference is the height of the detected walls, NOT the scene
+    extent — outdoor scans contain terrain, masts and vegetation that
+    stretch the z-range and would otherwise push real roofs below any
+    scene-relative threshold. Sloped terrain stays "sloped".
+    """
     if not classes:
         return classes
-    z_low, z_high = min(mean_zs), max(mean_zs)
-    span = max(z_high - z_low, 1e-9)
+    wall_zs = [z for c, z in zip(classes, mean_zs) if c == "wall"]
+    if wall_zs:
+        threshold = max(wall_zs)  # roofs sit above every wall's midpoint
+    else:
+        z_low, z_high = min(mean_zs), max(mean_zs)
+        threshold = z_low + 0.5 * max(z_high - z_low, 1e-9)
     return [
-        "roof" if c == "sloped" and (z - z_low) / span >= 0.5 else c
+        "roof" if c == "sloped" and z > threshold else c
         for c, z in zip(classes, mean_zs)
+    ]
+
+
+def refine_terrain_classes(
+    classes: list[str], rms_values: list[float], rms_threshold: float = 0.025
+) -> list[str]:
+    """Rough horizontal surfaces are terrain, not building slabs.
+
+    Ground, gravel and lawns fit a plane only to a few centimeters —
+    building floors and slabs to millimeters. Everything horizontal whose
+    plane RMS exceeds ``rms_threshold`` is reclassified ``terrain`` so it
+    stays out of storeys, opening schedules and slab quantities.
+    """
+    return [
+        "terrain"
+        if c in ("floor", "slab") and rms is not None and rms > rms_threshold
+        else c
+        for c, rms in zip(classes, rms_values)
     ]
 
 

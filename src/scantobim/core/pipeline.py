@@ -372,8 +372,14 @@ def reconstruct(
     classes = classify_surfaces(
         [plane_normals[g] for g in surface_ids], [mean_z[g] for g in surface_ids]
     )
-    from scantobim.core.semantics import refine_roof_classes
+    from scantobim.core.semantics import refine_roof_classes, refine_terrain_classes
 
+    rms_of = {
+        info["plane"]: info.get("rms")
+        for info in plane_reports
+        if info.get("status") == "ok"
+    }
+    classes = refine_terrain_classes(classes, [rms_of.get(g) for g in surface_ids])
     classes = refine_roof_classes(classes, [mean_z[g] for g in surface_ids])
     class_of = dict(zip(surface_ids, classes))
     mesh.group_names = {g: f"{class_of[g]}_{g:03d}" for g in surface_ids}
