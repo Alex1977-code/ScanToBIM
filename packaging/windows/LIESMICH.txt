@@ -51,6 +51,10 @@ Benutzung (Eingabeaufforderung oder PowerShell)
   :: Brueckenbauwerke: Typ, Felder, Pfeiler, Lager, Bogen, Seile
   scantobim.exe bridge bruecke.laz -o bauwerk.json
 
+  :: SLAM-Scanner-Projektordner (z. B. SHARE SLAM S20): Punktwolke,
+  :: Fotos, Kameraposen und Trajektorie werden automatisch erkannt
+  scantobim.exe project D:\scans\projekt_export -o modell.html
+
   :: Mehrere Scans registrieren und verschmelzen
   scantobim.exe register standpunkt1.ply standpunkt2.ply -o gesamt.ply
 

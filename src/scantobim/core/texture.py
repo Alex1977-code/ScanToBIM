@@ -141,7 +141,7 @@ def bake_texture_from_photos(
     """
     from pathlib import Path
 
-    from scantobim.photogrammetry.colmap import read_colmap_text_model
+    from scantobim.photogrammetry.colmap import read_colmap_model
 
     try:
         from PIL import Image
@@ -150,7 +150,7 @@ def bake_texture_from_photos(
             "photo texturing requires Pillow: pip install scantobim[photos]"
         ) from exc
 
-    cameras = read_colmap_text_model(model_dir)
+    cameras = read_colmap_model(model_dir)
     if not cameras:
         raise ValueError(f"{model_dir}: no registered images in COLMAP model")
     images_dir = Path(images_dir)

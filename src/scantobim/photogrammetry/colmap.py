@@ -68,6 +68,34 @@ class CameraPose:
         return self.fx * xn + self.cx, self.fy * yn + self.cy
 
 
+def read_colmap_model(model_dir: str | Path) -> list[CameraPose]:
+    """Read a COLMAP model — text or binary, direct or in a known subfolder.
+
+    Accepts a directory containing ``cameras.txt``/``images.txt`` (text) or
+    ``cameras.bin``/``images.bin`` (binary, the default output of COLMAP and
+    of SLAM scanner exports). Also looks in the usual layout subfolders
+    (``sparse/0``, ``sparse``, ``model_txt``, ``colmap``).
+    """
+    model_dir = Path(model_dir)
+    candidates = [
+        model_dir,
+        model_dir / "sparse" / "0",
+        model_dir / "sparse",
+        model_dir / "model_txt",
+        model_dir / "colmap",
+        model_dir / "colmap" / "sparse" / "0",
+    ]
+    for d in candidates:
+        if (d / "cameras.txt").exists() and (d / "images.txt").exists():
+            return read_colmap_text_model(d)
+        if (d / "cameras.bin").exists() and (d / "images.bin").exists():
+            return read_colmap_binary_model(d)
+    raise FileNotFoundError(
+        f"{model_dir}: no COLMAP model found (cameras.txt/images.txt or "
+        "cameras.bin/images.bin, also searched sparse/0, sparse, model_txt)"
+    )
+
+
 def read_colmap_text_model(model_dir: str | Path) -> list[CameraPose]:
     """Read a COLMAP text model (``cameras.txt`` + ``images.txt``).
 
@@ -132,6 +160,82 @@ def read_colmap_text_model(model_dir: str | Path) -> list[CameraPose]:
                 translation=np.array([tx, ty, tz]),
             )
         )
+    return poses
+
+
+# COLMAP binary model: camera model id → (name, parameter count).
+_BIN_CAMERA_MODELS = {
+    0: ("SIMPLE_PINHOLE", 3),
+    1: ("PINHOLE", 4),
+    2: ("SIMPLE_RADIAL", 4),
+    3: ("RADIAL", 5),
+    4: ("OPENCV", 8),
+    5: ("OPENCV_FISHEYE", 8),
+    6: ("FULL_OPENCV", 12),
+    7: ("FOV", 5),
+    8: ("SIMPLE_RADIAL_FISHEYE", 4),
+    9: ("RADIAL_FISHEYE", 5),
+    10: ("THIN_PRISM_FISHEYE", 12),
+}
+
+
+def read_colmap_binary_model(model_dir: str | Path) -> list[CameraPose]:
+    """Read a COLMAP binary model (``cameras.bin`` + ``images.bin``).
+
+    This is COLMAP's default output format and what most SLAM scanner
+    exports ship. Distortion beyond the first radial term is ignored —
+    exports alongside *undistorted* images use PINHOLE anyway.
+    """
+    import struct
+
+    model_dir = Path(model_dir)
+
+    intrinsics: dict[int, tuple] = {}
+    with open(model_dir / "cameras.bin", "rb") as fh:
+        (n_cameras,) = struct.unpack("<Q", fh.read(8))
+        for _ in range(n_cameras):
+            cam_id, model_id, w, h = struct.unpack("<iiQQ", fh.read(24))
+            name, n_params = _BIN_CAMERA_MODELS.get(model_id, (None, None))
+            if name is None:
+                raise ValueError(f"unknown COLMAP camera model id {model_id}")
+            params = struct.unpack(f"<{n_params}d", fh.read(8 * n_params))
+            if name == "SIMPLE_PINHOLE":
+                fx = fy = params[0]
+                cx, cy, k1 = params[1], params[2], 0.0
+            elif name == "PINHOLE":
+                fx, fy, cx, cy, k1 = params[0], params[1], params[2], params[3], 0.0
+            elif name in ("SIMPLE_RADIAL", "RADIAL", "SIMPLE_RADIAL_FISHEYE",
+                          "RADIAL_FISHEYE"):
+                fx = fy = params[0]
+                cx, cy, k1 = params[1], params[2], params[3]
+            elif name in ("OPENCV", "OPENCV_FISHEYE", "FULL_OPENCV"):
+                fx, fy, cx, cy = params[0], params[1], params[2], params[3]
+                k1 = params[4]  # best effort — undistorted exports have k1≈0
+            else:
+                raise ValueError(f"unsupported COLMAP camera model: {name}")
+            intrinsics[cam_id] = (int(w), int(h), fx, fy, cx, cy, k1)
+
+    poses: list[CameraPose] = []
+    with open(model_dir / "images.bin", "rb") as fh:
+        (n_images,) = struct.unpack("<Q", fh.read(8))
+        for _ in range(n_images):
+            _image_id, qw, qx, qy, qz, tx, ty, tz, cam_id = struct.unpack(
+                "<idddddddi", fh.read(64)
+            )
+            name_bytes = bytearray()
+            while (c := fh.read(1)) != b"\x00":
+                name_bytes.extend(c)
+            (n_pts2d,) = struct.unpack("<Q", fh.read(8))
+            fh.seek(24 * n_pts2d, 1)  # skip (x, y, point3D_id) records
+            w, h, fx, fy, cx, cy, k1 = intrinsics[cam_id]
+            poses.append(
+                CameraPose(
+                    name=name_bytes.decode("utf-8", errors="replace"),
+                    width=w, height=h, fx=fx, fy=fy, cx=cx, cy=cy, k1=k1,
+                    rotation=_quat_to_rot(qw, qx, qy, qz),
+                    translation=np.array([tx, ty, tz]),
+                )
+            )
     return poses
 
 

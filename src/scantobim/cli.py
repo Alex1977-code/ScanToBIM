@@ -174,7 +174,33 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="write the quality report to this JSON file")
     p_rec.add_argument("--residual-out", type=Path, default=None,
                        help="write points not explained by any surface to this .ply")
+    p_rec.add_argument("--trajectory", type=Path, default=None, metavar="TXT",
+                       help="scanner trajectory (SLAM path, e.g. trajectory.txt): "
+                       "orients normals towards the scanner for robust detection")
     p_rec.add_argument("--seed", type=int, default=None, help="RANSAC random seed")
+
+    p_proj = sub.add_parser(
+        "project",
+        help="import a SLAM scanner project folder (SHARE SLAM S20, GeoSLAM, "
+        "…): auto-detects point cloud, undistorted photos, COLMAP poses and "
+        "trajectory, then reconstructs a photo-textured model",
+    )
+    p_proj.add_argument("directory", type=Path, help="the exported project folder")
+    p_proj.add_argument("-o", "--output", type=Path, default=None,
+                        help="output model (default: <folder>/scantobim_modell.html)")
+    p_proj.add_argument("--preset", default="building",
+                        choices=["building", "indoor", "object", "detail", "fast"])
+    p_proj.add_argument("--watertight", action="store_true",
+                        help="globally optimized watertight model")
+    p_proj.add_argument("--align", action="store_true",
+                        help="axis-align the model, floor at Z=0")
+    p_proj.add_argument("--no-photos", action="store_true",
+                        help="skip photo projection (use point cloud colors)")
+    p_proj.add_argument("--texel", type=float, default=None,
+                        help="texture resolution in input units (default: auto)")
+    p_proj.add_argument("--report", type=Path, default=None,
+                        help="quality report JSON (default: next to the output)")
+    p_proj.add_argument("--seed", type=int, default=None)
 
     p_reg = sub.add_parser(
         "register",
@@ -276,6 +302,8 @@ def _dispatch(args) -> int:
             return _cmd_info(args)
         if args.command == "reconstruct":
             return _cmd_reconstruct(args)
+        if args.command == "project":
+            return _cmd_project(args)
         if args.command == "register":
             return _cmd_register(args)
         if args.command == "analyze":
@@ -493,8 +521,16 @@ def _cmd_reconstruct(args) -> int:
     if args.seed is not None:
         cfg.seed = args.seed
 
+    trajectory = None
+    if args.trajectory is not None:
+        from scantobim.io.project import read_trajectory
+
+        trajectory = read_trajectory(args.trajectory)
+        print(f"trajectory: {len(trajectory)} scanner positions "
+              "(normals oriented towards the path)")
+
     print(f"reconstructing (preset: {args.preset}) …")
-    result = reconstruct(cloud, cfg)
+    result = reconstruct(cloud, cfg, trajectory=trajectory)
     rep = result.report
     openings = sum(s.get("openings", 0) for s in rep["surfaces"])
     q = rep["quantities"]
@@ -579,6 +615,101 @@ def _cmd_reconstruct(args) -> int:
         write_point_cloud(result.residual, args.residual_out)
         print(f"wrote {args.residual_out}")
     return 0
+
+
+def _cmd_project(args) -> int:
+    """SLAM project folder → photo-textured clean-edged model."""
+    from scantobim.io.project import read_trajectory, scan_project_dir
+
+    project = scan_project_dir(args.directory)
+    if project.cloud is None:
+        raise ValueError(
+            f"{args.directory}: keine Punktwolke im Projektordner gefunden "
+            f"(gesucht: {' '.join(CLOUD_EXTS_SORTED)})"
+        )
+    print(f"SLAM-Projekt: {args.directory}")
+    for line in project.describe():
+        print(f"  {line}")
+
+    cloud = read_point_cloud(project.cloud)
+    print(f"  geladen: {len(cloud):,} Punkte"
+          + (", mit Farben" if cloud.colors is not None else ""))
+
+    trajectory = None
+    if project.trajectory is not None:
+        trajectory = read_trajectory(project.trajectory)
+        print(f"  Trajektorie: {len(trajectory)} Positionen "
+              "(Normalen werden zum Scanner orientiert)")
+
+    cfg = PipelineConfig.preset(args.preset)
+    if args.watertight:
+        cfg.watertight = True
+    if args.align:
+        cfg.align_axes = True
+    if args.seed is not None:
+        cfg.seed = args.seed
+
+    print(f"reconstructing (preset: {args.preset}) …")
+    result = reconstruct(cloud, cfg, trajectory=trajectory)
+    rep = result.report
+    print(f"  planes: {rep['planes']}  angles: {rep['plane_angles']}  "
+          f"residual: {rep['residual_points']}")
+
+    # Texture: photo projection when poses + photos exist, else cloud colors.
+    output_mesh = result.mesh
+    use_photos = (
+        not args.no_photos
+        and project.colmap_model is not None
+        and project.images_dir is not None
+    )
+    transform = None
+    if "alignment" in rep:
+        transform = np.array(rep["alignment"])
+    if use_photos:
+        try:
+            from scantobim.core.texture import bake_texture_from_photos
+
+            print(f"projecting {project.image_count} photos onto the model …")
+            output_mesh = bake_texture_from_photos(
+                result, project.colmap_model, project.images_dir,
+                texel_size=args.texel, transform=transform,
+            )
+            th, tw = output_mesh.texture.shape[:2]
+            print(f"  texture atlas: {tw} x {th} px")
+        except Exception as exc:  # noqa: BLE001 — fall back, don't fail the model
+            print(f"Hinweis: Foto-Projektion fehlgeschlagen ({exc}) — "
+                  "verwende Punktwolken-Farben")
+            use_photos = False
+    if not use_photos and cloud.colors is not None:
+        from scantobim.core.texture import bake_texture_from_cloud
+
+        print("baking texture from cloud colors …")
+        output_mesh = bake_texture_from_cloud(
+            result, cloud, texel_size=args.texel, transform=transform
+        )
+
+    output = args.output or (args.directory / "scantobim_modell.html")
+    ext = output.suffix.lower()
+    if ext in (".stp", ".step"):
+        from scantobim.io.step import write_step
+
+        out = write_step(result.surfaces, output)
+    elif ext == ".ifc":
+        from scantobim.io.ifc import write_ifc
+
+        out = write_ifc(result.surfaces, output, storeys=rep.get("storeys"))
+    else:
+        out = write_mesh(output_mesh, output)
+    print(f"wrote {out}")
+
+    report_path = args.report or output.with_name(output.stem + "_bericht.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(rep, indent=2, default=_json_default))
+    print(f"wrote {report_path}")
+    return 0
+
+
+CLOUD_EXTS_SORTED = sorted(_CLOUD_EXTS)
 
 
 def _cmd_register(args) -> int:

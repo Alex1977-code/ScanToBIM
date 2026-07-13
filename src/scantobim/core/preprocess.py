@@ -172,6 +172,30 @@ def estimate_normals(
     return cloud
 
 
+def orient_normals_along_trajectory(
+    cloud: PointCloud, trajectory: np.ndarray
+) -> PointCloud:
+    """Flip normals to face the nearest scanner position on the trajectory.
+
+    SLAM scanners (handheld/mobile mapping) record their path; every surface
+    was seen FROM that path, so the outward normal of each point faces its
+    nearest trajectory position. This removes the sign ambiguity of PCA
+    normals — RANSAC normal gates, cylinder detection and inside/outside
+    decisions all become more reliable on real scans.
+    """
+    if cloud.normals is None:
+        raise ValueError("estimate normals before orienting them")
+    traj = np.asarray(trajectory, dtype=np.float64).reshape(-1, 3)
+    if len(traj) == 0:
+        return cloud
+    tree = cKDTree(traj)
+    _, nearest = tree.query(cloud.points, k=1, workers=-1)
+    to_sensor = traj[nearest] - cloud.points
+    flip = np.einsum("ij,ij->i", cloud.normals, to_sensor) < 0
+    cloud.normals[flip] *= -1
+    return cloud
+
+
 def estimate_point_spacing(cloud: PointCloud, sample: int = 2000) -> float:
     """Median nearest-neighbour distance, estimated on a random subsample.
 

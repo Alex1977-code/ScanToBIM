@@ -165,8 +165,17 @@ class ReconstructionResult:
     report: dict = field(default_factory=dict)
 
 
-def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> ReconstructionResult:
-    """Run the full scan-to-model pipeline on ``cloud``."""
+def reconstruct(
+    cloud: PointCloud,
+    config: PipelineConfig | None = None,
+    trajectory: np.ndarray | None = None,
+) -> ReconstructionResult:
+    """Run the full scan-to-model pipeline on ``cloud``.
+
+    ``trajectory``: optional (N, 3) scanner path (SLAM/mobile mapping) —
+    normals are oriented towards the nearest scanner position, which makes
+    detection more robust on real-world scans.
+    """
     cfg = config or PipelineConfig()
     report: dict = {"input_points": len(cloud), "config": _config_dict(cfg)}
     t0 = time.perf_counter()
@@ -188,6 +197,11 @@ def reconstruct(cloud: PointCloud, config: PipelineConfig | None = None) -> Reco
             "check input units or lower voxel_size"
         )
     work = estimate_normals(work, cfg.normal_neighbors)
+    if trajectory is not None and len(trajectory):
+        from scantobim.core.preprocess import orient_normals_along_trajectory
+
+        work = orient_normals_along_trajectory(work, trajectory)
+        report["trajectory_positions"] = int(len(trajectory))
     spacing = estimate_point_spacing(work)
     if spacing <= 0:
         raise ValueError("Degenerate point cloud (zero spacing)")

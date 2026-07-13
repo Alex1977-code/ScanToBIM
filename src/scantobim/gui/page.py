@@ -182,8 +182,13 @@ button.ghost:hover{border-color:var(--accent)}
       <input type="file" id="fileinput" multiple style="display:none"
              accept=".las,.laz,.e57,.ply,.pcd,.pts,.xyz,.txt,.csv,.asc">
       <div class="pathrow">
-        <input id="pathinput" placeholder="… oder lokalen Dateipfad einfügen">
+        <input id="pathinput" placeholder="… oder Datei-/Projektordner-Pfad einfügen">
         <button class="ghost" id="addpath">Hinzufügen</button>
+      </div>
+      <div class="hint" style="margin-top:.45rem">
+        SLAM-Scanner-Projekte (z.&nbsp;B. SHARE&nbsp;SLAM&nbsp;S20): einfach den
+        <b>Projektordner-Pfad</b> einfügen — Punktwolke, Fotos, Kameraposen
+        und Trajektorie werden automatisch erkannt.
       </div>
       <div id="filelist"></div>
     </div>

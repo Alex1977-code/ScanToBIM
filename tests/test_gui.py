@@ -165,3 +165,18 @@ def test_initial_files_preloaded(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_addpath_project_folder(gui_server, tmp_path):
+    """A SLAM project folder registers as a preloaded project entry."""
+    from tests.test_project import _build_project
+
+    url, _ = gui_server
+    root = _build_project(tmp_path, with_photos=False)
+    status, body = _post(
+        url + "/api/addpath", json.dumps({"path": str(root)}).encode()
+    )
+    assert status == 200
+    entry = json.loads(body)
+    assert entry["kind"] == "project"
+    assert "cloud.ply" in entry["name"] and "s20_export" in entry["name"]

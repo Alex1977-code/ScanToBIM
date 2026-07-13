@@ -99,6 +99,38 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     from scantobim.core.pipeline import PipelineConfig, reconstruct
     from scantobim.io.writers import write_mesh
 
+    # A SLAM project folder takes the dedicated import path (photo
+    # projection + trajectory) and shares the CLI implementation.
+    if len(files) == 1 and files[0].is_dir():
+        from scantobim.cli import _cmd_project
+
+        ns = Namespace(
+            directory=files[0],
+            output=outdir / "modell.html",
+            preset=opts.get("preset", "building"),
+            watertight=bool(opts.get("watertight")),
+            align=bool(opts.get("align")),
+            no_photos=not opts.get("texture", True),
+            texel=None,
+            report=outdir / "bericht.json",
+            seed=None,
+        )
+        code = _cmd_project(ns)
+        if code != 0:
+            raise RuntimeError("Projekt-Import fehlgeschlagen")
+        rep = json.loads((outdir / "bericht.json").read_text())
+        summary = {
+            "Flächen": rep["planes"],
+            "Exakte Ecken": rep.get("exact_corners", 0),
+            "Restpunkte": rep["residual_points"],
+            "Rechenzeit": f"{rep['runtime_seconds']} s",
+        }
+        if "volume" in rep.get("quantities", {}):
+            summary["Volumen"] = f"{rep['quantities']['volume']:.3f} m³"
+        if rep.get("trajectory_positions"):
+            summary["Trajektorie"] = f"{rep['trajectory_positions']} Positionen"
+        return summary
+
     cloud = _read_inputs(files, bool(opts.get("register")))
     preset = opts.get("preset", "building")
     cfg = PipelineConfig.preset(preset)
@@ -403,6 +435,32 @@ def _make_handler(state: GuiState):
                 except Exception:
                     self._json({"error": "ungültige Anfrage"}, 400)
                     return
+                if p.is_dir():
+                    # SLAM project folder (SHARE SLAM S20 & Co.).
+                    from scantobim.io.project import scan_project_dir
+
+                    project = scan_project_dir(p)
+                    if project.cloud is None:
+                        self._json(
+                            {"error": f"keine Punktwolke im Ordner gefunden: {p}"}, 404
+                        )
+                        return
+                    detail = [project.cloud.name]
+                    if project.images_dir is not None:
+                        detail.append(f"{project.image_count} Fotos")
+                    if project.colmap_model is not None:
+                        detail.append("Kameraposen")
+                    if project.trajectory is not None:
+                        detail.append("Trajektorie")
+                    self._json(
+                        {
+                            "path": str(p),
+                            "name": f"📂 {p.name} ({', '.join(detail)})",
+                            "size": project.cloud.stat().st_size,
+                            "kind": "project",
+                        }
+                    )
+                    return
                 if not p.is_file():
                     self._json({"error": f"Datei nicht gefunden: {p}"}, 404)
                     return
@@ -422,7 +480,7 @@ def _make_handler(state: GuiState):
                 if mode not in _RUNNERS:
                     self._json({"error": f"unbekannter Modus: {mode}"}, 400)
                     return
-                if not files or not all(f.is_file() for f in files):
+                if not files or not all(f.exists() for f in files):
                     self._json({"error": "Eingabedatei fehlt"}, 400)
                     return
                 if state.busy:

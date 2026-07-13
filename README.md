@@ -26,6 +26,28 @@ Live-Protokoll und alle Exporte (STEP, IFC, GLB, OBJ, DXF) als Download.
 Dateien, die im Explorer auf die EXE gezogen werden, sind beim Start
 bereits geladen. Wer die Konsole bevorzugt: `scantobim wizard`.
 
+## SLAM-Scanner-Projekte (SHARE SLAM S20, GeoSLAM, LiGrip, …)
+
+Handheld-SLAM-Scanner exportieren einen ganzen Projektordner —
+`scantobim project <ordner>` nutzt davon automatisch alles Verwertbare:
+
+| Export des Scanners | Verwendung in ScanToBIM |
+| --- | --- |
+| **Punktwolke** (`.e57/.las/.laz/.ply`) | Geometrie-Rückgrat der Rekonstruktion (größte/nativste Datei wird gewählt). |
+| **Undistorted Bilder + COLMAP-Posen** | Foto-Projektion: pro Texel wird das am besten blickende, nicht verdeckte Originalfoto auf die sauberen Flächen projiziert — schärfste mögliche Texturierung. Text- **und Binärmodelle** (`cameras.bin/images.bin`, auch in `sparse/0`) werden gelesen. |
+| **`trajectory.txt`** (Scannerpfad) | Normalen werden zur nächsten Scannerposition orientiert — Ebenen-/Zylinder-Erkennung und Innen/Außen-Entscheidungen werden auf Realdaten deutlich robuster. Formate: `x y z`, `zeit x y z …`, TUM-Posen. |
+| Logs / JSON | Bleiben unangetastet (Metadaten). |
+| **`.bag`** (Rohaufnahme) | Wird bewusst nicht verarbeitet: das ROS-Bag enthält die rohen LiDAR/IMU-Ströme *vor* dem SLAM — seine verarbeiteten Ergebnisse sind genau die Dateien darüber. |
+
+```bash
+scantobim project D:/scans/steuerhaus_export -o steuerhaus.html
+scantobim project ./export --preset detail --watertight -o modell.stp
+scantobim reconstruct wolke.e57 -o modell.html --trajectory trajectory.txt
+```
+
+In der GUI genügt es, den **Projektordner-Pfad** einzufügen — Punktwolke,
+Fotos, Posen und Trajektorie werden erkannt und angezeigt.
+
 ## Warum saubere Kanten?
 
 Klassische Rekonstruktion (Poisson, Ball-Pivoting, Marching Cubes) mittelt
