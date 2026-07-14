@@ -817,6 +817,8 @@ def _cmd_project(args) -> int:
                 texel_size=args.texel, transform=transform, stats_out=stats,
             )
             coverage = stats.get("coverage", 0.0)
+            print(f"  Fotos gefunden: {stats.get('images_found', 0)} von "
+                  f"{stats.get('cameras', 0)} registrierten Kameras")
             print(f"  Foto-Abdeckung: {coverage * 100:.0f}% der Flächen "
                   f"({stats.get('images_used', 0)} Fotos verwendet)")
             if coverage < 0.2:
@@ -946,6 +948,11 @@ def _write_deviation(result, cloud, deviation_path: Path, tolerance: float) -> N
         f"  Modellabdeckung: {stats['coverage'] * 100:.1f}% des Scans liegen "
         f"innerhalb ±{stats['coverage_band'] * 100:.0f} cm am Modell"
     )
+    if stats.get("coverage_model_area") is not None:
+        print(
+            f"  … im Modellbereich (Bauwerks-Umfeld +1 m): "
+            f"{stats['coverage_model_area'] * 100:.1f}%"
+        )
     print(f"wrote {deviation_path} (Abweichungswolke blau-weiss-rot)")
 
 

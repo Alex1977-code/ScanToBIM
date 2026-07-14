@@ -155,6 +155,13 @@ def bake_texture_from_photos(
     if not cameras:
         raise ValueError(f"{model_dir}: no registered images in COLMAP model")
     images_dir = Path(images_dir)
+    image_index = _index_images(images_dir)
+    found = sum(
+        1 for cam in cameras
+        if cam.name in image_index or Path(cam.name).name in image_index
+    )
+    if stats_out is not None:
+        stats_out["images_found"] = found
 
     # Model-space camera data (apply alignment transform if given).
     rot_w = transform[:3, :3] if transform is not None else np.eye(3)
@@ -236,8 +243,8 @@ def bake_texture_from_photos(
                 continue
             name = cam.name
             if name not in image_cache:
-                path = images_dir / name
-                if not path.exists():
+                path = image_index.get(name) or image_index.get(Path(name).name)
+                if path is None or not path.exists():
                     continue
                 image_cache[name] = np.asarray(Image.open(path).convert("RGB"))
             photo = image_cache[name]
@@ -268,6 +275,44 @@ def bake_texture_from_photos(
     _fill_holes(charts)
     atlas = _pack_atlas(charts)
     return _build_textured_mesh(result, charts, atlas)
+
+
+def _index_images(images_dir) -> dict:
+    """Filename index over the image folder AND its sibling folders.
+
+    Stereo/multi-camera rigs (e.g. SHARE SLAM S20) register images as
+    ``left/frame_0001.jpg`` / ``right/frame_0001.jpg`` while the files live
+    in sibling directories. The index maps every plausible spelling —
+    relative path, ``<folder>/<relative>``, plain basename — to the actual
+    file, so all cameras resolve regardless of which folder was picked.
+    """
+    from pathlib import Path
+
+    suffixes = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+    images_dir = Path(images_dir)
+    roots = [images_dir]
+    parent = images_dir.parent
+    try:
+        for sibling in sorted(parent.iterdir()):
+            if sibling.is_dir() and sibling != images_dir:
+                roots.append(sibling)
+    except OSError:
+        pass
+
+    index: dict = {}
+    for root in roots:
+        try:
+            files = sorted(root.rglob("*"))
+        except OSError:
+            continue
+        for f in files:
+            if not f.is_file() or f.suffix.lower() not in suffixes:
+                continue
+            rel = f.relative_to(root).as_posix()
+            index.setdefault(rel, f)
+            index.setdefault(f"{root.name}/{rel}", f)
+            index.setdefault(f.name, f)
+    return index
 
 
 def _occluded(points: np.ndarray, cam_center: np.ndarray, triangles: np.ndarray) -> np.ndarray:

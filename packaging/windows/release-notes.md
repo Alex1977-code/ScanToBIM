@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.4.0 — Stereo-Kamera & Farb-Fix (S20-Praxis)
+
+- **Stereo-Fotos (links/rechts) werden jetzt beide genutzt**: Der S20 registriert seine Bilder als `left/…` und `right/…` in zwei Ordnern — der Projekt-Import wählt jetzt den gemeinsamen Überordner, und die Foto-Projektion findet jede Datei über einen Namensindex (voller Pfad, Ordner-Präfix oder Dateiname). Neue Diagnosezeile: „Fotos gefunden: X von Y registrierten Kameras“.
+- **Weißes Modell behoben**: E57-Farben in 16-Bit (0–65535, wie beim S20) oder als 0–1-Float wurden bisher auf Weiß bzw. Schwarz abgeschnitten — jetzt werden sie korrekt auf 8-Bit skaliert. Die Punktfarben-Textur zeigt wieder echte Farben.
+- **COLMAP-Text-Parser**: Posen-Dateien mit leeren 2D-Punktzeilen verloren jede zweite Kamera — behoben.
+- **Fairere Abdeckungszahl**: zusätzlich zur Gesamt-Abdeckung wird die Abdeckung **im Modellbereich** (Bauwerks-Umfeld + 1 m) ausgewiesen — Drift-Ausläufer des Roh-Scans drücken die Zahl nicht mehr.
+
 ### Neu in 2.3.0
 
 - **Auto-Tuning-Gewinner als Profil speichern**: nach einem Lauf mit Szene „Automatisch“ erscheint im Messbericht der Knopf **„★ Gewinner-Einstellungen als Profil speichern“** — die objektiv beste Parametrierung wird in die Oberfläche übernommen und dauerhaft als eigenes Profil abgelegt (z. B. „Auto (fein)“). Die Werte sind maßstabsfrei (× Punktabstand) und übertragen sich damit auf künftige Scans derselben Quelle.

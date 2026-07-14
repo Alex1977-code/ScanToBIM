@@ -124,8 +124,18 @@ def scan_project_dir(root: str | Path, max_depth: int = 4) -> SlamProject:
             undist = any("undist" in part.lower() for part in d.parts)
             return (0 if undist else 1, -n)
 
-        best = min(image_dirs.items(), key=score)
-        project.images_dir, project.image_count = best
+        best_dir, best_count = min(image_dirs.items(), key=score)
+        # Stereo/multi-camera rigs (left/right …): several image folders
+        # sharing one parent → use the parent, so COLMAP names like
+        # "left/frame_0001.jpg" resolve for BOTH cameras.
+        siblings = {
+            d: n for d, n in image_dirs.items() if d.parent == best_dir.parent
+        }
+        if len(siblings) > 1:
+            project.images_dir = best_dir.parent
+            project.image_count = sum(siblings.values())
+        else:
+            project.images_dir, project.image_count = best_dir, best_count
 
     if traj_candidates:
         project.trajectory = max(traj_candidates, key=lambda p: p.stat().st_size)

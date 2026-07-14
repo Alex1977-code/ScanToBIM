@@ -257,3 +257,31 @@ def test_read_ply_thinned(tmp_path):
     src = write_point_cloud(cloud, tmp_path / "big.ply")
     got = read_point_cloud(src, max_points=25_000)
     assert len(got) <= 25_000
+
+
+def test_e57_16bit_colors_normalized(tmp_path):
+    """S20-style 16-bit E57 colors must not clip to a white model."""
+    pye57 = pytest.importorskip("pye57")
+    import numpy as np
+
+    from tests.synthetic import make_box_scan
+
+    cloud = make_box_scan(density=200, noise=0.004)
+    rng = np.random.default_rng(3)
+    rgb16 = rng.integers(5000, 60000, (len(cloud.points), 3)).astype(np.uint16)
+    e57 = pye57.E57(str(tmp_path / "s16.e57"), mode="w")
+    e57.write_scan_raw({
+        "cartesianX": cloud.points[:, 0],
+        "cartesianY": cloud.points[:, 1],
+        "cartesianZ": cloud.points[:, 2],
+        "colorRed": rgb16[:, 0],
+        "colorGreen": rgb16[:, 1],
+        "colorBlue": rgb16[:, 2],
+    })
+    e57.close()
+    got = read_point_cloud(tmp_path / "s16.e57")
+    assert got.colors is not None
+    # Real variation preserved instead of everything clipping to 255.
+    assert got.colors.max() <= 255 and got.colors.min() >= 0
+    assert got.colors.std() > 20
+    assert (got.colors == 255).mean() < 0.1

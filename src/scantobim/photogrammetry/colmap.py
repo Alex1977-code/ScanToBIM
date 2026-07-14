@@ -133,14 +133,25 @@ def read_colmap_text_model(model_dir: str | Path) -> list[CameraPose]:
         intrinsics[cam_id] = (w, h, fx, fy, cx, cy, k1)
 
     poses: list[CameraPose] = []
-    lines = [
+    content = [
         ln.strip()
         for ln in images_file.read_text().splitlines()
-        if ln.strip() and not ln.strip().startswith("#")
+        if not ln.strip().startswith("#")
     ]
-    # images.txt: two lines per image (pose line, 2D-points line).
-    for pose_line in lines[::2]:
+    # images.txt: two lines per image (pose line, then the 2D-points line —
+    # which may be EMPTY for pose-only exports, so blank lines must keep
+    # their place in the pairing instead of being filtered out).
+    i = 0
+    while i < len(content):
+        pose_line = content[i]
+        i += 1
+        if not pose_line:
+            continue
         parts = pose_line.split()
+        if len(parts) < 10:
+            continue
+        if i < len(content):
+            i += 1  # consume the (possibly empty) 2D-points line
         qw, qx, qy, qz = (float(p) for p in parts[1:5])
         tx, ty, tz = (float(p) for p in parts[5:8])
         cam_id = int(parts[8])

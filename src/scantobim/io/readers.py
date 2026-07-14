@@ -67,6 +67,22 @@ def read_point_cloud(
     return thin_cloud(cloud, max_points)
 
 
+def _normalize_rgb(raw: np.ndarray) -> np.ndarray:
+    """Bring RGB of any encoding into uint8 0–255.
+
+    Scanner exports disagree: 8-bit (0–255), 16-bit (0–65535, e.g. SHARE
+    SLAM S20 E57) or floats 0–1. Clipping 16-bit to 255 turned every model
+    white — scale by the actual value range instead.
+    """
+    raw = np.asarray(raw, dtype=np.float64)
+    peak = float(raw.max()) if raw.size else 0.0
+    if 0.0 < peak <= 1.0:
+        raw = raw * 255.0  # float 0–1 convention
+    elif peak > 255.0:
+        raw = raw / 257.0  # 16-bit convention
+    return np.clip(raw, 0, 255).astype(np.uint8)
+
+
 def thin_cloud(cloud: PointCloud, max_points: int | None) -> PointCloud:
     """Thin a cloud to at most ~``max_points`` on an adaptive voxel grid."""
     if max_points is None or len(cloud) <= max_points:
@@ -422,11 +438,11 @@ def _read_e57(path: Path, max_points: int | None = None) -> PointCloud:
             )
             colors = None
             if all(k in data for k in ("colorRed", "colorGreen", "colorBlue")):
-                colors = np.clip(
+                colors = _normalize_rgb(
                     np.column_stack(
                         [data["colorRed"], data["colorGreen"], data["colorBlue"]]
-                    ), 0, 255,
-                ).astype(np.uint8)
+                    )
+                )
             intensity = (
                 np.asarray(data["intensity"], dtype=np.float32)
                 if "intensity" in data else None
@@ -461,7 +477,10 @@ def _read_e57(path: Path, max_points: int | None = None) -> PointCloud:
             has_intensity = False
 
     points = np.vstack(clouds)
-    colors = np.clip(np.vstack(colors_parts), 0, 255).astype(np.uint8) if has_color and colors_parts else None
+    colors = (
+        _normalize_rgb(np.vstack(colors_parts))
+        if has_color and colors_parts else None
+    )
     intensity = None
     if has_intensity and intensity_parts:
         raw = np.concatenate(intensity_parts)

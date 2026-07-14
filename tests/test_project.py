@@ -251,3 +251,80 @@ def test_project_photo_fallback_unreadable_images(tmp_path, capsys):
     assert main(["project", str(root), "-o", str(out), "--seed", "1"]) == 0
     log = capsys.readouterr().out
     assert "Textur: punktfarben" in log  # fell back instead of grey texture
+
+
+def test_stereo_image_dirs_use_common_parent(tmp_path):
+    """S20 stereo rig: left/ and right/ image folders → parent is the root."""
+    root = tmp_path / "s20_stereo"
+    for side in ("left", "right"):
+        d = root / "camera" / "undistorted" / side
+        d.mkdir(parents=True)
+        for i in range(4):
+            (d / f"frame_{i:04d}.jpg").write_bytes(b"\xff\xd8\xff\xdb x")
+    write_point_cloud(make_box_scan(density=300), root / "cloud.ply")
+    project = scan_project_dir(root)
+    assert project.images_dir == root / "camera" / "undistorted"
+    assert project.image_count == 8  # both cameras counted
+
+
+def test_image_index_resolves_stereo_names(tmp_path):
+    """COLMAP names like 'left/frame.jpg' resolve from any chosen folder."""
+    from scantobim.core.texture import _index_images
+
+    base = tmp_path / "undistorted"
+    for side in ("left", "right"):
+        (base / side).mkdir(parents=True)
+        (base / side / "frame_0001.jpg").write_bytes(b"x")
+
+    # Chosen dir = parent → subdir-prefixed names resolve directly.
+    idx = _index_images(base)
+    assert idx["left/frame_0001.jpg"] == base / "left" / "frame_0001.jpg"
+    assert idx["right/frame_0001.jpg"] == base / "right" / "frame_0001.jpg"
+
+    # Chosen dir = left only → sibling right/ is still found via the index.
+    idx = _index_images(base / "left")
+    assert idx["right/frame_0001.jpg"] == base / "right" / "frame_0001.jpg"
+    assert "frame_0001.jpg" in idx  # basename fallback
+
+
+def test_project_photo_projection_stereo(tmp_path, capsys):
+    """Stereo project: both cameras project, halves of the floor get each photo."""
+    PIL = pytest.importorskip("PIL.Image")
+    from scantobim.cli import main
+    from scantobim.core.cloud import PointCloud
+    from tests.synthetic import sample_rect
+
+    root = tmp_path / "s20_stereo_proj"
+    root.mkdir()
+    rng = np.random.default_rng(0)
+    x, y, z = np.eye(3)
+    floor = sample_rect((0, 0, 0), x, y, 4.0, 4.0, 2500, 0.002, rng)
+    wall = sample_rect((0, 0, 0), x, z, 4.0, 1.0, 2500, 0.002, rng)
+    write_point_cloud(PointCloud(points=np.vstack([floor, wall])), root / "cloud.ply")
+
+    # Two cameras (a stereo pair side by side, both looking down), photos in
+    # left/ and right/ subfolders, COLMAP names carry the subfolder prefix.
+    w = h = 400
+    f = 300.0
+    rotation = np.diag([1.0, -1.0, -1.0])
+    for side, cx, color in (("left", 1.0, (255, 0, 0)), ("right", 3.0, (0, 0, 255))):
+        d = root / "photos" / side
+        d.mkdir(parents=True)
+        img = np.zeros((h, w, 3), np.uint8)
+        img[:] = color
+        PIL.fromarray(img).save(d / "cam.png")
+    model = root / "model_txt"
+    model.mkdir()
+    (model / "cameras.txt").write_text(f"1 PINHOLE {w} {h} {f} {f} {w/2} {h/2}\n")
+    lines = []
+    for i, (side, cx) in enumerate([("left", 1.0), ("right", 3.0)], start=1):
+        t = -rotation @ np.array([cx, 2.0, 5.0])
+        lines.append(f"{i} 1 0 0 0 {t[0]} {t[1]} {t[2]} 1 {side}/cam.png\n\n")
+    (model / "images.txt").write_text("".join(lines))
+
+    out = root / "modell.html"
+    code = main(["project", str(root), "-o", str(out), "--texel", "0.05", "--seed", "1"])
+    assert code == 0
+    log = capsys.readouterr().out
+    assert "Fotos gefunden: 2 von 2" in log
+    assert "Textur: foto-projektion" in log

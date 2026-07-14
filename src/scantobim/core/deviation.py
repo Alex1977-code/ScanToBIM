@@ -189,6 +189,12 @@ def deviation_analysis(
     # does it fit where it exists?" (fidelity, points within the near band).
     near_band = max(5.0 * tolerance, 0.02)
     near = abs_d <= near_band
+    # Raw scans sprawl far beyond the modeled scene (drift tails, distant
+    # returns) — also report the coverage restricted to the model's own
+    # neighborhood, which is the number a user can actually act on.
+    lo = mesh.vertices.min(axis=0) - 1.0
+    hi = mesh.vertices.max(axis=0) + 1.0
+    in_area = np.all((pts >= lo) & (pts <= hi), axis=1)
     stats = {
         "points": int(len(pts)),
         "tolerance": tolerance,
@@ -199,6 +205,9 @@ def deviation_analysis(
         "max": round(float(abs_d.max()), 6),
         "coverage": round(float(near.mean()), 4),
         "coverage_band": near_band,
+        "coverage_model_area": (
+            round(float(near[in_area].mean()), 4) if in_area.any() else None
+        ),
         "histogram_mm": {
             f"{edges[i] * 1000:g}-{edges[i + 1] * 1000:g}": int(hist[i])
             for i in range(len(hist))
