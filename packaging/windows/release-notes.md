@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.8.0 — Hybrid-Modell: Freiform-Rekonstruktion der Restgeometrie
+
+- **Alles wird jetzt Modell**: Was das parametrische Flächen-/Zylindermodell nicht erklärt — gekrümmte Stahltore, Bögen, Geländer, Maschinen, Rohrleitungen — wird jetzt als **eigenes farbiges Dreiecksnetz rekonstruiert** (Freiform-Skin). Verfahren: dünn besetztes Voxel-Belegungsgitter → Hüllflächen-Extraktion → Laplace-Glättung → Rückprojektion jeder Netz-Ecke auf die echten Messpunkte → Einfärbung aus den Punktfarben. Rausch-Sprenkel werden über eine Zusammenhangs-Analyse verworfen; das Dreiecks-Budget wird über die Rasterweite eingehalten, nie durch Weglassen von Geometrie.
+- **Im Viewer als Ebene schaltbar** („Freiform-Restgeometrie“, oben rechts), zusätzlich als eigene Datei `freiform.glb` zum Weiterverarbeiten in CAD/Blender. Kennzahlen (Dreiecke, Bauteile, abgedeckte Restpunkte, Rasterweite) stehen im Messbericht.
+- Standardmäßig aktiv (GUI-Häkchen „Freiform-Restgeometrie vernetzen“, CLI `--no-freeform` zum Abschalten). BIM/CAD-Exporte (IFC, STEP) bleiben bewusst rein parametrisch.
+
 ### Neu in 2.7.0 — endlich Detail aus dichten Scans, nichts verschwindet mehr
 
 - **Kleine echte Flächen werden jetzt gefunden**: Die Mindestgröße einer Fläche war als *Prozentsatz der Wolke* definiert — bei einem 10-Mio-Punkte-Scan hieß „1 %" plötzlich: jede Fläche braucht ~100 000 Punkte (≈ 6 m²!). Fensterlaibungen, Pfeiler, kleine Dachflächen konnten prinzipiell nie erkannt werden. Der Prozentsatz zählt jetzt gegen maximal 2 Mio Punkte — auf dichten Scans sinkt die Mindestfläche damit um Faktor 5–20.

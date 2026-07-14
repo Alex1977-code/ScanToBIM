@@ -168,6 +168,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("--watertight", action="store_true",
                        help="globally optimized watertight model (PolyFit): "
                        "closes scan shadows with the geometrically exact faces")
+    p_rec.add_argument("--no-freeform", dest="freeform", action="store_false",
+                       help="skip the hybrid free-form mesh of the residual "
+                       "points (default: on)")
     p_rec.add_argument("--ghost-tol", type=float, default=None, metavar="M",
                        help="merge registration ghosts (double walls) within "
                        "this offset in input units")
@@ -223,6 +226,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         "come from SLAM scanners)")
     p_proj.add_argument("--watertight", action="store_true",
                         help="globally optimized watertight model")
+    p_proj.add_argument("--no-freeform", dest="freeform", action="store_false",
+                        help="skip the hybrid free-form mesh of the residual "
+                        "points (default: on)")
     p_proj.add_argument("--align", action="store_true",
                         help="axis-align the model, floor at Z=0")
     p_proj.add_argument("--no-photos", action="store_true",
@@ -684,9 +690,18 @@ def _cmd_reconstruct(args) -> int:
         n_storeys = max(1, len(result.report.get("storeys", [])))
         print(f"wrote {out} (IFC4, {n_storeys} Geschoss(e))")
     else:
-        out = write_mesh(output_mesh, args.output, residual=result.residual)
+        freeform = _apply_freeform(result) if getattr(args, "freeform", True) else None
+        out = write_mesh(
+            output_mesh, args.output,
+            residual=None if freeform is not None else result.residual,
+            freeform=freeform,
+        )
         print(f"wrote {out}")
-        if args.output.suffix.lower() in (".html", ".htm") and len(result.residual):
+        if freeform is not None:
+            ff_path = args.output.with_name(args.output.stem + "_freiform.glb")
+            write_mesh(freeform, ff_path)
+            print(f"wrote {ff_path} (Freiform-Restgeometrie)")
+        elif args.output.suffix.lower() in (".html", ".htm") and len(result.residual):
             print(
                 f"  Viewer: {min(len(result.residual), 800_000):,} Scan-Restpunkte "
                 "als schaltbare Ebene eingebettet"
@@ -888,8 +903,17 @@ def _cmd_project(args) -> int:
 
         out = write_ifc(result.surfaces, output, storeys=rep.get("storeys"))
     else:
-        out = write_mesh(output_mesh, output, residual=result.residual)
-        if ext in (".html", ".htm") and len(result.residual):
+        freeform = _apply_freeform(result) if getattr(args, "freeform", True) else None
+        out = write_mesh(
+            output_mesh, output,
+            residual=None if freeform is not None else result.residual,
+            freeform=freeform,
+        )
+        if freeform is not None:
+            ff_path = output.with_name(output.stem + "_freiform.glb")
+            write_mesh(freeform, ff_path)
+            print(f"wrote {ff_path} (Freiform-Restgeometrie)")
+        elif ext in (".html", ".htm") and len(result.residual):
             print(
                 f"  Viewer: {min(len(result.residual), 800_000):,} Scan-Restpunkte "
                 "als schaltbare Ebene eingebettet"
@@ -952,6 +976,31 @@ def _cmd_compare(args) -> int:
         args.output.write_text(json.dumps(report, indent=2, default=_json_default))
         print(f"wrote {args.output}")
     return 0
+
+
+def _apply_freeform(result):
+    """Hybrid model: free-form skin around the plane-residual points.
+
+    Returns the free-form ``Mesh`` (or ``None``) and stores its statistics
+    in the report.
+    """
+    from scantobim.core.freeform import freeform_mesh_from_points
+
+    if len(result.residual) < 300:
+        return None
+    print("Freiform-Rekonstruktion der Restgeometrie (Hybrid-Modell) …")
+    freeform = freeform_mesh_from_points(result.residual)
+    if freeform is None:
+        print("  keine zusammenhängende Restgeometrie — übersprungen")
+        return None
+    st = freeform.freeform_stats
+    result.report["freeform"] = st
+    print(
+        f"  Freiform-Mesh: {st['triangles']:,} Dreiecke, "
+        f"{st['components']} Bauteile, deckt {st['points_covered'] * 100:.0f}% "
+        f"der Restpunkte ab (Raster {st['voxel'] * 100:.1f} cm)"
+    )
+    return freeform
 
 
 def _write_deviation(result, cloud, deviation_path: Path, tolerance: float) -> None:

@@ -13,14 +13,17 @@ from scantobim.core.mesh import Mesh
 
 
 def write_mesh(
-    mesh: Mesh, path: str | Path, residual: PointCloud | None = None
+    mesh: Mesh,
+    path: str | Path,
+    residual: PointCloud | None = None,
+    freeform: Mesh | None = None,
 ) -> Path:
     """Write ``mesh`` to ``path``; format is chosen by extension
     (``.obj``, ``.ply``, ``.stl``, ``.glb``, ``.gltf``, ``.html``).
 
-    ``residual`` (scan points the model does not explain) is embedded as a
-    toggleable colored point layer in the HTML viewer; other formats ignore
-    it.
+    ``residual`` (scan points the model does not explain) and ``freeform``
+    (the hybrid free-form skin of those points) are embedded as toggleable
+    layers in the HTML viewer; other formats ignore them.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +39,7 @@ def write_mesh(
     elif ext in (".html", ".htm"):
         from scantobim.io.html_viewer import write_html_viewer
 
-        write_html_viewer(mesh, path, points=residual)
+        write_html_viewer(mesh, path, points=residual, freeform=freeform)
     else:
         raise ValueError(
             f"Unsupported mesh format: {ext!r} (use .obj .ply .stl .glb .html)"

@@ -172,6 +172,7 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             report_html=(outdir / "pruefbericht.html")
             if opts.get("report_html") else None,
             max_points=int(opts.get("max_points") or 40_000_000),
+            freeform=opts.get("freeform", True),
             seed=None,
         )
         code = _cmd_project(ns)
@@ -200,6 +201,11 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             summary["Modelltreue RMS"] = f"{fid['rms'] * 1000:.1f} mm"
             if dev.get("coverage") is not None:
                 summary["Modellabdeckung"] = f"{dev['coverage'] * 100:.1f}% des Scans"
+        ff = rep.get("freeform")
+        if ff:
+            summary["Freiform-Mesh"] = (
+                f"{ff['triangles']:,} Dreiecke, {ff['components']} Bauteile"
+            )
         return summary
 
     # Memory guard for the packaged app: huge scans are thinned block-wise.
@@ -253,8 +259,20 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             output_mesh = bake_texture_from_cloud(result, cloud, transform=transform)
             texture_source = "punktfarben"
 
-    write_mesh(output_mesh, outdir / "modell.html", residual=result.residual)
+    freeform = None
+    if opts.get("freeform", True):
+        from scantobim.cli import _apply_freeform
+
+        freeform = _apply_freeform(result)
+    write_mesh(
+        output_mesh, outdir / "modell.html",
+        residual=None if freeform is not None else result.residual,
+        freeform=freeform,
+    )
     print("geschrieben: modell.html")
+    if freeform is not None:
+        write_mesh(freeform, outdir / "freiform.glb")
+        print("geschrieben: freiform.glb (Freiform-Restgeometrie)")
     for fmt in opts.get("formats", []):
         if fmt == "step":
             from scantobim.io.step import write_step
@@ -328,6 +346,11 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
         summary["Innerhalb Toleranz (modellnah)"] = (
             f"{fid.get('within_tolerance', dev['within_tolerance']) * 100:.1f}% "
             f"(±{dev['tolerance'] * 1000:.0f} mm)"
+        )
+    ff = rep.get("freeform")
+    if ff:
+        summary["Freiform-Mesh"] = (
+            f"{ff['triangles']:,} Dreiecke, {ff['components']} Bauteile"
         )
     summary["Dreiecke"] = rep["mesh"]["triangles"]
     summary["Restpunkte"] = rep["residual_points"]

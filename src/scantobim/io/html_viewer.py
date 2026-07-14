@@ -62,11 +62,16 @@ def write_html_viewer(
     path: str | Path,
     title: str = "ScanToBIM Modell",
     points=None,
+    freeform: Mesh | None = None,
     max_layer_points: int = 800_000,
 ) -> Path:
-    """Write the standalone viewer; ``points`` (a PointCloud, e.g. the
-    reconstruction residual) is embedded as a toggleable colored point layer
-    so railings, steel members and other unmodelled structure stay visible."""
+    """Write the standalone viewer.
+
+    ``points`` (a PointCloud, e.g. the reconstruction residual) is embedded
+    as a toggleable colored point layer; ``freeform`` (the hybrid free-form
+    skin of the residual) as a toggleable second mesh layer with vertex
+    colors — so railings, steel members and other unmodelled structure stay
+    visible next to the parametric surfaces."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -111,8 +116,25 @@ def write_html_viewer(
             else np.full((len(pt_positions), 3), 150, dtype=np.uint8)
         )
 
-    center = (positions.min(axis=0) + positions.max(axis=0)) / 2.0 if len(positions) else np.zeros(3)
-    radius = float(np.linalg.norm(positions - center, axis=1).max()) if len(positions) else 1.0
+    # Optional free-form mesh layer (hybrid model).
+    if freeform is not None and len(freeform.faces):
+        ff_positions = freeform.vertices.astype(np.float32)
+        ff_normals = freeform.vertex_normals().astype(np.float32)
+        ff_colors = (
+            freeform.vertex_colors.astype(np.uint8)
+            if freeform.vertex_colors is not None
+            else np.full((len(ff_positions), 3), 150, dtype=np.uint8)
+        )
+        ff_indices = freeform.faces.astype(np.uint32)
+    else:
+        ff_positions = np.zeros((0, 3), dtype=np.float32)
+        ff_normals = np.zeros((0, 3), dtype=np.float32)
+        ff_colors = np.zeros((0, 3), dtype=np.uint8)
+        ff_indices = np.zeros((0, 3), dtype=np.uint32)
+
+    all_pos = positions if not len(ff_positions) else np.vstack([positions, ff_positions])
+    center = (all_pos.min(axis=0) + all_pos.max(axis=0)) / 2.0 if len(all_pos) else np.zeros(3)
+    radius = float(np.linalg.norm(all_pos - center, axis=1).max()) if len(all_pos) else 1.0
 
     def b64(arr: np.ndarray) -> str:
         return base64.b64encode(np.ascontiguousarray(arr).tobytes()).decode("ascii")
@@ -125,6 +147,8 @@ def write_html_viewer(
         "center": [float(c) for c in center],
         "radius": radius if radius > 0 else 1.0,
         "points": int(len(pt_positions)),
+        "ff_indices": int(ff_indices.size),
+        "ff_triangles": int(len(ff_indices)),
     }
 
     meta["textured"] = bool(textured)
@@ -140,6 +164,10 @@ def write_html_viewer(
         .replace("__CREASES__", b64(creases))
         .replace("__PT_POSITIONS__", b64(pt_positions))
         .replace("__PT_COLORS__", b64(pt_colors))
+        .replace("__FF_POSITIONS__", b64(ff_positions))
+        .replace("__FF_NORMALS__", b64(ff_normals))
+        .replace("__FF_COLORS__", b64(ff_colors))
+        .replace("__FF_INDICES__", b64(ff_indices))
     )
     path.write_text(html, encoding="utf-8")
     return path
@@ -162,13 +190,18 @@ _TEMPLATE = """<!DOCTYPE html>
             background: rgba(30,34,40,.85); border: 1px solid #3a414b; border-radius: 8px;
             padding: 6px 10px; user-select: none; }
   #layers label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  #layers label[hidden] { display: none; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud"><h1>__TITLE__</h1><div id="stats"></div></div>
-<div id="layers" hidden><label><input type="checkbox" id="ptsToggle" checked>
-  Scan-Restpunkte (<span id="ptsCount"></span>)</label></div>
+<div id="layers" hidden>
+  <label id="ffRow" hidden><input type="checkbox" id="ffToggle" checked>
+    Freiform-Restgeometrie (<span id="ffCount"></span> Dreiecke)</label>
+  <label id="ptsRow" hidden><input type="checkbox" id="ptsToggle" checked>
+    Scan-Restpunkte (<span id="ptsCount"></span>)</label>
+</div>
 <div id="help">Ziehen: drehen &nbsp;•&nbsp; Shift/Rechts: verschieben &nbsp;•&nbsp; Rad/Pinch: zoomen</div>
 <script>
 "use strict";
@@ -186,16 +219,31 @@ const indices   = decode("__INDICES__", Uint32Array);
 const creases   = decode("__CREASES__", Uint32Array);
 const ptPositions = decode("__PT_POSITIONS__", Float32Array);
 const ptColors    = decode("__PT_COLORS__", Uint8Array);
+const ffPositions = decode("__FF_POSITIONS__", Float32Array);
+const ffNormals   = decode("__FF_NORMALS__", Float32Array);
+const ffColors    = decode("__FF_COLORS__", Uint8Array);
+const ffIndices   = decode("__FF_INDICES__", Uint32Array);
 const TEXTURE_URI = "__TEXTURE_URI__";
 
 document.getElementById("stats").textContent =
   META.vertices + " Vertices · " + META.triangles + " Dreiecke · " + META.surfaces + " Flächen";
 let showPoints = META.points > 0;
-if (META.points > 0) {
+let showFF = META.ff_indices > 0;
+if (META.points > 0 || META.ff_indices > 0) {
   document.getElementById("layers").hidden = false;
+}
+if (META.points > 0) {
+  document.getElementById("ptsRow").hidden = false;
   document.getElementById("ptsCount").textContent = META.points.toLocaleString("de-DE");
   document.getElementById("ptsToggle").addEventListener("change", e => {
     showPoints = e.target.checked;
+  });
+}
+if (META.ff_indices > 0) {
+  document.getElementById("ffRow").hidden = false;
+  document.getElementById("ffCount").textContent = META.ff_triangles.toLocaleString("de-DE");
+  document.getElementById("ffToggle").addEventListener("change", e => {
+    showFF = e.target.checked;
   });
 }
 
@@ -247,6 +295,10 @@ const idxBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, indices);
 const lineBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, creases);
 const ptPosBuf = META.points ? buffer(gl.ARRAY_BUFFER, ptPositions) : null;
 const ptColBuf = META.points ? buffer(gl.ARRAY_BUFFER, ptColors) : null;
+const ffPosBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffPositions) : null;
+const ffNrmBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffNormals) : null;
+const ffColBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffColors) : null;
+const ffIdxBuf = META.ff_indices ? buffer(gl.ELEMENT_ARRAY_BUFFER, ffIndices) : null;
 const pAPos = gl.getAttribLocation(pprog, "aPos");
 const pACol = gl.getAttribLocation(pprog, "aCol");
 const pUMVP = gl.getUniformLocation(pprog, "uMVP");
@@ -355,16 +407,36 @@ function draw() {
     gl.drawElements(gl.LINES, creases.length, gl.UNSIGNED_INT, 0);
   }
 
+  if (META.ff_indices && showFF) {
+    // Free-form layer: same lighting, vertex colors, never textured.
+    gl.uniform1f(uFlat, 0.0); gl.uniform1f(uBias, 0.0); gl.uniform1f(uTextured, 0.0);
+    if (aUV >= 0) gl.disableVertexAttribArray(aUV);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ffPosBuf);
+    gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ffNrmBuf);
+    gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ffColBuf);
+    gl.vertexAttribPointer(aCol, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ffIdxBuf);
+    gl.drawElements(gl.TRIANGLES, META.ff_indices, gl.UNSIGNED_INT, 0);
+  }
+
   if (META.points && showPoints) {
     gl.useProgram(pprog);
     gl.uniformMatrix4fv(pUMVP, false, mvp);
+    // Disable every main-program array before switching layouts — enabled
+    // arrays are range-validated even when the program ignores them.
+    gl.disableVertexAttribArray(aPos);
     gl.disableVertexAttribArray(aNrm);
+    gl.disableVertexAttribArray(aCol);
     if (aUV >= 0) gl.disableVertexAttribArray(aUV);
     gl.bindBuffer(gl.ARRAY_BUFFER, ptPosBuf);
     gl.enableVertexAttribArray(pAPos); gl.vertexAttribPointer(pAPos, 3, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, ptColBuf);
     gl.enableVertexAttribArray(pACol); gl.vertexAttribPointer(pACol, 3, gl.UNSIGNED_BYTE, true, 0, 0);
     gl.drawArrays(gl.POINTS, 0, META.points);
+    gl.disableVertexAttribArray(pAPos);
+    gl.disableVertexAttribArray(pACol);
   }
   requestAnimationFrame(draw);
 }
