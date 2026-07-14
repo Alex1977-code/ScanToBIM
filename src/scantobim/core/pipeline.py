@@ -39,6 +39,12 @@ from scantobim.core.preprocess import (
 from scantobim.core.regularize import regularize_planes, snapped_angles_report
 
 
+# Reference size for ratio-based minimum-inlier thresholds: percentages are
+# meant relative to a "normal" scan — on multi-million-point clouds they must
+# not grow without bound, or small real surfaces become undetectable.
+_RATIO_REF = 2_000_000
+
+
 @dataclass
 class PipelineConfig:
     """All tuning knobs of the reconstruction, with sane data-driven defaults.
@@ -262,7 +268,14 @@ def reconstruct(
         if cfg.distance_threshold is not None
         else cfg.distance_factor * spacing
     )
-    min_inliers = max(cfg.min_inliers_abs, int(cfg.min_inlier_ratio * len(work)))
+    # The ratio-based minimum counts against at most _RATIO_REF points: a
+    # straight percentage explodes on dense scans (1% of a 10M-point scan
+    # demands 100k-point ≈ 6 m² planes — window reveals, piers and small
+    # roof faces would never be detected).
+    min_inliers = max(
+        cfg.min_inliers_abs,
+        int(cfg.min_inlier_ratio * min(len(work), _RATIO_REF)),
+    )
     planes, unassigned = detect_planes(
         work.points,
         work.normals,
@@ -534,6 +547,10 @@ def _classify_openings(geometries, floor_z: float) -> list[dict]:
             height = z_max - z_min
             t = hole @ h_dir
             width = float(t.max() - t.min())
+            # Occlusion shadows and noise punch small holes into walls —
+            # a real window/door is at least 25 cm in both directions.
+            if width < 0.25 or height < 0.25:
+                continue
             sill = z_min - floor_z
             kind = "tuer" if sill < 0.3 and height > 1.6 else "fenster"
             details.append(
@@ -583,7 +600,9 @@ def _detect_residual_cylinders(work, unassigned, dist_thresh, cfg):
         pts,
         work.normals[idx],
         distance_threshold=dist_thresh,
-        min_inliers=max(150, int(cfg.min_inlier_ratio * len(work.points))),
+        min_inliers=max(
+            150, int(cfg.min_inlier_ratio * min(len(work.points), _RATIO_REF))
+        ),
         max_cylinders=cfg.max_cylinders,
         max_radius=0.5 * float(np.max(hi - lo)),
         seed=cfg.seed,

@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.7.0 — endlich Detail aus dichten Scans, nichts verschwindet mehr
+
+- **Kleine echte Flächen werden jetzt gefunden**: Die Mindestgröße einer Fläche war als *Prozentsatz der Wolke* definiert — bei einem 10-Mio-Punkte-Scan hieß „1 %" plötzlich: jede Fläche braucht ~100 000 Punkte (≈ 6 m²!). Fensterlaibungen, Pfeiler, kleine Dachflächen konnten prinzipiell nie erkannt werden. Der Prozentsatz zählt jetzt gegen maximal 2 Mio Punkte — auf dichten Scans sinkt die Mindestfläche damit um Faktor 5–20.
+- **Scan-Restpunkte im 3D-Viewer**: Alles, was das Flächenmodell nicht erklärt (Stahlbogen, Geländer, Maschinen, Vegetation), verschwand bisher einfach — das Modell wirkte leer gegenüber dem Scan. Jetzt werden bis zu 800 000 Restpunkte **in Originalfarbe als schaltbare Ebene** in modell.html eingebettet („Scan-Restpunkte“-Schalter oben rechts): strukturierte Flächen wo möglich, echte Messpunkte für den Rest — das Modell zeigt wieder das ganze Bauwerk.
+- **Auto-Tuning bevorzugt jetzt Vollständigkeit**: Der Kandidat „detail“ erklärte im Praxis-Test 11 Prozentpunkte mehr der Szene, verlor aber wegen eines zu hohen Straf-Terms pro Fläche. Die Gewichte sind neu ausbalanciert — Abdeckung dominiert, Sparsamkeit entscheidet nur noch bei Gleichstand.
+- **Plausibilitätsfilter für Öffnungen**: Löcher unter 25 cm Kantenlänge (Scan-Schatten, Rauschen) werden nicht mehr als „Fenster“ gezählt — die Fensterliste enthält nur noch echte Öffnungen.
+
 ### Neu in 2.6.1 — kritischer Fix: große Areale wurden beim Einlesen zerquetscht
 
 - **Die eingebaute Ausdünnung hat große Scans ruiniert**: Beim Einlesen von Wolken über dem Punkte-Limit (GUI: 40 Mio) startete das Ausdünnungsraster bei *Szenendiagonale ÷ 1000* und konnte nur gröber werden — ein 45,7-Mio-Scan eines ~230-m-Areals kollabierte damit auf 156 848 Punkte mit 22 cm Raster (statt der erlaubten 40 Mio!). Ergebnis: nur grobe Riesenflächen, kaum Öffnungen, 3 % Abdeckung. Jetzt sucht die Ausdünnung das Raster **in beide Richtungen** (Bisektion auf das Punktebudget): das Ergebnis liegt garantiert nahe am Limit, typisch 70–100 % davon. Derselbe Scan liefert jetzt ~40 Mio Punkte in echter Zentimeter-Auflösung.

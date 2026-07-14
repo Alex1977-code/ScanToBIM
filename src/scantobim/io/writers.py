@@ -12,9 +12,16 @@ from scantobim.core.cloud import PointCloud
 from scantobim.core.mesh import Mesh
 
 
-def write_mesh(mesh: Mesh, path: str | Path) -> Path:
+def write_mesh(
+    mesh: Mesh, path: str | Path, residual: PointCloud | None = None
+) -> Path:
     """Write ``mesh`` to ``path``; format is chosen by extension
-    (``.obj``, ``.ply``, ``.stl``, ``.glb``, ``.gltf``, ``.html``)."""
+    (``.obj``, ``.ply``, ``.stl``, ``.glb``, ``.gltf``, ``.html``).
+
+    ``residual`` (scan points the model does not explain) is embedded as a
+    toggleable colored point layer in the HTML viewer; other formats ignore
+    it.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     ext = path.suffix.lower()
@@ -29,7 +36,7 @@ def write_mesh(mesh: Mesh, path: str | Path) -> Path:
     elif ext in (".html", ".htm"):
         from scantobim.io.html_viewer import write_html_viewer
 
-        write_html_viewer(mesh, path)
+        write_html_viewer(mesh, path, points=residual)
     else:
         raise ValueError(
             f"Unsupported mesh format: {ext!r} (use .obj .ply .stl .glb .html)"

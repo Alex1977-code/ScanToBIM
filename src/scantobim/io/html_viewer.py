@@ -57,7 +57,16 @@ def extract_crease_edges(mesh: Mesh, dihedral_deg: float = 25.0) -> np.ndarray:
     return uniq[keep]
 
 
-def write_html_viewer(mesh: Mesh, path: str | Path, title: str = "ScanToBIM Modell") -> Path:
+def write_html_viewer(
+    mesh: Mesh,
+    path: str | Path,
+    title: str = "ScanToBIM Modell",
+    points=None,
+    max_layer_points: int = 800_000,
+) -> Path:
+    """Write the standalone viewer; ``points`` (a PointCloud, e.g. the
+    reconstruction residual) is embedded as a toggleable colored point layer
+    so railings, steel members and other unmodelled structure stay visible."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -82,6 +91,26 @@ def write_html_viewer(mesh: Mesh, path: str | Path, title: str = "ScanToBIM Mode
         uvs = np.zeros((len(positions), 2), dtype=np.float32)
         texture_uri = ""
 
+    # Optional residual scan points as a toggleable layer.
+    pt_positions = np.zeros((0, 3), dtype=np.float32)
+    pt_colors = np.zeros((0, 3), dtype=np.uint8)
+    if points is not None and len(points):
+        pt_positions = points.points
+        if len(pt_positions) > max_layer_points:
+            rng = np.random.default_rng(0)
+            keep = rng.choice(len(pt_positions), max_layer_points, replace=False)
+            keep.sort()
+            pt_positions = pt_positions[keep]
+            pt_colors_src = None if points.colors is None else points.colors[keep]
+        else:
+            pt_colors_src = points.colors
+        pt_positions = pt_positions.astype(np.float32)
+        pt_colors = (
+            pt_colors_src.astype(np.uint8)
+            if pt_colors_src is not None
+            else np.full((len(pt_positions), 3), 150, dtype=np.uint8)
+        )
+
     center = (positions.min(axis=0) + positions.max(axis=0)) / 2.0 if len(positions) else np.zeros(3)
     radius = float(np.linalg.norm(positions - center, axis=1).max()) if len(positions) else 1.0
 
@@ -95,6 +124,7 @@ def write_html_viewer(mesh: Mesh, path: str | Path, title: str = "ScanToBIM Mode
         "surfaces": int(n_surfaces),
         "center": [float(c) for c in center],
         "radius": radius if radius > 0 else 1.0,
+        "points": int(len(pt_positions)),
     }
 
     meta["textured"] = bool(textured)
@@ -108,6 +138,8 @@ def write_html_viewer(mesh: Mesh, path: str | Path, title: str = "ScanToBIM Mode
         .replace("__TEXTURE_URI__", texture_uri)
         .replace("__INDICES__", b64(indices))
         .replace("__CREASES__", b64(creases))
+        .replace("__PT_POSITIONS__", b64(pt_positions))
+        .replace("__PT_COLORS__", b64(pt_colors))
     )
     path.write_text(html, encoding="utf-8")
     return path
@@ -126,11 +158,17 @@ _TEMPLATE = """<!DOCTYPE html>
   #hud h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
   #hud div { font-size: 12px; opacity: .75; }
   #help { position: fixed; right: 12px; bottom: 10px; color: #99a3ad; font-size: 11px; pointer-events: none; }
+  #layers { position: fixed; right: 12px; top: 10px; color: #dde3ea; font-size: 12px;
+            background: rgba(30,34,40,.85); border: 1px solid #3a414b; border-radius: 8px;
+            padding: 6px 10px; user-select: none; }
+  #layers label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud"><h1>__TITLE__</h1><div id="stats"></div></div>
+<div id="layers" hidden><label><input type="checkbox" id="ptsToggle" checked>
+  Scan-Restpunkte (<span id="ptsCount"></span>)</label></div>
 <div id="help">Ziehen: drehen &nbsp;•&nbsp; Shift/Rechts: verschieben &nbsp;•&nbsp; Rad/Pinch: zoomen</div>
 <script>
 "use strict";
@@ -146,10 +184,20 @@ const colors    = decode("__COLORS__", Uint8Array);
 const uvs       = decode("__UVS__", Float32Array);
 const indices   = decode("__INDICES__", Uint32Array);
 const creases   = decode("__CREASES__", Uint32Array);
+const ptPositions = decode("__PT_POSITIONS__", Float32Array);
+const ptColors    = decode("__PT_COLORS__", Uint8Array);
 const TEXTURE_URI = "__TEXTURE_URI__";
 
 document.getElementById("stats").textContent =
   META.vertices + " Vertices · " + META.triangles + " Dreiecke · " + META.surfaces + " Flächen";
+let showPoints = META.points > 0;
+if (META.points > 0) {
+  document.getElementById("layers").hidden = false;
+  document.getElementById("ptsCount").textContent = META.points.toLocaleString("de-DE");
+  document.getElementById("ptsToggle").addEventListener("change", e => {
+    showPoints = e.target.checked;
+  });
+}
 
 const canvas = document.getElementById("c");
 const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
@@ -178,6 +226,16 @@ gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
 gl.linkProgram(prog);
 gl.useProgram(prog);
 
+// Minimal second program for the residual scan-point layer.
+const PVS = "attribute vec3 aPos; attribute vec3 aCol; uniform mat4 uMVP;" +
+  "varying vec3 vC; void main(){ vC=aCol; gl_Position=uMVP*vec4(aPos,1.0); gl_PointSize=2.0; }";
+const PFS = "precision mediump float; varying vec3 vC;" +
+  "void main(){ gl_FragColor=vec4(vC,1.0); }";
+const pprog = gl.createProgram();
+gl.attachShader(pprog, shader(gl.VERTEX_SHADER, PVS));
+gl.attachShader(pprog, shader(gl.FRAGMENT_SHADER, PFS));
+gl.linkProgram(pprog);
+
 function buffer(target, data) {
   const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b;
 }
@@ -187,6 +245,11 @@ const colBuf = buffer(gl.ARRAY_BUFFER, colors);
 const uvBuf = buffer(gl.ARRAY_BUFFER, uvs);
 const idxBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, indices);
 const lineBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, creases);
+const ptPosBuf = META.points ? buffer(gl.ARRAY_BUFFER, ptPositions) : null;
+const ptColBuf = META.points ? buffer(gl.ARRAY_BUFFER, ptColors) : null;
+const pAPos = gl.getAttribLocation(pprog, "aPos");
+const pACol = gl.getAttribLocation(pprog, "aCol");
+const pUMVP = gl.getUniformLocation(pprog, "uMVP");
 
 const aPos = gl.getAttribLocation(prog, "aPos");
 const aNrm = gl.getAttribLocation(prog, "aNrm");
@@ -264,6 +327,7 @@ function draw() {
   const mvp = mat4mul(
     perspective(0.9, w/h, META.radius*0.01, META.radius*40),
     lookAt(eye, target, [0,0,1]));
+  gl.useProgram(prog);
   gl.uniformMatrix4fv(uMVP, false, mvp);
   const dir = sub3(eye, target);
   gl.uniform3f(uEye, dir[0], dir[1], dir[2]);
@@ -289,6 +353,18 @@ function draw() {
     gl.uniform1f(uFlat, 1.0); gl.uniform3f(uLine, 0.05, 0.05, 0.06); gl.uniform1f(uBias, 0.0012);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lineBuf);
     gl.drawElements(gl.LINES, creases.length, gl.UNSIGNED_INT, 0);
+  }
+
+  if (META.points && showPoints) {
+    gl.useProgram(pprog);
+    gl.uniformMatrix4fv(pUMVP, false, mvp);
+    gl.disableVertexAttribArray(aNrm);
+    if (aUV >= 0) gl.disableVertexAttribArray(aUV);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ptPosBuf);
+    gl.enableVertexAttribArray(pAPos); gl.vertexAttribPointer(pAPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ptColBuf);
+    gl.enableVertexAttribArray(pACol); gl.vertexAttribPointer(pACol, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.drawArrays(gl.POINTS, 0, META.points);
   }
   requestAnimationFrame(draw);
 }

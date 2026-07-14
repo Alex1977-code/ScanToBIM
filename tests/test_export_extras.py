@@ -86,3 +86,33 @@ def test_html_viewer(box_mesh, tmp_path):
 def test_write_mesh_html_dispatch(box_mesh, tmp_path):
     out = write_mesh(box_mesh, tmp_path / "viewer.html")
     assert out.stat().st_size > 5000
+    # No residual → the layer toggle stays absent from the metadata.
+    meta = json.loads(re.search(r"const META = (\{.*?\});", out.read_text()).group(1))
+    assert meta["points"] == 0
+
+
+def test_html_viewer_residual_point_layer(box_mesh, tmp_path):
+    """Unexplained scan points ride along as a toggleable colored layer."""
+    import numpy as np
+
+    from scantobim.core.cloud import PointCloud
+
+    rng = np.random.default_rng(0)
+    residual = PointCloud(
+        points=rng.uniform(0, 2, (5000, 3)),
+        colors=rng.integers(0, 255, (5000, 3)).astype(np.uint8),
+    )
+    out = write_mesh(box_mesh, tmp_path / "viewer.html", residual=residual)
+    html = out.read_text()
+    meta = json.loads(re.search(r"const META = (\{.*?\});", html).group(1))
+    assert meta["points"] == 5000
+    assert "Scan-Restpunkte" in html and "gl.POINTS" in html
+
+    # Subsampling caps the embedded layer.
+    big = PointCloud(points=rng.uniform(0, 2, (30000, 3)))
+    out2 = write_mesh(box_mesh, tmp_path / "viewer2.html", residual=big)
+    from scantobim.io.html_viewer import write_html_viewer as _w
+
+    path3 = _w(box_mesh, tmp_path / "viewer3.html", points=big, max_layer_points=10000)
+    meta3 = json.loads(re.search(r"const META = (\{.*?\});", path3.read_text()).group(1))
+    assert meta3["points"] == 10000

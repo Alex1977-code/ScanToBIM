@@ -90,10 +90,13 @@ def auto_reconstruct(
         # alike and cannot mask a badly fitting model).
         fid = stats.get("fidelity") or stats
         unexplained = 1.0 - stats.get("coverage", 0.0)
+        # Completeness dominates, parsimony only breaks ties: with the old
+        # 0.01/plane penalty a candidate explaining 11 pp more of a complex
+        # scene lost merely for using 55 more surfaces.
         score = (
             fid["p95"] / max(spacing, 1e-9)
-            + 2.0 * unexplained
-            + 0.01 * rep["planes"]
+            + 3.0 * unexplained
+            + 0.002 * rep["planes"]
         )
         entry = {
             "candidate": name,

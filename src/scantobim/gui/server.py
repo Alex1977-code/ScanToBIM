@@ -253,7 +253,7 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             output_mesh = bake_texture_from_cloud(result, cloud, transform=transform)
             texture_source = "punktfarben"
 
-    write_mesh(output_mesh, outdir / "modell.html")
+    write_mesh(output_mesh, outdir / "modell.html", residual=result.residual)
     print("geschrieben: modell.html")
     for fmt in opts.get("formats", []):
         if fmt == "step":

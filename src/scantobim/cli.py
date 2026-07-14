@@ -684,8 +684,13 @@ def _cmd_reconstruct(args) -> int:
         n_storeys = max(1, len(result.report.get("storeys", [])))
         print(f"wrote {out} (IFC4, {n_storeys} Geschoss(e))")
     else:
-        out = write_mesh(output_mesh, args.output)
+        out = write_mesh(output_mesh, args.output, residual=result.residual)
         print(f"wrote {out}")
+        if args.output.suffix.lower() in (".html", ".htm") and len(result.residual):
+            print(
+                f"  Viewer: {min(len(result.residual), 800_000):,} Scan-Restpunkte "
+                "als schaltbare Ebene eingebettet"
+            )
 
     if args.floorplan is not None:
         from scantobim.io.dxf import write_floorplan_dxf
@@ -883,7 +888,12 @@ def _cmd_project(args) -> int:
 
         out = write_ifc(result.surfaces, output, storeys=rep.get("storeys"))
     else:
-        out = write_mesh(output_mesh, output)
+        out = write_mesh(output_mesh, output, residual=result.residual)
+        if ext in (".html", ".htm") and len(result.residual):
+            print(
+                f"  Viewer: {min(len(result.residual), 800_000):,} Scan-Restpunkte "
+                "als schaltbare Ebene eingebettet"
+            )
     print(f"wrote {out}")
 
     if args.deviation is not None:
