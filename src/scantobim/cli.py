@@ -131,6 +131,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "structures; 'auto' tries several parameter sets and keeps the "
         "objectively best result — slower but self-optimizing)",
     )
+    p_rec.add_argument(
+        "--source", default="standard",
+        choices=["standard", "slam", "tls", "drohne", "iphone"],
+        help="sensor profile layered over the preset: slam (handheld, e.g. "
+        "SHARE S20), tls (tripod laser scanner), drohne (photogrammetry/"
+        "aerial), iphone (mobile LiDAR)",
+    )
     p_rec.add_argument("--cylinders", action="store_true",
                        help="also reconstruct cylindrical members (columns, "
                        "pipes) from the residual (included in --preset detail)")
@@ -210,6 +217,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="output model (default: <folder>/scantobim_modell.html)")
     p_proj.add_argument("--preset", default="building",
                         choices=["auto", "building", "indoor", "object", "detail", "fast"])
+    p_proj.add_argument("--source", default="slam",
+                        choices=["standard", "slam", "tls", "drohne", "iphone"],
+                        help="sensor profile (default: slam — project folders "
+                        "come from SLAM scanners)")
     p_proj.add_argument("--watertight", action="store_true",
                         help="globally optimized watertight model")
     p_proj.add_argument("--align", action="store_true",
@@ -553,6 +564,9 @@ def _cmd_reconstruct(args) -> int:
     cfg = PipelineConfig.preset(
         args.preset if args.preset != "auto" else "building"
     )
+    from scantobim.core.pipeline import SOURCE_PROFILES, apply_source_profile
+
+    apply_source_profile(cfg, getattr(args, "source", "standard"))
     if args.voxel is not None:
         cfg.voxel_size = args.voxel
     if args.dist is not None:
@@ -595,6 +609,7 @@ def _cmd_reconstruct(args) -> int:
             trajectory=trajectory,
             seed=args.seed,
             overrides={
+                **SOURCE_PROFILES.get(getattr(args, "source", "standard"), {}),
                 "watertight": cfg.watertight,
                 "align_axes": cfg.align_axes,
                 "ghost_offset_tol": cfg.ghost_offset_tol,
@@ -731,6 +746,12 @@ def _cmd_project(args) -> int:
     cfg = PipelineConfig.preset(
         args.preset if args.preset != "auto" else "building"
     )
+    from scantobim.core.pipeline import SOURCE_PROFILES, apply_source_profile
+
+    source = getattr(args, "source", "slam")
+    apply_source_profile(cfg, source)
+    for key, value in (getattr(args, "advanced", None) or {}).items():
+        setattr(cfg, key, value)
     if args.watertight:
         cfg.watertight = True
     if args.align:
@@ -738,13 +759,18 @@ def _cmd_project(args) -> int:
     if args.seed is not None:
         cfg.seed = args.seed
 
-    print(f"reconstructing (preset: {args.preset}) …")
+    print(f"reconstructing (preset: {args.preset}, Quelle: {source}) …")
     if args.preset == "auto":
         from scantobim.core.autotune import auto_reconstruct
 
         result = auto_reconstruct(
             cloud, trajectory=trajectory, seed=args.seed,
-            overrides={"watertight": cfg.watertight, "align_axes": cfg.align_axes},
+            overrides={
+                **SOURCE_PROFILES.get(source, {}),
+                **(getattr(args, "advanced", None) or {}),
+                "watertight": cfg.watertight,
+                "align_axes": cfg.align_axes,
+            },
         )
     else:
         result = reconstruct(cloud, cfg, trajectory=trajectory)

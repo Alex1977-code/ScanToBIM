@@ -24,6 +24,10 @@ Grafische Oberflaeche (empfohlen)
   Strg+C beendet das Programm.
 * Ohne Browser gewuenscht? "scantobim.exe wizard" ist der gefuehrte
   Konsolen-Modus.
+* In der GUI: "Quelle/Scanner" waehlen (SLAM S20, Stativ-Scanner,
+  Drohne, iPhone), unter "Erweiterte Einstellungen" feinjustieren
+  (Erklaerung erscheint beim Draufzeigen mit der Maus) und alles als
+  eigenes Profil dauerhaft speichern.
 
 Benutzung (Eingabeaufforderung oder PowerShell)
 -----------------------------------------------

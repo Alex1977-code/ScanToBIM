@@ -180,3 +180,77 @@ def test_addpath_project_folder(gui_server, tmp_path):
     entry = json.loads(body)
     assert entry["kind"] == "project"
     assert "cloud.ply" in entry["name"] and "s20_export" in entry["name"]
+
+
+def test_profiles_save_load_delete(gui_server, tmp_path, monkeypatch):
+    """Custom profiles persist, list and delete via the API."""
+    monkeypatch.setattr(
+        "scantobim.gui.server._PROFILE_FILE", tmp_path / "profiles.json"
+    )
+    url, _ = gui_server
+    settings = {
+        "preset": "detail", "source": "slam", "watertight": True,
+        "advanced": {"distance_factor": 3.5}, "formats": ["step"],
+    }
+    status, body = _post(
+        url + "/api/profiles",
+        json.dumps({"name": "S20 außen", "settings": settings}).encode(),
+    )
+    assert status == 200
+    _post(url + "/api/profiles",
+          json.dumps({"name": "S20 innen fein", "settings": settings}).encode())
+
+    _, body = _get(url + "/api/profiles")
+    profiles = json.loads(body)["profiles"]
+    assert set(profiles) == {"S20 außen", "S20 innen fein"}
+    assert profiles["S20 außen"]["advanced"]["distance_factor"] == 3.5
+
+    _post(url + "/api/profiles/delete", json.dumps({"name": "S20 außen"}).encode())
+    _, body = _get(url + "/api/profiles")
+    assert set(json.loads(body)["profiles"]) == {"S20 innen fein"}
+
+
+def test_run_with_source_and_advanced(gui_server, tmp_path):
+    """Source profile + advanced overrides reach the reconstruction config."""
+    url, _ = gui_server
+    src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "scan.ply")
+    status, body = _post(url + "/api/upload", src.read_bytes(), {"X-Filename": "scan.ply"})
+    uploaded = json.loads(body)
+    status, body = _post(
+        url + "/api/run",
+        json.dumps({
+            "mode": "reconstruct",
+            "files": [uploaded["path"]],
+            "options": {
+                "preset": "fast", "texture": False, "source": "slam",
+                "advanced": {"max_planes": 8, "distance_factor": 2.0},
+            },
+        }).encode(),
+    )
+    job = json.loads(body)["job"]
+    deadline = time.time() + 180
+    while True:
+        _, body = _get(url + f"/api/status?job={job}")
+        s = json.loads(body)
+        if s["state"] != "running":
+            break
+        assert time.time() < deadline
+        time.sleep(0.3)
+    assert s["state"] == "done", s.get("error")
+    _, body = _get(url + f"/api/output?job={job}&name=bericht.json")
+    config = json.loads(body)["config"]
+    assert config["max_planes"] == 8  # advanced override wins
+    assert config["distance_factor"] == 2.0  # …also over the slam profile
+    assert config["ghost_offset_tol"] == 0.03  # slam profile applied
+
+
+def test_page_has_settings_ui(gui_server):
+    url, _ = gui_server
+    _, body = _get(url + "/")
+    text = body.decode()
+    assert "Quelle / Scanner" in text
+    assert "Erweiterte Einstellungen" in text
+    assert "gespeichertes Profil laden" in text
+    # Mouseover explanations present on the tunables.
+    assert text.count('title="') > 15
+    assert "Vielfaches des Punktabstands" in text

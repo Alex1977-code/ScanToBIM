@@ -115,6 +115,8 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 | 🏠 **Dach-Semantik** | Dachflächen mit **Neigung, Ausrichtung, Fläche, First- und Traufhöhe** im Bericht; `IfcRoof` im BIM-Export. |
 | 🚪 **Fenster/Tür-Erkennung** | Öffnungen werden mit Breite, Höhe und **Brüstungshöhe** als Fenster oder Tür klassifiziert und gezählt. |
 | 📉 **Epochen-Vergleich** (`scantobim compare`) | Verformungs-/Setzungsmonitoring: ICP-Feinregistrierung zweier Aufnahmen, dann vorzeichenbehaftete Verschiebung entlang der lokalen Normalen als Heatmap + Statistik. |
+| 🎛️ **Quellen-Profile** (`--source`) | Sensor-Profile für **SLAM-Handscanner (SHARE S20 & Co.), Stativ-Laserscanner, Drohne/Photogrammetrie, iPhone-LiDAR** — Toleranzen folgen dem Rausch-/Driftverhalten des Geräts, geschichtet über jedes Szenen-Preset. |
+| 💾 **Eigene Profile** | In der GUI lassen sich beliebig viele eigene Einstellungs-Profile **dauerhaft speichern, laden und löschen** („S20 außen“, „Drohne Halle“ …). Alle Regler tragen **Mouseover-Erklärungen**; das Erweitert-Panel öffnet Voxelgröße, Ebenen-Toleranz, Mindest-Flächengröße, Winkel-Raster, Geister-Versatz, QS-Toleranz u.&nbsp;m. |
 | 🧾 **Prüfbericht** (`--report-html`) | Druckfertiges A4-Dokument: Kennzahlen, Bauteil-/Dach-/Öffnungslisten, Soll-Ist-Histogramm, eingebettete maßstabsgetreue Ansichten — im Browser als PDF drucken. |
 
 ![Viewer](docs/images/viewer.png)

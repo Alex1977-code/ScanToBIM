@@ -43,6 +43,52 @@ _CONTENT_TYPES = {
 }
 
 
+# User profiles persist across sessions in the home directory.
+_PROFILE_FILE = Path.home() / ".scantobim" / "profiles.json"
+
+# Advanced parameters the GUI may override (whitelist with converters).
+_ADVANCED_FIELDS = {
+    "voxel_size": float,
+    "distance_factor": float,
+    "min_inlier_ratio": float,
+    "max_planes": int,
+    "ortho_tol_deg": float,
+    "parallel_tol_deg": float,
+    "ghost_offset_tol": float,
+    "min_opening_factor": float,
+}
+
+
+def _load_profiles() -> dict:
+    try:
+        return json.loads(_PROFILE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_profiles(profiles: dict) -> None:
+    _PROFILE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PROFILE_FILE.write_text(
+        json.dumps(profiles, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _apply_advanced(cfg, advanced: dict | None) -> dict:
+    """Apply whitelisted advanced overrides to the config; returns them typed."""
+    applied = {}
+    for key, value in (advanced or {}).items():
+        conv = _ADVANCED_FIELDS.get(key)
+        if conv is None or value in (None, ""):
+            continue
+        try:
+            typed = conv(value)
+        except (TypeError, ValueError):
+            continue
+        setattr(cfg, key, typed)
+        applied[key] = typed
+    return applied
+
+
 class _LogWriter(io.TextIOBase):
     """Line-buffered stdout replacement feeding the job log."""
 
@@ -104,10 +150,16 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     if len(files) == 1 and files[0].is_dir():
         from scantobim.cli import _cmd_project
 
+        advanced = {}
+        from scantobim.core.pipeline import PipelineConfig as _Cfg
+
+        advanced = _apply_advanced(_Cfg(), opts.get("advanced"))  # type-check only
         ns = Namespace(
             directory=files[0],
             output=outdir / "modell.html",
             preset=opts.get("preset", "building"),
+            source=opts.get("source", "slam"),
+            advanced=advanced,
             watertight=bool(opts.get("watertight")),
             align=bool(opts.get("align")),
             no_photos=False,
@@ -115,11 +167,11 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             texel=None,
             report=outdir / "bericht.json",
             deviation=(outdir / "abweichung.ply") if opts.get("deviation") else None,
-            tolerance=0.005,
+            tolerance=float(opts.get("tolerance") or 0.005),
             views=(outdir / "ansichten") if opts.get("views") else None,
             report_html=(outdir / "pruefbericht.html")
             if opts.get("report_html") else None,
-            max_points=40_000_000,
+            max_points=int(opts.get("max_points") or 40_000_000),
             seed=None,
         )
         code = _cmd_project(ns)
@@ -151,9 +203,15 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
         return summary
 
     # Memory guard for the packaged app: huge scans are thinned block-wise.
-    cloud = _read_inputs(files, bool(opts.get("register")), max_points=40_000_000)
+    max_points = int(opts.get("max_points") or 40_000_000)
+    cloud = _read_inputs(files, bool(opts.get("register")), max_points=max_points)
     preset = opts.get("preset", "building")
+    source = opts.get("source", "standard")
     cfg = PipelineConfig.preset(preset if preset != "auto" else "building")
+    from scantobim.core.pipeline import SOURCE_PROFILES, apply_source_profile
+
+    apply_source_profile(cfg, source)
+    advanced = _apply_advanced(cfg, opts.get("advanced"))
     if opts.get("watertight"):
         cfg.watertight = True
     if opts.get("cylinders"):
@@ -161,13 +219,15 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     if opts.get("align"):
         cfg.align_axes = True
 
-    print(f"Rekonstruktion läuft (Preset: {preset}) …")
+    print(f"Rekonstruktion läuft (Preset: {preset}, Quelle: {source}) …")
     if preset == "auto":
         from scantobim.core.autotune import auto_reconstruct
 
         result = auto_reconstruct(
             cloud,
             overrides={
+                **SOURCE_PROFILES.get(source, {}),
+                **advanced,
                 "watertight": cfg.watertight,
                 "align_axes": cfg.align_axes,
                 "cylinder_detection": cfg.cylinder_detection,
@@ -220,7 +280,10 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     if opts.get("deviation"):
         from scantobim.cli import _write_deviation
 
-        _write_deviation(result, cloud, outdir / "abweichung.ply", 0.005)
+        _write_deviation(
+            result, cloud, outdir / "abweichung.ply",
+            float(opts.get("tolerance") or 0.005),
+        )
     if opts.get("views"):
         from scantobim.cli import _write_views
 
@@ -471,6 +534,8 @@ def _make_handler(state: GuiState):
                     if f.exists()
                 ]
                 self._json({"version": __version__, "initial_files": files})
+            elif route == "/api/profiles":
+                self._json({"profiles": _load_profiles()})
             elif route == "/api/status":
                 job = state.jobs.get(self._query().get("job", ""))
                 if job is None:
@@ -532,6 +597,37 @@ def _make_handler(state: GuiState):
                     k += 1
                 target.write_bytes(body)
                 self._json({"path": str(target), "name": target.name, "size": len(body)})
+            elif route == "/api/profiles":
+                try:
+                    req = json.loads(body.decode())
+                    name = str(req["name"]).strip()[:60]
+                    settings = req["settings"]
+                    assert name and isinstance(settings, dict)
+                except Exception:
+                    self._json({"error": "ungültige Anfrage"}, 400)
+                    return
+                profiles = _load_profiles()
+                profiles[name] = settings
+                try:
+                    _save_profiles(profiles)
+                except OSError as exc:
+                    self._json({"error": f"Speichern fehlgeschlagen: {exc}"}, 500)
+                    return
+                self._json({"profiles": profiles})
+            elif route == "/api/profiles/delete":
+                try:
+                    name = str(json.loads(body.decode())["name"])
+                except Exception:
+                    self._json({"error": "ungültige Anfrage"}, 400)
+                    return
+                profiles = _load_profiles()
+                profiles.pop(name, None)
+                try:
+                    _save_profiles(profiles)
+                except OSError as exc:
+                    self._json({"error": f"Speichern fehlgeschlagen: {exc}"}, 500)
+                    return
+                self._json({"profiles": profiles})
             elif route == "/api/addpath":
                 try:
                     p = Path(json.loads(body.decode())["path"].strip().strip('"'))

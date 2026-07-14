@@ -203,3 +203,37 @@ def test_auto_reconstruct_picks_best():
     assert winner["unexplained"] < 0.1
     assert result.report["planes"] >= 6
     assert any("gewinnt" in line for line in logs)
+
+
+def test_source_profiles():
+    """Sensor profiles layer over scene presets and reach the pipeline."""
+    from scantobim.core.pipeline import SOURCE_PROFILES, apply_source_profile
+
+    cfg = PipelineConfig.preset("building")
+    apply_source_profile(cfg, "slam")
+    assert cfg.distance_factor == 3.5
+    assert cfg.ghost_offset_tol == 0.03  # SLAM ghost walls merged by default
+
+    cfg2 = PipelineConfig.preset("indoor")
+    apply_source_profile(cfg2, "tls")
+    assert cfg2.distance_factor == 2.5
+    assert cfg2.orient == "inward"  # preset survives the profile layer
+    assert set(SOURCE_PROFILES) == {"standard", "slam", "tls", "drohne", "iphone"}
+
+
+def test_cli_source_profile(tmp_path):
+    import json as _json
+
+    from scantobim.cli import main
+    from scantobim.io.writers import write_point_cloud
+
+    src = write_point_cloud(make_box_scan(density=700, noise=0.004), tmp_path / "s.ply")
+    rep_path = tmp_path / "r.json"
+    code = main(
+        ["reconstruct", str(src), "-o", str(tmp_path / "m.glb"),
+         "--source", "slam", "--report", str(rep_path), "--seed", "1"]
+    )
+    assert code == 0
+    config = _json.loads(rep_path.read_text())["config"]
+    assert config["distance_factor"] == 3.5
+    assert config["ghost_offset_tol"] == 0.03

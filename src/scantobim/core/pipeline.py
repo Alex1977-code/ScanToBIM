@@ -60,7 +60,8 @@ class PipelineConfig:
     adaptive_density: bool = True  # per-surface tolerances from local point spacing
 
     # --- plane detection ---
-    distance_threshold: float | None = None  # None = auto (3x spacing)
+    distance_threshold: float | None = None  # None = auto (distance_factor x spacing)
+    distance_factor: float = 3.0  # used when distance_threshold is None
     normal_threshold_deg: float = 30.0
     min_inlier_ratio: float = 0.01  # fraction of cloud size
     min_inliers_abs: int = 60
@@ -146,6 +147,47 @@ class PipelineConfig:
         )
 
 
+# Source profiles: the SCENE preset says what was scanned, the source
+# profile says WHICH SENSOR captured it — layered on top of any preset.
+# Values reflect the sensors' noise/drift characteristics.
+SOURCE_PROFILES: dict[str, dict] = {
+    # neutral default
+    "standard": {},
+    # Handheld SLAM (SHARE SLAM S20, GeoSLAM, LiGrip …): cm-level drift,
+    # registration ghosts from loop closures, denser noise.
+    "slam": {
+        "distance_factor": 3.5,
+        "ghost_offset_tol": 0.03,
+        "sor_std_ratio": 2.0,
+        "normal_neighbors": 20,
+    },
+    # Terrestrial laser scanner on tripod: mm noise, crisp edges.
+    "tls": {
+        "distance_factor": 2.5,
+        "simplify_factor": 1.5,
+    },
+    # Drone photogrammetry / aerial LiDAR: noisier surfaces, outliers.
+    "drohne": {
+        "distance_factor": 4.0,
+        "sor_std_ratio": 2.0,
+        "min_inlier_ratio": 0.012,
+    },
+    # iPhone/iPad LiDAR apps: coarse depth, smoothed geometry.
+    "iphone": {
+        "distance_factor": 5.0,
+        "min_inlier_ratio": 0.015,
+        "normal_neighbors": 24,
+    },
+}
+
+
+def apply_source_profile(cfg: PipelineConfig, source: str) -> PipelineConfig:
+    """Layer a sensor profile over the config (unknown names = neutral)."""
+    for key, value in SOURCE_PROFILES.get(source, {}).items():
+        setattr(cfg, key, value)
+    return cfg
+
+
 @dataclass
 class SurfaceGeometry:
     """Exact polygonal geometry of one reconstructed surface.
@@ -216,7 +258,9 @@ def reconstruct(
 
     # ---- 2. plane detection ------------------------------------------------
     dist_thresh = (
-        cfg.distance_threshold if cfg.distance_threshold is not None else 3.0 * spacing
+        cfg.distance_threshold
+        if cfg.distance_threshold is not None
+        else cfg.distance_factor * spacing
     )
     min_inliers = max(cfg.min_inliers_abs, int(cfg.min_inlier_ratio * len(work)))
     planes, unassigned = detect_planes(

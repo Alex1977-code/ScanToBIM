@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.2.0
+
+- **Quellen-Profile**: auswählbare Voreinstellungen je Aufnahmegerät — SLAM-Handscanner (SHARE S20 & Co.), Stativ-Laserscanner, Drohne/Photogrammetrie, iPhone-LiDAR — geschichtet über jedes Szenen-Preset (`--source`, GUI-Auswahl „Quelle/Scanner“). Das SLAM-Profil verschmilzt z. B. Registrierungs-Doppelwände bis 3 cm automatisch.
+- **Eigene Profile, mehrere**: alle Einstellungen (Quelle, Szene, Optionen, erweiterte Werte) als benannte Profile **dauerhaft speichern, laden, löschen** — z. B. „S20 außen“, „S20 innen fein“.
+- **Erweiterte Einstellungen mit Erklärung bei Mouseover**: Voxelgröße, Ebenen-Toleranz, Mindest-Flächengröße, Max. Flächen, Winkel-Raster, Geister-Versatz, Öffnungs-Mindestgröße, QS-Toleranz, Punkte-Limit — jedes Feld erklärt sich beim Draufzeigen; leer = Automatik.
+
 ### Neu in 2.1.0 — kalibriert am echten SHARE-SLAM-S20-Scan
 
 - **Gelände-Erkennung**: raue Horizontalflächen (Boden, Schotter, Rasen — Ebenen-RMS > 2,5 cm) werden als **Gelände** klassifiziert statt als Bauteil-„slab“ — sie erzeugen keine Phantom-Öffnungen, keine Geschosse und verfälschen keine Bauteilmengen mehr (`IfcGeographicElement` im BIM-Export).

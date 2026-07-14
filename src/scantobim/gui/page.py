@@ -163,6 +163,22 @@ button.ghost:hover{border-color:var(--accent)}
 .dl:hover{border-color:var(--accent); color:var(--accent)}
 .dl .sz{color:var(--muted); font-size:.72rem}
 .hint{color:var(--muted); font-size:.78rem; line-height:1.5}
+.qinfo{
+  display:inline-block; color:var(--accent); cursor:help; font-size:.8rem;
+  margin-left:.2rem;
+}
+.adv{display:flex; flex-direction:column; gap:.35rem; margin:.5rem 0}
+.adv label{
+  display:flex; align-items:center; justify-content:space-between; gap:.6rem;
+  font-size:.8rem; color:var(--text); cursor:help;
+  border-bottom:1px dotted #242c38; padding:.15rem 0;
+}
+.adv input{
+  width:6.5rem; background:var(--panel2); border:1px solid var(--line);
+  color:var(--text); border-radius:6px; padding:.3rem .45rem; font-size:.8rem;
+  text-align:right;
+}
+#advdetails summary::-webkit-details-marker{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -222,6 +238,16 @@ button.ghost:hover{border-color:var(--accent)}
     <div class="card" id="optcard">
       <h2>3 · Optionen</h2>
       <div id="opts-reconstruct">
+        <label class="sel-label">Quelle / Scanner
+          <span class="qinfo" title="Sensor-Profil: passt Toleranzen an das Rausch- und Driftverhalten des Aufnahmegeräts an. Wird über die Szene gelegt.">ⓘ</span>
+        </label>
+        <select id="source">
+          <option value="standard" title="Neutrale Standardwerte — wenn die Quelle unbekannt ist.">Standard / unbekannt</option>
+          <option value="slam" title="Handheld-SLAM (SHARE SLAM S20, GeoSLAM, LiGrip …): toleranter gegen cm-Drift, verschmilzt Registrierungs-Doppelwände bis 3 cm.">SLAM-Handscanner (z.&nbsp;B. SHARE S20)</option>
+          <option value="tls" title="Terrestrischer Laserscanner auf Stativ: mm-Rauschen — engere Toleranzen, feinere Konturen.">Terrestrischer Scanner (Stativ)</option>
+          <option value="drohne" title="Drohnen-Photogrammetrie / Luft-LiDAR: rauere Oberflächen und Ausreißer — großzügigere Toleranzen.">Drohne / Photogrammetrie</option>
+          <option value="iphone" title="iPhone/iPad-LiDAR-Apps: grobe, geglättete Tiefe — deutlich größere Toleranzen und größere Mindestflächen.">iPhone / iPad LiDAR</option>
+        </select>
         <label class="sel-label">Szene</label>
         <select id="preset">
           <option value="auto">Automatisch — selbstoptimierend (dauert länger)</option>
@@ -240,6 +266,22 @@ button.ghost:hover{border-color:var(--accent)}
           <label class="opt"><input type="checkbox" id="views"> Orthofoto-Ansichten N/O/S/W + Draufsicht (maßstabsgetreu)</label>
           <label class="opt"><input type="checkbox" id="reporthtml"> Druckfertiger Prüfbericht (HTML → PDF)</label>
         </div>
+        <details id="advdetails">
+          <summary class="sel-label" style="cursor:pointer">Erweiterte Einstellungen
+            <span class="qinfo" title="Feinjustierung der Rekonstruktion. Leere Felder = Automatik. Erklärung: Maus über die Bezeichnung halten.">ⓘ</span>
+          </summary>
+          <div class="adv">
+            <label title="Ausdünnungsraster der Vorverarbeitung in Metern. Leer = automatisch (2× Punktabstand). 0 = keine Ausdünnung (langsamer, maximales Detail).">Voxelgröße [m] <input id="adv_voxel_size" placeholder="auto"></label>
+            <label title="Wie weit ein Messpunkt von einer Ebene entfernt sein darf, um noch dazuzugehören — als Vielfaches des Punktabstands. Größer = robuster gegen Rauschen/Drift, kleiner = mehr Detailtreue. Standard 3 (SLAM 3,5 / Stativ 2,5 / iPhone 5).">Ebenen-Toleranz [×&nbsp;Punktabstand] <input id="adv_distance_factor" placeholder="3.0"></label>
+            <label title="Kleinste erkannte Fläche als Anteil der Punktwolke in Prozent. Kleiner = auch kleine Flächen (Laibungen, Möbel), aber mehr Rechenzeit. Standard 1 %.">Mindest-Flächengröße [%] <input id="adv_min_inlier" placeholder="1.0"></label>
+            <label title="Obergrenze der erkannten Flächen. Mehr Flächen = mehr Details, längere Rechenzeit. Standard 64.">Max. Flächen <input id="adv_max_planes" placeholder="64"></label>
+            <label title="Bis zu diesem Winkel werden fast-parallele bzw. fast-rechtwinklige Flächen auf exakt 0°/90° gerastet. Standard 8°. Bei bewusst schiefen Bauwerken kleiner wählen.">Winkel-Raster-Toleranz [°] <input id="adv_angle_tol" placeholder="8"></label>
+            <label title="SLAM-Registrierung erzeugt manchmal doppelte Wände mit kleinem Versatz (Geisterflächen). Koplanare Flächen bis zu diesem Versatz in Metern werden verschmolzen. 0 = aus. SLAM-Profil: 0,03.">Geister-Versatz [m] <input id="adv_ghost" placeholder="0"></label>
+            <label title="Mindestgröße erkannter Öffnungen (Fenster/Türen) als Vielfaches des Punktabstands. Größer = weniger falsche Öffnungen durch Abschattungen. Standard 8.">Öffnungs-Mindestgröße [×&nbsp;Punktabstand] <input id="adv_min_opening" placeholder="8"></label>
+            <label title="Toleranz der Soll-Ist-Abweichungsanalyse in Millimetern — bestimmt die Quote 'innerhalb Toleranz'. Standard 5 mm.">QS-Toleranz [mm] <input id="adv_tolerance" placeholder="5"></label>
+            <label title="Speicherschutz: riesige Scans werden beim Einlesen blockweise auf diese Punktzahl (in Millionen) ausgedünnt. Standard 40.">Max. Punkte [Mio.] <input id="adv_max_points" placeholder="40"></label>
+          </div>
+        </details>
         <label class="sel-label">Zusätzliche Exportformate</label>
         <div class="fmt" id="formats">
           <label data-f="step">STEP (CAD)</label>
@@ -256,6 +298,23 @@ button.ghost:hover{border-color:var(--accent)}
       <div id="opts-none" style="display:none">
         <div class="hint">Alle Messungen laufen automatisch — Ergebnis rechts als 3D-Modell und Bericht.</div>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Profile</h2>
+      <div class="pathrow">
+        <select id="profsel" style="flex:1">
+          <option value="">— gespeichertes Profil laden —</option>
+        </select>
+        <button class="ghost" id="profdel" title="Ausgewähltes Profil löschen">Löschen</button>
+      </div>
+      <div class="pathrow">
+        <input id="profname" placeholder="Name für aktuelle Einstellungen">
+        <button class="ghost" id="profsave" title="Alle aktuellen Einstellungen (Quelle, Szene, Optionen, erweiterte Werte) dauerhaft speichern">Speichern</button>
+      </div>
+      <div class="hint" style="margin-top:.45rem">Profile werden dauerhaft auf
+      diesem Rechner gespeichert — z.&nbsp;B. „S20 außen“, „S20 innen fein“,
+      „Drohne Halle“.</div>
     </div>
 
     <button class="primary" id="run">Modell erstellen</button>
@@ -292,7 +351,7 @@ button.ghost:hover{border-color:var(--accent)}
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
-const state = { files: [], mode: "reconstruct", job: null, timer: null };
+const state = { files: [], mode: "reconstruct", job: null, timer: null, profiles: {} };
 
 function fmtSize(b){
   if (b > 1e9) return (b/1e9).toFixed(2) + " GB";
@@ -363,21 +422,121 @@ document.querySelectorAll("#formats label").forEach(el => {
   el.onclick = () => el.classList.toggle("on");
 });
 
+/* ---- settings gathering / applying (also used by profiles) ---- */
+const ADV_MAP = {  /* input id → backend key + scale */
+  adv_voxel_size: ["voxel_size", 1],
+  adv_distance_factor: ["distance_factor", 1],
+  adv_min_inlier: ["min_inlier_ratio", 0.01],
+  adv_max_planes: ["max_planes", 1],
+  adv_ghost: ["ghost_offset_tol", 1],
+  adv_min_opening: ["min_opening_factor", 1],
+};
+function gatherOptions(){
+  const options = {};
+  options.preset = $("#preset").value;
+  options.source = $("#source").value;
+  options.watertight = $("#watertight").checked;
+  options.texture = $("#texture").checked;
+  options.align = $("#align").checked;
+  options.register = $("#register").checked && state.files.length > 1;
+  options.deviation = $("#deviation").checked;
+  options.views = $("#views").checked;
+  options.report_html = $("#reporthtml").checked;
+  options.formats = [...document.querySelectorAll("#formats label.on")]
+    .map(el => el.dataset.f);
+  options.advanced = {};
+  for (const [id, [key, scale]] of Object.entries(ADV_MAP)) {
+    const v = parseFloat($("#" + id).value.replace(",", "."));
+    if (!isNaN(v)) options.advanced[key] = v * scale;
+  }
+  const angle = parseFloat($("#adv_angle_tol").value.replace(",", "."));
+  if (!isNaN(angle)) {
+    options.advanced.ortho_tol_deg = angle;
+    options.advanced.parallel_tol_deg = angle;
+  }
+  const tol = parseFloat($("#adv_tolerance").value.replace(",", "."));
+  if (!isNaN(tol)) options.tolerance = tol / 1000.0;
+  const mp = parseFloat($("#adv_max_points").value.replace(",", "."));
+  if (!isNaN(mp)) options.max_points = Math.round(mp * 1e6);
+  options.unfold = $("#unfold").checked;
+  return options;
+}
+function applySettings(s){
+  if (!s) return;
+  if (s.preset) $("#preset").value = s.preset;
+  if (s.source) $("#source").value = s.source;
+  for (const id of ["watertight","texture","align","register","deviation","views","reporthtml"]) {
+    const key = id === "reporthtml" ? "report_html" : id;
+    if (key in s) $("#" + id).checked = !!s[key];
+  }
+  document.querySelectorAll("#formats label").forEach(el =>
+    el.classList.toggle("on", (s.formats || []).includes(el.dataset.f)));
+  for (const [id, [key, scale]] of Object.entries(ADV_MAP)) {
+    $("#" + id).value = (s.advanced && key in s.advanced)
+      ? String(s.advanced[key] / scale) : "";
+  }
+  $("#adv_angle_tol").value =
+    (s.advanced && "ortho_tol_deg" in s.advanced) ? String(s.advanced.ortho_tol_deg) : "";
+  $("#adv_tolerance").value = ("tolerance" in s) ? String(s.tolerance * 1000) : "";
+  $("#adv_max_points").value = ("max_points" in s) ? String(s.max_points / 1e6) : "";
+  if ("unfold" in s) $("#unfold").checked = !!s.unfold;
+}
+
+/* ---- profiles ---- */
+function renderProfiles(profiles){
+  const sel = $("#profsel");
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— gespeichertes Profil laden —</option>';
+  Object.keys(profiles).sort().forEach(name => {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name;
+    sel.appendChild(o);
+  });
+  if (profiles[current]) sel.value = current;
+  state.profiles = profiles;
+}
+async function loadProfiles(){
+  const res = await fetch("/api/profiles");
+  renderProfiles((await res.json()).profiles || {});
+}
+$("#profsel").onchange = () => {
+  const name = $("#profsel").value;
+  if (name && state.profiles[name]) {
+    applySettings(state.profiles[name]);
+    $("#profname").value = name;
+    setStatus("Profil „" + name + "“ geladen", "ok");
+  }
+};
+$("#profsave").onclick = async () => {
+  const name = $("#profname").value.trim();
+  if (!name) { alert("Bitte einen Profilnamen eingeben."); return; }
+  const res = await fetch("/api/profiles", {
+    method: "POST",
+    body: JSON.stringify({name, settings: gatherOptions()}),
+  });
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  renderProfiles(data.profiles);
+  $("#profsel").value = name;
+  setStatus("Profil „" + name + "“ gespeichert", "ok");
+};
+$("#profdel").onclick = async () => {
+  const name = $("#profsel").value;
+  if (!name) return;
+  const res = await fetch("/api/profiles/delete", {
+    method: "POST", body: JSON.stringify({name}),
+  });
+  renderProfiles((await res.json()).profiles || {});
+  setStatus("Profil gelöscht");
+};
+loadProfiles();
+
 /* run */
 $("#run").onclick = async () => {
   if (!state.files.length) { alert("Bitte zuerst eine Punktwolke wählen."); return; }
-  const options = {};
+  let options = {};
   if (state.mode === "reconstruct") {
-    options.preset = $("#preset").value;
-    options.watertight = $("#watertight").checked;
-    options.texture = $("#texture").checked;
-    options.align = $("#align").checked;
-    options.register = $("#register").checked && state.files.length > 1;
-    options.deviation = $("#deviation").checked;
-    options.views = $("#views").checked;
-    options.report_html = $("#reporthtml").checked;
-    options.formats = [...document.querySelectorAll("#formats label.on")]
-      .map(el => el.dataset.f);
+    options = gatherOptions();
   } else if (state.mode === "sheetmetal") {
     options.unfold = $("#unfold").checked;
   }
@@ -437,6 +596,15 @@ async function poll(){
     });
   }
 }
+
+/* source select: show the selected profile's explanation as its own tooltip */
+const srcSel = $("#source");
+function syncSourceTitle(){
+  const opt = srcSel.options[srcSel.selectedIndex];
+  srcSel.title = opt ? opt.title : "";
+}
+srcSel.onchange = syncSourceTitle;
+syncSourceTitle();
 
 /* preloaded files (drag & drop onto the exe) */
 fetch("/api/meta").then(r => r.json()).then(m => {
