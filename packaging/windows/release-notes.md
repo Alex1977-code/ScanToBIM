@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.6.1 — kritischer Fix: große Areale wurden beim Einlesen zerquetscht
+
+- **Die eingebaute Ausdünnung hat große Scans ruiniert**: Beim Einlesen von Wolken über dem Punkte-Limit (GUI: 40 Mio) startete das Ausdünnungsraster bei *Szenendiagonale ÷ 1000* und konnte nur gröber werden — ein 45,7-Mio-Scan eines ~230-m-Areals kollabierte damit auf 156 848 Punkte mit 22 cm Raster (statt der erlaubten 40 Mio!). Ergebnis: nur grobe Riesenflächen, kaum Öffnungen, 3 % Abdeckung. Jetzt sucht die Ausdünnung das Raster **in beide Richtungen** (Bisektion auf das Punktebudget): das Ergebnis liegt garantiert nahe am Limit, typisch 70–100 % davon. Derselbe Scan liefert jetzt ~40 Mio Punkte in echter Zentimeter-Auflösung.
+- Betroffen waren LAS/LAZ über dem Limit, E57 mit mehreren Scans und alle nachgelagerten Ausdünnungen (`--max-points`). Kleinere Wolken (unter dem Limit) waren nie betroffen.
+- Hinweis: mit der vollen Punktdichte dauert die Rekonstruktion großer Areale entsprechend länger — insbesondere Szene „Automatisch“ (4 Kandidaten). Das Protokoll zeigt den Fortschritt.
+
 ### Neu in 2.6.0 — Punktdichte zählt: nie wieder die Vorschau-Wolke
 
 - **Dichte UND Farbe entscheiden jetzt gemeinsam**: 2.5.0 bevorzugte die farbige Wolke — auch wenn sie eine 100×-ausgedünnte Vorschau war (z. B. 156 000 Punkte mit 22 cm Abstand statt des echten Multi-Millionen-Scans → nur grobe Riesenflächen, kaum Öffnungen). Jetzt wird zusätzlich die **Punktzahl aus dem Datei-Header** gelesen: die farbige Wolke gewinnt nur, wenn sie mindestens ¼ der Punktdichte der dichtesten Wolke hat — sonst gewinnt die dichte Wolke.

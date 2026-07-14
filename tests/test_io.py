@@ -211,6 +211,28 @@ def test_e57_roundtrip_with_colors(tmp_path):
     assert got.colors.min() >= 40 and got.colors.max() <= 220
 
 
+def test_streaming_thinner_surface_site_not_crushed():
+    """Regression: a surface scan of a sprawling site must fill the budget.
+
+    The grow-only voxel search started at diagonal/1000 — a 230 m site was
+    crushed to 22 cm spacing (45.7M points → 157k) instead of the budget.
+    """
+    from scantobim.io.readers import StreamingThinner
+
+    # Dense planar scan (2.5 cm grid) + one distant stray point that
+    # stretches the diagonal to ~870 m.
+    g = np.linspace(0, 20, 800)
+    xx, yy = np.meshgrid(g, g)
+    pts = np.column_stack([xx.ravel(), yy.ravel(), np.zeros(xx.size)])
+    pts = np.vstack([pts, [[500.0, 500.0, 500.0]]])
+    thinner = StreamingThinner(100_000)
+    for start in range(0, len(pts), 150_000):
+        thinner.add(pts[start:start + 150_000], None, None)
+    cloud = thinner.finish()
+    assert len(cloud) <= 100_000
+    assert len(cloud) >= 70_000  # near the budget — not crushed to diag/1000
+
+
 def test_streaming_thinner_bounds_and_coverage():
     """Huge input → bounded output that still covers the whole extent."""
     from scantobim.io.readers import StreamingThinner

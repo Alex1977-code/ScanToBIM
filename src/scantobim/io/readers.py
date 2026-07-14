@@ -135,16 +135,12 @@ class StreamingThinner:
         pts = np.vstack(self._pts)
         colors = np.vstack(self._colors) if self._colors else None
         intensity = np.concatenate(self._intensity) if self._intensity else None
-        if self.voxel <= 0:
-            lo, hi = pts.min(axis=0), pts.max(axis=0)
-            diag = float(np.linalg.norm(hi - lo))
-            self.voxel = max(diag / 1000.0, 1e-9)
-        while True:
-            keys = np.floor(pts / self.voxel).astype(np.int64)
-            _, first = np.unique(keys, axis=0, return_index=True)
-            if len(first) <= self.target:
-                break
-            self.voxel *= 1.4
+        origin = pts.min(axis=0)
+        diag = float(np.linalg.norm(pts.max(axis=0) - origin))
+        if diag <= 0:  # all points identical
+            first = np.array([0])
+        else:
+            first = self._fit_voxel(pts, origin, diag)
         first.sort()
         pts = pts[first]
         self._pts = [pts]
@@ -153,6 +149,59 @@ class StreamingThinner:
             [intensity[first]] if intensity is not None else self._intensity
         )
         self._count = len(pts)
+
+    def _cell_first(self, pts, origin, voxel: float) -> np.ndarray:
+        """First-point-per-voxel indices (21-bit packed keys, one sort)."""
+        idx = np.floor_divide(pts - origin, voxel).astype(np.int64)
+        np.clip(idx, 0, (1 << 21) - 1, out=idx)
+        keys = (idx[:, 0] << 42) | (idx[:, 1] << 21) | idx[:, 2]
+        _, first = np.unique(keys, return_index=True)
+        return first
+
+    def _fit_voxel(self, pts, origin, diag: float) -> np.ndarray:
+        """Adapt ``self.voxel`` so the kept count lands near the target.
+
+        The voxel must be able to move BOTH ways: growing only (the old
+        behaviour) meant a bad initial guess crushed sprawling sites to
+        diagonal/1000 resolution — a 45M-point scan of a 230 m site came
+        out at 22 cm spacing with 157k points instead of the 40M budget.
+        """
+        # Resolution floor: keys pack 21 bits per axis.
+        floor_v = max(diag / 2_000_000.0, 1e-9)
+        if self.voxel <= 0:
+            self.voxel = max(diag / 1000.0, floor_v)
+        first = self._cell_first(pts, origin, self.voxel)
+
+        while len(first) > self.target:  # too coarse a budget → grow
+            self.voxel *= 1.4
+            first = self._cell_first(pts, origin, self.voxel)
+
+        if len(first) >= 0.7 * self.target:
+            return first
+
+        # Far below budget: the guess was too coarse for this scene.
+        # Bracket a finer voxel that overshoots, then bisect on the ratio.
+        fine = self.voxel
+        while fine > floor_v:
+            fine = max(fine / 4.0, floor_v)
+            f_first = self._cell_first(pts, origin, fine)
+            if len(f_first) > self.target:
+                break
+            self.voxel, first = fine, f_first
+            if len(first) >= 0.7 * self.target:
+                return first
+        else:
+            return first  # native resolution already fits the budget
+        for _ in range(8):
+            mid = float(np.sqrt(fine * self.voxel))
+            m_first = self._cell_first(pts, origin, mid)
+            if len(m_first) > self.target:
+                fine = mid
+            else:
+                self.voxel, first = mid, m_first
+                if len(first) >= 0.7 * self.target:
+                    break
+        return first
 
     def finish(self, source: str = "") -> PointCloud:
         if self._count > self.target:
