@@ -18,6 +18,7 @@ usable pieces automatically:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,11 +30,54 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
 _CLOUD_PRIORITY = {".e57": 0, ".las": 1, ".laz": 1, ".ply": 2, ".pcd": 3, ".pts": 4, ".xyz": 5}
 
 
+def cloud_has_colors(path: str | Path) -> bool | None:
+    """Header-only probe: does this point cloud file carry RGB colors?
+
+    Returns ``True``/``False`` when the file header states it, ``None`` when
+    it cannot be told without reading point data (``.pts/.xyz/...``) or the
+    optional reader dependency is unavailable. Never reads the point data
+    itself, so it is cheap even on multi-GB files.
+    """
+    path = Path(path)
+    ext = path.suffix.lower()
+    try:
+        if ext == ".e57":
+            import pye57
+
+            reader = pye57.E57(str(path))
+            for i in range(reader.scan_count):
+                if "colorRed" in reader.get_header(i).point_fields:
+                    return True
+            return False
+        if ext in (".las", ".laz"):
+            import laspy
+
+            with laspy.open(str(path)) as fh:
+                dims = {d.lower() for d in fh.header.point_format.dimension_names}
+            return {"red", "green", "blue"} <= dims
+        if ext == ".ply":
+            with open(path, "rb") as fh:
+                head = fh.read(65536).decode("ascii", errors="replace")
+            head = head.split("end_header")[0].lower()
+            return re.search(r"property\s+\S+\s+(red|diffuse_red)\b", head) is not None
+        if ext == ".pcd":
+            with open(path, "rb") as fh:
+                head = fh.read(4096).decode("ascii", errors="replace").lower()
+            for line in head.splitlines():
+                if line.startswith("fields"):
+                    return "rgb" in line
+    except Exception:
+        return None
+    return None
+
+
 @dataclass
 class SlamProject:
     root: Path
     cloud: Path | None = None
     clouds: list[Path] = field(default_factory=list)
+    cloud_colored: bool | None = None
+    cloud_note: str | None = None
     colmap_model: Path | None = None
     images_dir: Path | None = None
     image_count: int = 0
@@ -45,8 +89,13 @@ class SlamProject:
         lines = []
         if self.cloud is not None:
             mb = self.cloud.stat().st_size / 1e6
+            color = {True: ", mit Farben", False: ", ohne Farben"}.get(
+                self.cloud_colored, ""
+            )
             extra = f" (+{len(self.clouds) - 1} weitere)" if len(self.clouds) > 1 else ""
-            lines.append(f"Punktwolke:   {self.cloud.name} ({mb:.1f} MB){extra}")
+            lines.append(f"Punktwolke:   {self.cloud.name} ({mb:.1f} MB{color}){extra}")
+            if self.cloud_note:
+                lines.append(f"              → {self.cloud_note}")
         if self.colmap_model is not None:
             lines.append(f"Kameraposen:  {self.colmap_model.relative_to(self.root)} (COLMAP)")
         if self.images_dir is not None:
@@ -108,10 +157,38 @@ def scan_project_dir(root: str | Path, max_depth: int = 4) -> SlamProject:
 
     walk(root, 0)
 
-    # Point cloud: preferred format, then largest file.
-    clouds.sort(key=lambda p: (_CLOUD_PRIORITY.get(p.suffix.lower(), 9), -p.stat().st_size))
+    # Point cloud: SLAM exports often contain BOTH a colorized and a larger
+    # uncolorized cloud of the same scan — picking by size alone loses the
+    # colors (and with them the point-color texture). Rank by name hints
+    # first, then verify with a header-only color probe.
+    def _name_rank(p: Path):
+        name = p.name.lower()
+        uncolored = 1 if re.search(r"uncolor|nocolor|no_color|ohne_?farb", name) else 0
+        colored = 0 if (not uncolored and re.search(r"color|farb|rgb", name)) else 1
+        return (
+            uncolored,
+            colored,
+            _CLOUD_PRIORITY.get(p.suffix.lower(), 9),
+            -p.stat().st_size,
+        )
+
+    clouds.sort(key=_name_rank)
     project.clouds = clouds
-    project.cloud = clouds[0] if clouds else None
+    if clouds:
+        chosen = clouds[0]
+        chosen_colors = cloud_has_colors(chosen)
+        if chosen_colors is not True and len(clouds) > 1:
+            # The favourite has no verified colors — promote the first
+            # candidate whose header proves RGB (probe a handful at most).
+            for cand in clouds[1:6]:
+                if cloud_has_colors(cand) is True:
+                    project.cloud_note = (
+                        f"farbige Wolke bevorzugt ({cand.name} statt {chosen.name})"
+                    )
+                    chosen, chosen_colors = cand, True
+                    break
+        project.cloud = chosen
+        project.cloud_colored = chosen_colors
 
     # COLMAP model: shallowest hit.
     if colmap_dirs:

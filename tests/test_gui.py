@@ -133,6 +133,29 @@ def test_error_handling(gui_server, tmp_path):
     )
     assert status == 400
 
+    # Cloud FILE + project FOLDER in one run: clear error, no crash
+    # (the folder used to be read as a cloud file → "Unsupported format: ''").
+    cloud = tmp_path / "wolke.xyz"
+    cloud.write_text("0 0 0\n1 1 1\n")
+    folder = tmp_path / "projektordner"
+    folder.mkdir()
+    status, body = _post(
+        url + "/api/run",
+        json.dumps(
+            {"mode": "reconstruct", "files": [str(cloud), str(folder)], "options": {}}
+        ).encode(),
+    )
+    assert status == 400
+    assert "Projektordner" in json.loads(body)["error"]
+
+    # Project folder in a non-reconstruct mode is rejected up front.
+    status, body = _post(
+        url + "/api/run",
+        json.dumps({"mode": "analyze", "files": [str(folder)], "options": {}}).encode(),
+    )
+    assert status == 400
+    assert "Rekonstruktion" in json.loads(body)["error"]
+
     # A failing job surfaces the error instead of hanging.
     bad = tmp_path / "empty.xyz"
     bad.write_text("0 0 0\n1 1 1\n")

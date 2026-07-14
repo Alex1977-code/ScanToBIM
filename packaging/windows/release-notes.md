@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.5.0 — richtige Punktwolke im Projektordner
+
+- **Farbige Punktwolke wird bevorzugt**: Liegen im Projektordner mehrere Punktwolken (z. B. `…_colorized.e57` **und** eine größere unkolorierte), wählte das Programm bisher schlicht die größte — oft die ohne Farben, und die Textur blieb leer („Textur: keine“). Jetzt wird die Datei-**Kopfzeile** jeder Kandidatin geprüft (ohne die Punktdaten zu lesen, also auch bei GB-Dateien sofort) und die Wolke mit echten RGB-Farben bevorzugt. Das Protokoll zeigt die Wahl transparent: „Punktwolke: … (mit Farben)“ bzw. „→ farbige Wolke bevorzugt (X statt Y)“.
+- **Klare Meldung statt Absturz bei gemischter Liste**: Punktwolken-Datei **und** Projektordner zusammen in einer Liste führten zu „Unsupported point cloud format: ''“ — jetzt kommt vor dem Start eine verständliche Meldung: entweder Dateien ODER genau einen Projektordner starten (überzählige Einträge mit ✕ entfernen). Projektordner in anderen Modi (Analyse, Brücke, …) werden ebenfalls sauber abgewiesen.
+- Der Farb-Status der gewählten Wolke steht auch im GUI-Dateieintrag des Ordners („mit Farben“ / „ohne Farben“).
+
 ### Neu in 2.4.0 — Stereo-Kamera & Farb-Fix (S20-Praxis)
 
 - **Stereo-Fotos (links/rechts) werden jetzt beide genutzt**: Der S20 registriert seine Bilder als `left/…` und `right/…` in zwei Ordnern — der Projekt-Import wählt jetzt den gemeinsamen Überordner, und die Foto-Projektion findet jede Datei über einen Namensindex (voller Pfad, Ordner-Präfix oder Dateiname). Neue Diagnosezeile: „Fotos gefunden: X von Y registrierten Kameras“.

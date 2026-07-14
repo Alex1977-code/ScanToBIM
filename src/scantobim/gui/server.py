@@ -655,6 +655,10 @@ def _make_handler(state: GuiState):
                         )
                         return
                     detail = [project.cloud.name]
+                    if project.cloud_colored is True:
+                        detail.append("mit Farben")
+                    elif project.cloud_colored is False:
+                        detail.append("ohne Farben")
                     if project.images_dir is not None:
                         detail.append(f"{project.image_count} Fotos")
                     if project.colmap_model is not None:
@@ -692,6 +696,31 @@ def _make_handler(state: GuiState):
                 if not files or not all(f.exists() for f in files):
                     self._json({"error": "Eingabedatei fehlt"}, 400)
                     return
+                # Project FOLDERS take a dedicated import path — they cannot
+                # be mixed with loose cloud files in one run (the folder
+                # would be misread as a cloud file).
+                if any(f.is_dir() for f in files):
+                    if mode != "reconstruct":
+                        self._json(
+                            {
+                                "error": "Projektordner werden nur im Modus "
+                                "„Rekonstruktion“ unterstützt."
+                            },
+                            400,
+                        )
+                        return
+                    if len(files) > 1:
+                        self._json(
+                            {
+                                "error": "Bitte entweder Punktwolken-Dateien ODER "
+                                "genau EINEN Projektordner starten — nicht beides "
+                                "zusammen. Nicht benötigte Einträge mit ✕ aus der "
+                                "Liste entfernen (der Projektordner enthält seine "
+                                "Punktwolke bereits)."
+                            },
+                            400,
+                        )
+                        return
                 if state.busy:
                     self._json({"error": "es läuft bereits ein Auftrag"}, 409)
                     return

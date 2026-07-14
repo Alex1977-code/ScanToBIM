@@ -153,6 +153,100 @@ def test_scan_project_dir(tmp_path):
     assert "Punktwolke" in lines and "Trajektorie" in lines and ".bag" in lines
 
 
+# ---------------------------------------------- colorized cloud selection
+
+def _write_ply_cloud(path, n_points, colored):
+    from scantobim.core.cloud import PointCloud
+
+    rng = np.random.default_rng(7)
+    pts = rng.uniform(0, 5, (n_points, 3))
+    colors = (
+        rng.integers(40, 220, (n_points, 3), dtype=np.uint8) if colored else None
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_point_cloud(PointCloud(points=pts, colors=colors), path)
+
+
+def test_cloud_has_colors_ply_and_las(tmp_path):
+    from scantobim.io.project import cloud_has_colors
+
+    _write_ply_cloud(tmp_path / "rgb.ply", 100, colored=True)
+    _write_ply_cloud(tmp_path / "plain.ply", 100, colored=False)
+    assert cloud_has_colors(tmp_path / "rgb.ply") is True
+    assert cloud_has_colors(tmp_path / "plain.ply") is False
+
+    import laspy
+
+    for fmt, expected in ((3, True), (0, False)):
+        header = laspy.LasHeader(point_format=fmt, version="1.2")
+        las = laspy.LasData(header)
+        las.x, las.y, las.z = [0.0, 1.0], [0.0, 1.0], [0.0, 1.0]
+        las.write(str(tmp_path / f"pf{fmt}.las"))
+        assert cloud_has_colors(tmp_path / f"pf{fmt}.las") is expected
+
+    # Unknown / unreadable → None, never an exception.
+    (tmp_path / "kaputt.ply").write_bytes(b"not a ply")
+    assert cloud_has_colors(tmp_path / "kaputt.ply") in (False, None)
+    (tmp_path / "plain.xyz").write_text("0 0 0\n")
+    assert cloud_has_colors(tmp_path / "plain.xyz") is None
+
+
+def test_cloud_has_colors_e57(tmp_path):
+    pye57 = pytest.importorskip("pye57")
+    pts = np.random.default_rng(1).uniform(0, 3, (200, 3))
+    base = {
+        "cartesianX": pts[:, 0],
+        "cartesianY": pts[:, 1],
+        "cartesianZ": pts[:, 2],
+    }
+    e57 = pye57.E57(str(tmp_path / "plain.e57"), mode="w")
+    e57.write_scan_raw(dict(base))
+    e57.close()
+    rgb = np.random.default_rng(2).integers(0, 255, (200, 3)).astype(np.uint8)
+    e57 = pye57.E57(str(tmp_path / "rgb.e57"), mode="w")
+    e57.write_scan_raw(
+        dict(base, colorRed=rgb[:, 0], colorGreen=rgb[:, 1], colorBlue=rgb[:, 2])
+    )
+    e57.close()
+
+    from scantobim.io.project import cloud_has_colors
+
+    assert cloud_has_colors(tmp_path / "rgb.e57") is True
+    assert cloud_has_colors(tmp_path / "plain.e57") is False
+
+
+def test_scan_project_dir_prefers_colorized_by_name(tmp_path):
+    """S20 exports colorized + (larger) uncolorized: colors must win."""
+    root = tmp_path / "export"
+    _write_ply_cloud(root / "haus_uncolorized_segmented.ply", 4000, colored=False)
+    _write_ply_cloud(root / "haus_colorized_segmented.ply", 1500, colored=True)
+    project = scan_project_dir(root)
+    assert project.cloud.name == "haus_colorized_segmented.ply"
+    assert project.cloud_colored is True
+    assert "mit Farben" in "\n".join(project.describe())
+
+
+def test_scan_project_dir_prefers_colorized_by_probe(tmp_path):
+    """No name hints: the header probe promotes the RGB-carrying cloud."""
+    root = tmp_path / "export"
+    _write_ply_cloud(root / "scan_a.ply", 4000, colored=False)  # larger
+    _write_ply_cloud(root / "scan_b.ply", 1500, colored=True)   # smaller, RGB
+    project = scan_project_dir(root)
+    assert project.cloud.name == "scan_b.ply"
+    assert project.cloud_colored is True
+    text = "\n".join(project.describe())
+    assert "farbige Wolke bevorzugt" in text and "mit Farben" in text
+
+
+def test_scan_project_dir_uncolored_single(tmp_path):
+    root = tmp_path / "export"
+    _write_ply_cloud(root / "scan.ply", 800, colored=False)
+    project = scan_project_dir(root)
+    assert project.cloud.name == "scan.ply"
+    assert project.cloud_colored is False
+    assert "ohne Farben" in "\n".join(project.describe())
+
+
 def test_project_cli_end_to_end(tmp_path, capsys):
     """`scantobim project <dir>`: detect, reconstruct, texture, report."""
     from scantobim.cli import main
