@@ -30,13 +30,13 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
 _CLOUD_PRIORITY = {".e57": 0, ".las": 1, ".laz": 1, ".ply": 2, ".pcd": 3, ".pts": 4, ".xyz": 5}
 
 
-def cloud_has_colors(path: str | Path) -> bool | None:
-    """Header-only probe: does this point cloud file carry RGB colors?
+def cloud_header_info(path: str | Path) -> tuple[int | None, bool | None]:
+    """Header-only probe: ``(point count, has RGB colors)`` of a cloud file.
 
-    Returns ``True``/``False`` when the file header states it, ``None`` when
-    it cannot be told without reading point data (``.pts/.xyz/...``) or the
-    optional reader dependency is unavailable. Never reads the point data
-    itself, so it is cheap even on multi-GB files.
+    Each element is ``None`` when it cannot be told without reading point
+    data (``.pts/.xyz/...``) or the optional reader dependency is
+    unavailable. Never reads the point data itself, so it is cheap even on
+    multi-GB files.
     """
     path = Path(path)
     ext = path.suffix.lower()
@@ -45,30 +45,55 @@ def cloud_has_colors(path: str | Path) -> bool | None:
             import pye57
 
             reader = pye57.E57(str(path))
+            count, colored = 0, False
             for i in range(reader.scan_count):
-                if "colorRed" in reader.get_header(i).point_fields:
-                    return True
-            return False
+                header = reader.get_header(i)
+                count += int(header.point_count)
+                if "colorRed" in header.point_fields:
+                    colored = True
+            return count, colored
         if ext in (".las", ".laz"):
             import laspy
 
             with laspy.open(str(path)) as fh:
                 dims = {d.lower() for d in fh.header.point_format.dimension_names}
-            return {"red", "green", "blue"} <= dims
+                return int(fh.header.point_count), {"red", "green", "blue"} <= dims
         if ext == ".ply":
             with open(path, "rb") as fh:
                 head = fh.read(65536).decode("ascii", errors="replace")
             head = head.split("end_header")[0].lower()
-            return re.search(r"property\s+\S+\s+(red|diffuse_red)\b", head) is not None
+            m = re.search(r"element\s+vertex\s+(\d+)", head)
+            colored = re.search(r"property\s+\S+\s+(red|diffuse_red)\b", head)
+            return (int(m.group(1)) if m else None), colored is not None
         if ext == ".pcd":
             with open(path, "rb") as fh:
                 head = fh.read(4096).decode("ascii", errors="replace").lower()
+            count = colored = None
             for line in head.splitlines():
-                if line.startswith("fields"):
-                    return "rgb" in line
+                if line.startswith("points"):
+                    try:
+                        count = int(line.split()[1])
+                    except (IndexError, ValueError):
+                        pass
+                elif line.startswith("fields"):
+                    colored = "rgb" in line
+            return count, colored
     except Exception:
-        return None
-    return None
+        return None, None
+    return None, None
+
+
+def cloud_has_colors(path: str | Path) -> bool | None:
+    """Header-only probe: does this point cloud file carry RGB colors?"""
+    return cloud_header_info(path)[1]
+
+
+def _fmt_count(count: int | None) -> str:
+    if count is None:
+        return ""
+    if count >= 1e6:
+        return f", {count / 1e6:.1f} Mio Punkte"
+    return f", {count:,} Punkte"
 
 
 @dataclass
@@ -76,8 +101,10 @@ class SlamProject:
     root: Path
     cloud: Path | None = None
     clouds: list[Path] = field(default_factory=list)
+    cloud_points: int | None = None
     cloud_colored: bool | None = None
     cloud_note: str | None = None
+    color_source: Path | None = None
     colmap_model: Path | None = None
     images_dir: Path | None = None
     image_count: int = 0
@@ -93,9 +120,17 @@ class SlamProject:
                 self.cloud_colored, ""
             )
             extra = f" (+{len(self.clouds) - 1} weitere)" if len(self.clouds) > 1 else ""
-            lines.append(f"Punktwolke:   {self.cloud.name} ({mb:.1f} MB{color}){extra}")
+            lines.append(
+                f"Punktwolke:   {self.cloud.name} "
+                f"({mb:.1f} MB{_fmt_count(self.cloud_points)}{color}){extra}"
+            )
             if self.cloud_note:
                 lines.append(f"              → {self.cloud_note}")
+            if self.color_source is not None:
+                lines.append(
+                    f"Farbquelle:   {self.color_source.name} "
+                    "(Farben werden auf die dichte Wolke übertragen)"
+                )
         if self.colmap_model is not None:
             lines.append(f"Kameraposen:  {self.colmap_model.relative_to(self.root)} (COLMAP)")
         if self.images_dir is not None:
@@ -175,20 +210,45 @@ def scan_project_dir(root: str | Path, max_depth: int = 4) -> SlamProject:
     clouds.sort(key=_name_rank)
     project.clouds = clouds
     if clouds:
-        chosen = clouds[0]
-        chosen_colors = cloud_has_colors(chosen)
-        if chosen_colors is not True and len(clouds) > 1:
-            # The favourite has no verified colors — promote the first
-            # candidate whose header proves RGB (probe a handful at most).
-            for cand in clouds[1:6]:
-                if cloud_has_colors(cand) is True:
-                    project.cloud_note = (
-                        f"farbige Wolke bevorzugt ({cand.name} statt {chosen.name})"
-                    )
-                    chosen, chosen_colors = cand, True
-                    break
+        # Header probe (point count + colors, never the point data) on the
+        # leading candidates. Colors are worth a moderate density loss —
+        # SLAM exports pair e.g. a 12M colorized with a 16M uncolorized
+        # cloud — but NOT a preview-thin one (a 150k colored quicklook must
+        # not displace the real multi-million-point scan). In that case the
+        # dense cloud wins and the colored sibling becomes the color source
+        # for a nearest-neighbour transfer.
+        info = {p: cloud_header_info(p) for p in clouds[:8]}
+
+        def weight(p: Path) -> float:
+            count = info[p][0]
+            # ≈20 bytes/point across LAS/PLY/E57 — rough, but plenty for
+            # the orders-of-magnitude comparison needed here.
+            return float(count) if count else p.stat().st_size / 20.0
+
+        densest = max(info, key=weight)
+        colored = [p for p in info if info[p][1] is True]
+        best_colored = max(colored, key=weight) if colored else None
+        if best_colored is not None and weight(best_colored) >= 0.25 * weight(densest):
+            chosen = best_colored
+            if chosen is not clouds[0]:
+                project.cloud_note = (
+                    f"farbige Wolke bevorzugt ({chosen.name} statt {clouds[0].name})"
+                )
+        else:
+            chosen = densest
+            if best_colored is not None:
+                project.color_source = best_colored
+                project.cloud_note = (
+                    f"dichteste Wolke gewählt — {best_colored.name} ist zwar "
+                    f"farbig, aber stark ausgedünnt"
+                )
+            elif chosen is not clouds[0]:
+                project.cloud_note = (
+                    f"dichteste Wolke gewählt ({chosen.name} statt {clouds[0].name})"
+                )
         project.cloud = chosen
-        project.cloud_colored = chosen_colors
+        project.cloud_points = info[chosen][0]
+        project.cloud_colored = info[chosen][1]
 
     # COLMAP model: shallowest hit.
     if colmap_dirs:

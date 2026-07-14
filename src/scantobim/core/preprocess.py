@@ -211,3 +211,34 @@ def estimate_point_spacing(cloud: PointCloud, sample: int = 2000) -> float:
     tree = cKDTree(pts)
     dists, _ = tree.query(probe, k=2, workers=-1)
     return float(np.median(dists[:, 1]))
+
+
+def transfer_colors(
+    cloud: PointCloud, source: PointCloud, max_dist: float | None = None
+) -> float:
+    """Colorize ``cloud`` in place from the nearest neighbours of ``source``.
+
+    SLAM exports often pair a dense uncolorized cloud with a sparser
+    colorized one — this grafts the RGB of the colored cloud onto the dense
+    geometry. Points farther than ``max_dist`` (default: 4× the source's
+    point spacing) from any source point stay neutral grey, so texture
+    coverage stays honest. Returns the colored fraction (0..1).
+    """
+    if source.colors is None or len(source) == 0 or len(cloud) == 0:
+        return 0.0
+    if max_dist is None:
+        max_dist = 4.0 * estimate_point_spacing(source)
+        if max_dist <= 0:
+            max_dist = np.inf
+    tree = cKDTree(source.points)
+    colors = np.full((len(cloud), 3), 128, dtype=np.uint8)
+    hits = 0
+    chunk = 2_000_000
+    for start in range(0, len(cloud), chunk):
+        pts = cloud.points[start:start + chunk]
+        dist, idx = tree.query(pts, k=1, workers=-1)
+        ok = dist <= max_dist
+        colors[start:start + chunk][ok] = source.colors[idx[ok]]
+        hits += int(ok.sum())
+    cloud.colors = colors
+    return hits / len(cloud)

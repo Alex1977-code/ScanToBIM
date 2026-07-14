@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scantobim"
-version = "2.5.0"
+version = "2.6.0"
 description = "Scan-to-BIM reconstruction: turn LiDAR point clouds and photos into clean-edged 3D models"
 readme = "README.md"
 requires-python = ">=3.10"

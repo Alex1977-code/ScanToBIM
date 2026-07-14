@@ -737,6 +737,18 @@ def _cmd_project(args) -> int:
     print(f"  geladen: {len(cloud):,} Punkte"
           + (", mit Farben" if cloud.colors is not None else ""))
 
+    # Dense-but-uncolorized cloud + colored sibling → graft the colors onto
+    # the dense geometry (nearest neighbour, header-verified sibling).
+    if cloud.colors is None and project.color_source is not None:
+        from scantobim.core.preprocess import transfer_colors
+
+        print(f"  Farben übertragen von: {project.color_source.name} …")
+        color_cloud = read_point_cloud(
+            project.color_source, max_points=args.max_points
+        )
+        fraction = transfer_colors(cloud, color_cloud)
+        print(f"  → {fraction:.0%} der Punkte eingefärbt")
+
     trajectory = None
     if project.trajectory is not None:
         trajectory = read_trajectory(project.trajectory)
@@ -777,6 +789,13 @@ def _cmd_project(args) -> int:
     rep = result.report
     print(f"  planes: {rep['planes']}  angles: {rep['plane_angles']}  "
           f"residual: {rep['residual_points']}")
+    if rep.get("point_spacing", 0) > 0.05:
+        print(
+            f"  HINWEIS: mittlerer Punktabstand "
+            f"{rep['point_spacing'] * 100:.0f} cm — die Wolke ist stark "
+            "ausgedünnt. Für ein detailtreues Modell die hochauflösende "
+            "Export-Datei des Scanners verwenden."
+        )
 
     # Texture: photo projection when poses + photos exist, else cloud colors.
     output_mesh = result.mesh

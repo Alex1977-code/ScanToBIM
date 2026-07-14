@@ -655,8 +655,16 @@ def _make_handler(state: GuiState):
                         )
                         return
                     detail = [project.cloud.name]
+                    if project.cloud_points:
+                        mio = project.cloud_points / 1e6
+                        detail.append(
+                            f"{mio:.1f} Mio Punkte" if mio >= 1
+                            else f"{project.cloud_points:,} Punkte"
+                        )
                     if project.cloud_colored is True:
                         detail.append("mit Farben")
+                    elif project.color_source is not None:
+                        detail.append(f"Farben aus {project.color_source.name}")
                     elif project.cloud_colored is False:
                         detail.append("ohne Farben")
                     if project.images_dir is not None:

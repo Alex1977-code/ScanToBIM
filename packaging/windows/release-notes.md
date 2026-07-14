@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.6.0 — Punktdichte zählt: nie wieder die Vorschau-Wolke
+
+- **Dichte UND Farbe entscheiden jetzt gemeinsam**: 2.5.0 bevorzugte die farbige Wolke — auch wenn sie eine 100×-ausgedünnte Vorschau war (z. B. 156 000 Punkte mit 22 cm Abstand statt des echten Multi-Millionen-Scans → nur grobe Riesenflächen, kaum Öffnungen). Jetzt wird zusätzlich die **Punktzahl aus dem Datei-Header** gelesen: die farbige Wolke gewinnt nur, wenn sie mindestens ¼ der Punktdichte der dichtesten Wolke hat — sonst gewinnt die dichte Wolke.
+- **Farbübertragung von der Schwester-Wolke**: Hat die dichte Wolke keine Farben, aber eine (dünnere) farbige liegt daneben, werden deren Farben **per Nächster-Nachbar-Suche auf die dichte Geometrie übertragen** — volle Detailtreue *und* Punktfarben-Textur. Punkte ohne farbigen Nachbarn bleiben neutral grau; das Protokoll zeigt „Farben übertragen von: … → X % der Punkte eingefärbt“.
+- **Transparenz im Protokoll**: „Punktwolke: … (245.1 MB, 12.4 Mio Punkte, mit Farben)“, dazu ggf. „→ dichteste Wolke gewählt — X ist zwar farbig, aber stark ausgedünnt“ und die Zeile „Farbquelle: …“. Auch der Ordner-Eintrag in der GUI-Dateiliste zeigt Punktzahl und Farbstatus.
+- **Warnung bei ausgedünnter Wolke**: liegt der mittlere Punktabstand über 5 cm, weist das Protokoll ausdrücklich darauf hin, die hochauflösende Export-Datei des Scanners zu verwenden — eine grobe Wolke kann kein detailtreues Modell ergeben.
+
 ### Neu in 2.5.0 — richtige Punktwolke im Projektordner
 
 - **Farbige Punktwolke wird bevorzugt**: Liegen im Projektordner mehrere Punktwolken (z. B. `…_colorized.e57` **und** eine größere unkolorierte), wählte das Programm bisher schlicht die größte — oft die ohne Farben, und die Textur blieb leer („Textur: keine“). Jetzt wird die Datei-**Kopfzeile** jeder Kandidatin geprüft (ohne die Punktdaten zu lesen, also auch bei GB-Dateien sofort) und die Wolke mit echten RGB-Farben bevorzugt. Das Protokoll zeigt die Wahl transparent: „Punktwolke: … (mit Farben)“ bzw. „→ farbige Wolke bevorzugt (X statt Y)“.

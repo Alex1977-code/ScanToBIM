@@ -247,6 +247,82 @@ def test_scan_project_dir_uncolored_single(tmp_path):
     assert "ohne Farben" in "\n".join(project.describe())
 
 
+def test_cloud_header_info_counts(tmp_path):
+    from scantobim.io.project import cloud_header_info
+
+    _write_ply_cloud(tmp_path / "rgb.ply", 123, colored=True)
+    assert cloud_header_info(tmp_path / "rgb.ply") == (123, True)
+
+    import laspy
+
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    las = laspy.LasData(header)
+    las.x, las.y, las.z = [0.0, 1.0, 2.0], [0.0, 1.0, 2.0], [0.0, 1.0, 2.0]
+    las.write(str(tmp_path / "c.las"))
+    assert cloud_header_info(tmp_path / "c.las") == (3, True)
+
+
+def test_scan_project_dir_dense_beats_thin_colored_preview(tmp_path):
+    """A ~100×-thinner colored quicklook must not displace the real scan —
+    instead it becomes the color source for a nearest-neighbour transfer."""
+    root = tmp_path / "export"
+    _write_ply_cloud(root / "scan_full.ply", 30000, colored=False)
+    _write_ply_cloud(root / "scan_preview.ply", 250, colored=True)
+    project = scan_project_dir(root)
+    assert project.cloud.name == "scan_full.ply"
+    assert project.cloud_colored is False
+    assert project.cloud_points == 30000
+    assert project.color_source is not None
+    assert project.color_source.name == "scan_preview.ply"
+    text = "\n".join(project.describe())
+    assert "Farbquelle" in text and "scan_preview.ply" in text
+
+
+def test_transfer_colors():
+    from scantobim.core.cloud import PointCloud
+    from scantobim.core.preprocess import transfer_colors
+
+    rng = np.random.default_rng(0)
+    src_pts = rng.uniform(0, 10, (2000, 3))
+    src_colors = rng.integers(0, 255, (2000, 3)).astype(np.uint8)
+    source = PointCloud(points=src_pts, colors=src_colors)
+    dst_pts = np.vstack(
+        [src_pts + rng.normal(0, 0.001, src_pts.shape), [[1e3, 1e3, 1e3]]]
+    )
+    cloud = PointCloud(points=dst_pts)
+    fraction = transfer_colors(cloud, source)
+    assert cloud.colors is not None and fraction > 0.99
+    assert np.array_equal(cloud.colors[:-1], src_colors)  # nearest = own point
+    assert np.array_equal(cloud.colors[-1], [128, 128, 128])  # out of reach
+
+
+def test_project_cli_color_transfer(tmp_path, capsys):
+    """Dense uncolorized + sparse colorized sibling → colored dense model."""
+    from scantobim.cli import main
+    from scantobim.core.cloud import PointCloud
+
+    root = tmp_path / "export"
+    root.mkdir()
+    cloud = make_box_scan(density=500, noise=0.004)
+    write_point_cloud(PointCloud(points=cloud.points), root / "voll.ply")
+    rng = np.random.default_rng(5)
+    sub = cloud.points[::6]
+    write_point_cloud(
+        PointCloud(
+            points=sub,
+            colors=rng.integers(60, 200, (len(sub), 3), dtype=np.uint8),
+        ),
+        root / "vorschau.ply",
+    )
+    out = tmp_path / "modell.html"
+    assert main(["project", str(root), "-o", str(out), "--seed", "1"]) == 0
+    log = capsys.readouterr().out
+    assert "Farben übertragen von: vorschau.ply" in log
+    assert "der Punkte eingefärbt" in log
+    report = json.loads((tmp_path / "modell_bericht.json").read_text())
+    assert report["texture"]["source"].startswith("punktfarben")
+
+
 def test_project_cli_end_to_end(tmp_path, capsys):
     """`scantobim project <dir>`: detect, reconstruct, texture, report."""
     from scantobim.cli import main
