@@ -595,6 +595,38 @@ async function poll(){
       tb.appendChild(tr);
     });
   }
+  /* auto-tuning winner → offer one-click profile save */
+  if (s.state === "done" && s.auto_winner && s.auto_winner.advanced) {
+    const tb = $("#report tbody");
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 2;
+    const btn = document.createElement("button");
+    btn.className = "ghost";
+    btn.textContent = "★ Gewinner-Einstellungen als Profil speichern (" +
+      s.auto_winner.candidate + ")";
+    btn.title = "Übernimmt die vom Auto-Tuning ermittelten Parameter in die " +
+      "Oberfläche und speichert sie dauerhaft als eigenes Profil.";
+    btn.onclick = async () => {
+      const opts = gatherOptions();
+      opts.preset = s.auto_winner.preset || "building";
+      opts.advanced = s.auto_winner.advanced;
+      applySettings(opts);
+      const name = "Auto (" + s.auto_winner.candidate + ")";
+      const res = await fetch("/api/profiles", {
+        method: "POST", body: JSON.stringify({name, settings: opts}),
+      });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      renderProfiles(data.profiles);
+      $("#profsel").value = name;
+      $("#profname").value = name;
+      setStatus("Profil „" + name + "“ gespeichert", "ok");
+    };
+    td.appendChild(btn);
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  }
 }
 
 /* source select: show the selected profile's explanation as its own tooltip */

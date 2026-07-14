@@ -22,12 +22,16 @@ from scantobim.core.pipeline import PipelineConfig, ReconstructionResult, recons
 
 
 def _candidates(spacing: float) -> list[tuple[str, PipelineConfig]]:
-    """Parameter sets spanning fine → coarse plus the detail preset."""
-    thinned = 2.0 * spacing  # the pipeline voxels at 2× raw spacing
+    """Parameter sets spanning fine → coarse plus the detail preset.
+
+    All candidates use scale-free factors (× point spacing), so the winning
+    configuration transfers to other scans of the same source as a profile.
+    """
+    del spacing  # thresholds are factor-based; kept for future absolute tuning
 
     def building(dist_factor: float, ratio: float) -> PipelineConfig:
         cfg = PipelineConfig.preset("building")
-        cfg.distance_threshold = dist_factor * thinned
+        cfg.distance_factor = dist_factor
         cfg.min_inlier_ratio = ratio
         return cfg
 
@@ -122,6 +126,22 @@ def auto_reconstruct(
         best_cfg.watertight = True
         result = reconstruct(cloud, best_cfg, trajectory=trajectory)
     else:
-        log(f"Auto-Tuning: '{winner['candidate']}' gewinnt")
+        log(f"Auto-Tuning: '{winner['candidate']}' gewinnt — Einstellungen "
+            "stehen im Bericht und sind als Profil speicherbar")
     result.report["auto_tuning"] = scoreboard
+    # The winning configuration in profile form (scale-free), so the GUI can
+    # offer "save as profile" and the numbers transfer to future scans.
+    result.report["auto_tuning_winner_config"] = {
+        "candidate": winner["candidate"],
+        "preset": "detail" if winner["candidate"] == "detail" else "building",
+        "advanced": {
+            "distance_factor": best_cfg.distance_factor,
+            "min_inlier_ratio": best_cfg.min_inlier_ratio,
+            "max_planes": best_cfg.max_planes,
+            "ghost_offset_tol": best_cfg.ghost_offset_tol,
+            "ortho_tol_deg": best_cfg.ortho_tol_deg,
+            "parallel_tol_deg": best_cfg.parallel_tol_deg,
+            "min_opening_factor": best_cfg.min_opening_factor,
+        },
+    }
     return result

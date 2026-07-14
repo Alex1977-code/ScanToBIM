@@ -254,3 +254,49 @@ def test_page_has_settings_ui(gui_server):
     # Mouseover explanations present on the tunables.
     assert text.count('title="') > 15
     assert "Vielfaches des Punktabstands" in text
+
+
+def test_auto_winner_offered_and_saveable(gui_server, tmp_path, monkeypatch):
+    """Auto run → status carries the winner config → saveable as profile."""
+    monkeypatch.setattr(
+        "scantobim.gui.server._PROFILE_FILE", tmp_path / "profiles.json"
+    )
+    url, _ = gui_server
+    src = write_point_cloud(make_box_scan(density=500, noise=0.004), tmp_path / "scan.ply")
+    _, body = _post(url + "/api/upload", src.read_bytes(), {"X-Filename": "scan.ply"})
+    uploaded = json.loads(body)
+    _, body = _post(
+        url + "/api/run",
+        json.dumps({
+            "mode": "reconstruct",
+            "files": [uploaded["path"]],
+            "options": {"preset": "auto", "texture": False},
+        }).encode(),
+    )
+    job = json.loads(body)["job"]
+    deadline = time.time() + 300
+    while True:
+        _, body = _get(url + f"/api/status?job={job}")
+        s = json.loads(body)
+        if s["state"] != "running":
+            break
+        assert time.time() < deadline, "auto run did not finish"
+        time.sleep(0.5)
+    assert s["state"] == "done", s.get("error")
+    winner = s["auto_winner"]
+    assert winner and winner["advanced"]["distance_factor"] > 0
+
+    # The button's flow: save the winner settings as a named profile.
+    name = f"Auto ({winner['candidate']})"
+    settings = {"preset": winner["preset"], "advanced": winner["advanced"]}
+    status, body = _post(
+        url + "/api/profiles", json.dumps({"name": name, "settings": settings}).encode()
+    )
+    assert status == 200
+    assert name in json.loads(body)["profiles"]
+
+
+def test_page_has_winner_button(gui_server):
+    url, _ = gui_server
+    _, body = _get(url + "/")
+    assert "Gewinner-Einstellungen als Profil speichern" in body.decode()

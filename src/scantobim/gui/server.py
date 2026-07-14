@@ -541,6 +541,15 @@ def _make_handler(state: GuiState):
                 if job is None:
                     self._json({"error": "unbekannter Job"}, 404)
                     return
+                auto_winner = None
+                bericht = Path(job["dir"]) / "bericht.json"
+                if job["state"] == "done" and bericht.exists():
+                    try:
+                        auto_winner = json.loads(bericht.read_text()).get(
+                            "auto_tuning_winner_config"
+                        )
+                    except (OSError, ValueError):
+                        pass
                 self._json(
                     {
                         "state": job["state"],
@@ -549,6 +558,7 @@ def _make_handler(state: GuiState):
                         "error": job["error"],
                         "outputs": self._job_outputs(job),
                         "has_viewer": (Path(job["dir"]) / "modell.html").exists(),
+                        "auto_winner": auto_winner,
                     }
                 )
             elif route == "/api/view":

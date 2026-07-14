@@ -203,6 +203,12 @@ def test_auto_reconstruct_picks_best():
     assert winner["unexplained"] < 0.1
     assert result.report["planes"] >= 6
     assert any("gewinnt" in line for line in logs)
+    # The winning configuration is exported in profile form (scale-free).
+    wc = result.report["auto_tuning_winner_config"]
+    assert wc["candidate"] == winner["candidate"]
+    assert wc["preset"] in ("building", "detail")
+    assert wc["advanced"]["distance_factor"] > 0
+    assert 0 < wc["advanced"]["min_inlier_ratio"] < 1
 
 
 def test_source_profiles():
