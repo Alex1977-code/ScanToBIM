@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.0.0 — neue Architektur: erst das Komplett-Netz, dann die Struktur
+
+- **Stufe 1 — Komplett-Mesh zuerst**: Der GESAMTE Scan wird als erstes zu einem farbigen Dreiecksnetz rekonstruiert (dünn besetztes Belegungsgitter → Hüllfläche → Glättung → Rückprojektion auf die Messpunkte → Punktfarben) — **maximale Modellfülle, bevor irgendeine Interpretation stattfindet**. Bis 4 Mio Dreiecke als `komplett.glb`, eine leichtere Variante im Viewer als schaltbare Ebene „Komplett-Mesh (Scan)“.
+- **Stufe 2 — Ebenen & Linien als Option**: Die algorithmische Struktursuche (Ebenen, exakte Kanten/Schnittlinien, Öffnungen, Maße, Bauteilklassen, BIM/CAD-Exporte) läuft danach — **zuschaltbar** (GUI-Häkchen „Ebenen & Linien suchen“, CLI `--no-structure`). Im Viewer liegen Strukturmodell und Komplett-Mesh als getrennt schaltbare Ebenen übereinander.
+- **Kein Totalausfall mehr**: Scheitert die Struktursuche (z. B. kaum ebene Flächen), bleibt das Komplett-Mesh als vollwertiges Ergebnis erhalten — der Lauf endet erfolgreich statt mit „No planar structure found“.
+- Bericht: neuer Block `komplett_mesh` (Dreiecke, Bauteile, Scan-Abdeckung, Rasterweite); die GUI-Zusammenfassung zeigt ihn an erster Stelle.
+
 ### Neu in 2.9.0 — Auto-Rettung statt Abbruch, feineres Freiform-Mesh
 
 - **„No planar structure found" ist Geschichte**: Bei SLAM-Scans ohne das SLAM-Quellenprofil (Quelle „Standard") füllen Registrierungs-Doppelwände das komplette Toleranzband — alle Rausch-Tore der Ebenenerkennung lehnten ab, der Lauf brach nach Minuten mit einem Fehler ab. Jetzt startet automatisch ein **zweiter Erkennungsversuch mit gelockerten Toleranzen** (breiteres Band, entschärfte Tore); der Bericht dokumentiert die Rettung und empfiehlt das SLAM-Profil.

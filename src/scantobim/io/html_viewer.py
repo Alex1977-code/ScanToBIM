@@ -63,6 +63,7 @@ def write_html_viewer(
     title: str = "ScanToBIM Modell",
     points=None,
     freeform: Mesh | None = None,
+    freeform_label: str = "Freiform-Restgeometrie",
     max_layer_points: int = 800_000,
 ) -> Path:
     """Write the standalone viewer.
@@ -154,6 +155,7 @@ def write_html_viewer(
     meta["textured"] = bool(textured)
     html = (
         _TEMPLATE.replace("__TITLE__", title)
+        .replace("__FF_LABEL__", freeform_label)
         .replace("__META__", json.dumps(meta))
         .replace("__POSITIONS__", b64(positions))
         .replace("__NORMALS__", b64(normals))
@@ -198,7 +200,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <div id="hud"><h1>__TITLE__</h1><div id="stats"></div></div>
 <div id="layers" hidden>
   <label id="ffRow" hidden><input type="checkbox" id="ffToggle" checked>
-    Freiform-Restgeometrie (<span id="ffCount"></span> Dreiecke)</label>
+    __FF_LABEL__ (<span id="ffCount"></span> Dreiecke)</label>
   <label id="ptsRow" hidden><input type="checkbox" id="ptsToggle" checked>
     Scan-Restpunkte (<span id="ptsCount"></span>)</label>
 </div>

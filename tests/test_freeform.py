@@ -75,8 +75,8 @@ def test_viewer_embeds_freeform_layer(tmp_path):
     assert "Freiform-Restgeometrie" in html
 
 
-def test_cli_reconstruct_hybrid(tmp_path, capsys):
-    """Column residual of a hall scan becomes a free-form layer + GLB."""
+def test_cli_reconstruct_mesh_first(tmp_path, capsys):
+    """Stage 1 builds the complete mesh, stage 2 adds the structure model."""
     from scantobim.cli import main
     from scantobim.io.writers import write_point_cloud
     from tests.synthetic import make_hall_with_column_scan
@@ -91,18 +91,68 @@ def test_cli_reconstruct_hybrid(tmp_path, capsys):
     ])
     assert code == 0
     log = capsys.readouterr().out
-    assert "Freiform-Mesh:" in log
-    assert (tmp_path / "modell_freiform.glb").exists()
+    assert "Komplett-Mesh:" in log
+    assert log.index("Komplett-Mesh:") < log.index("reconstructing")  # mesh first
+    assert (tmp_path / "modell_komplett.glb").exists()
     report = json.loads((tmp_path / "bericht.json").read_text())
-    assert report["freeform"]["triangles"] > 100
+    assert report["komplett_mesh"]["triangles"] > 100
+    assert report["planes"] >= 5  # structure stage still ran
     html = out.read_text()
     meta = json.loads(re.search(r"const META = (\{.*?\});", html).group(1))
     assert meta["ff_indices"] > 0
-    # Raw points layer is replaced by the free-form layer.
+    assert "Komplett-Mesh (Scan)" in html
     assert meta["points"] == 0
 
 
-def test_cli_reconstruct_no_freeform_flag(tmp_path, capsys):
+def test_cli_reconstruct_no_structure(tmp_path, capsys):
+    """--no-structure: only the complete mesh, no plane search, exit 0."""
+    from scantobim.cli import main
+    from scantobim.io.writers import write_point_cloud
+    from tests.synthetic import make_hall_with_column_scan
+
+    cloud = make_hall_with_column_scan(density=420, noise=0.003)
+    src = tmp_path / "halle.ply"
+    write_point_cloud(cloud, src)
+    out = tmp_path / "modell.html"
+    code = main([
+        "reconstruct", str(src), "-o", str(out), "--no-structure",
+        "--seed", "3", "--report", str(tmp_path / "bericht.json"),
+    ])
+    assert code == 0
+    log = capsys.readouterr().out
+    assert "Strukturanalyse übersprungen" in log
+    assert "reconstructing" not in log
+    assert out.exists() and (tmp_path / "modell_komplett.glb").exists()
+    report = json.loads((tmp_path / "bericht.json").read_text())
+    assert "komplett_mesh" in report and "planes" not in report
+
+
+def test_cli_structure_failure_keeps_mesh(tmp_path, capsys):
+    """A scene without planes must still deliver the complete mesh."""
+    from scantobim.cli import main
+    from scantobim.io.writers import write_point_cloud
+
+    # Gaussian blob + micro distance threshold: the plane stage (incl. its
+    # rescue pass) finds nothing, but the mesh must still be delivered.
+    rng = np.random.default_rng(2)
+    cloud = PointCloud(
+        points=rng.normal(0, 0.5, (60000, 3)),
+        colors=rng.integers(0, 255, (60000, 3)).astype(np.uint8),
+    )
+    src = tmp_path / "rauschen.ply"
+    write_point_cloud(cloud, src)
+    out = tmp_path / "modell.html"
+    code = main([
+        "reconstruct", str(src), "-o", str(out), "--seed", "3",
+        "--dist", "0.00001",
+    ])
+    assert code == 0
+    log = capsys.readouterr().out
+    assert "Strukturanalyse fehlgeschlagen" in log
+    assert out.exists() and (tmp_path / "modell_komplett.glb").exists()
+
+
+def test_cli_reconstruct_no_mesh_flag(tmp_path, capsys):
     from scantobim.cli import main
     from scantobim.io.writers import write_point_cloud
     from tests.synthetic import make_hall_with_column_scan
@@ -114,6 +164,6 @@ def test_cli_reconstruct_no_freeform_flag(tmp_path, capsys):
     assert main([
         "reconstruct", str(src), "-o", str(out), "--no-freeform", "--seed", "3",
     ]) == 0
-    assert not (tmp_path / "modell_freiform.glb").exists()
+    assert not (tmp_path / "modell_komplett.glb").exists()
     log = capsys.readouterr().out
-    assert "Freiform-Mesh:" not in log
+    assert "Komplett-Mesh:" not in log

@@ -168,9 +168,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("--watertight", action="store_true",
                        help="globally optimized watertight model (PolyFit): "
                        "closes scan shadows with the geometrically exact faces")
-    p_rec.add_argument("--no-freeform", dest="freeform", action="store_false",
-                       help="skip the hybrid free-form mesh of the residual "
-                       "points (default: on)")
+    p_rec.add_argument("--no-freeform", "--no-mesh", dest="freeform",
+                       action="store_false",
+                       help="kein Komplett-Mesh des Scans (Standard: an)")
+    p_rec.add_argument("--no-structure", dest="structure", action="store_false",
+                       help="nur Komplett-Mesh — keine Ebenen/Linien-Suche, "
+                       "keine BIM-Auswertung")
     p_rec.add_argument("--ghost-tol", type=float, default=None, metavar="M",
                        help="merge registration ghosts (double walls) within "
                        "this offset in input units")
@@ -226,9 +229,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         "come from SLAM scanners)")
     p_proj.add_argument("--watertight", action="store_true",
                         help="globally optimized watertight model")
-    p_proj.add_argument("--no-freeform", dest="freeform", action="store_false",
-                        help="skip the hybrid free-form mesh of the residual "
-                        "points (default: on)")
+    p_proj.add_argument("--no-freeform", "--no-mesh", dest="freeform",
+                        action="store_false",
+                        help="kein Komplett-Mesh des Scans (Standard: an)")
+    p_proj.add_argument("--no-structure", dest="structure", action="store_false",
+                        help="nur Komplett-Mesh — keine Ebenen/Linien-Suche, "
+                        "keine BIM-Auswertung")
     p_proj.add_argument("--align", action="store_true",
                         help="axis-align the model, floor at Z=0")
     p_proj.add_argument("--no-photos", action="store_true",
@@ -606,26 +612,55 @@ def _cmd_reconstruct(args) -> int:
         print(f"trajectory: {len(trajectory)} scanner positions "
               "(normals oriented towards the path)")
 
-    print(f"reconstructing (preset: {args.preset}) …")
-    if args.preset == "auto":
-        from scantobim.core.autotune import auto_reconstruct
+    # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
+    report_extra: dict = {}
+    full_mesh = full_viewer = None
+    if (
+        getattr(args, "freeform", True)
+        and args.output.suffix.lower() not in (".stp", ".step", ".ifc")
+    ):
+        full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
 
-        result = auto_reconstruct(
-            cloud,
-            trajectory=trajectory,
-            seed=args.seed,
-            overrides={
-                **SOURCE_PROFILES.get(getattr(args, "source", "standard"), {}),
-                "watertight": cfg.watertight,
-                "align_axes": cfg.align_axes,
-                "ghost_offset_tol": cfg.ghost_offset_tol,
-                "cylinder_detection": cfg.cylinder_detection,
-                "detect_openings": cfg.detect_openings,
-            },
+    # ---- Stufe 2 (Option): Ebenen & Linien suchen ---------------------------
+    if not getattr(args, "structure", True):
+        print("Strukturanalyse übersprungen (--no-structure).")
+        return _write_full_only(
+            args.output, full_mesh, full_viewer,
+            {"input_points": len(cloud), **report_extra},
+            getattr(args, "report", None),
         )
-    else:
-        result = reconstruct(cloud, cfg, trajectory=trajectory)
+    print(f"reconstructing (preset: {args.preset}) …")
+    try:
+        if args.preset == "auto":
+            from scantobim.core.autotune import auto_reconstruct
+
+            result = auto_reconstruct(
+                cloud,
+                trajectory=trajectory,
+                seed=args.seed,
+                overrides={
+                    **SOURCE_PROFILES.get(getattr(args, "source", "standard"), {}),
+                    "watertight": cfg.watertight,
+                    "align_axes": cfg.align_axes,
+                    "ghost_offset_tol": cfg.ghost_offset_tol,
+                    "cylinder_detection": cfg.cylinder_detection,
+                    "detect_openings": cfg.detect_openings,
+                },
+            )
+        else:
+            result = reconstruct(cloud, cfg, trajectory=trajectory)
+    except ValueError as exc:
+        if full_mesh is None:
+            raise
+        print(f"Strukturanalyse fehlgeschlagen ({exc})")
+        print("Komplett-Mesh bleibt als Ergebnis erhalten.")
+        return _write_full_only(
+            args.output, full_mesh, full_viewer,
+            {"input_points": len(cloud), **report_extra},
+            getattr(args, "report", None),
+        )
     rep = result.report
+    rep.update(report_extra)
     openings = sum(s.get("openings", 0) for s in rep["surfaces"])
     q = rep["quantities"]
     print(f"  planes:    {rep['planes']}")
@@ -690,21 +725,17 @@ def _cmd_reconstruct(args) -> int:
         n_storeys = max(1, len(result.report.get("storeys", [])))
         print(f"wrote {out} (IFC4, {n_storeys} Geschoss(e))")
     else:
-        freeform, freeform_viewer = (
-            _apply_freeform(result)
-            if getattr(args, "freeform", True)
-            else (None, None)
-        )
         out = write_mesh(
             output_mesh, args.output,
-            residual=None if freeform is not None else result.residual,
-            freeform=freeform_viewer,
+            residual=None if full_viewer is not None else result.residual,
+            freeform=full_viewer,
+            freeform_label="Komplett-Mesh (Scan)",
         )
         print(f"wrote {out}")
-        if freeform is not None:
-            ff_path = args.output.with_name(args.output.stem + "_freiform.glb")
-            write_mesh(freeform, ff_path)
-            print(f"wrote {ff_path} (Freiform-Restgeometrie)")
+        if full_mesh is not None:
+            glb = args.output.with_name(args.output.stem + "_komplett.glb")
+            write_mesh(full_mesh, glb)
+            print(f"wrote {glb} (Komplett-Mesh, volle Auflösung)")
         elif args.output.suffix.lower() in (".html", ".htm") and len(result.residual):
             print(
                 f"  Viewer: {min(len(result.residual), 800_000):,} Scan-Restpunkte "
@@ -801,22 +832,55 @@ def _cmd_project(args) -> int:
     if args.seed is not None:
         cfg.seed = args.seed
 
-    print(f"reconstructing (preset: {args.preset}, Quelle: {source}) …")
-    if args.preset == "auto":
-        from scantobim.core.autotune import auto_reconstruct
+    # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
+    output = args.output or (args.directory / "scantobim_modell.html")
+    report_extra: dict = {}
+    full_mesh = full_viewer = None
+    if getattr(args, "freeform", True):
+        full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
 
-        result = auto_reconstruct(
-            cloud, trajectory=trajectory, seed=args.seed,
-            overrides={
-                **SOURCE_PROFILES.get(source, {}),
-                **(getattr(args, "advanced", None) or {}),
-                "watertight": cfg.watertight,
-                "align_axes": cfg.align_axes,
-            },
+    fallback_report = {
+        "input_points": len(cloud),
+        "trajectory_positions": 0 if trajectory is None else int(len(trajectory)),
+        **report_extra,
+    }
+    fallback_report_path = args.report or output.with_name(
+        output.stem + "_bericht.json"
+    )
+
+    # ---- Stufe 2 (Option): Ebenen & Linien suchen ---------------------------
+    if not getattr(args, "structure", True):
+        print("Strukturanalyse übersprungen (--no-structure).")
+        return _write_full_only(
+            output, full_mesh, full_viewer, fallback_report, fallback_report_path
         )
-    else:
-        result = reconstruct(cloud, cfg, trajectory=trajectory)
+    print(f"reconstructing (preset: {args.preset}, Quelle: {source}) …")
+    try:
+        if args.preset == "auto":
+            from scantobim.core.autotune import auto_reconstruct
+
+            result = auto_reconstruct(
+                cloud, trajectory=trajectory, seed=args.seed,
+                overrides={
+                    **SOURCE_PROFILES.get(source, {}),
+                    **(getattr(args, "advanced", None) or {}),
+                    "watertight": cfg.watertight,
+                    "align_axes": cfg.align_axes,
+                },
+            )
+        else:
+            result = reconstruct(cloud, cfg, trajectory=trajectory)
+    except ValueError as exc:
+        if full_mesh is None:
+            raise
+        print(f"Strukturanalyse fehlgeschlagen ({exc})")
+        print("Komplett-Mesh bleibt als Ergebnis erhalten.")
+        return _write_full_only(
+            output, full_mesh, full_viewer,
+            fallback_report, fallback_report_path,
+        )
     rep = result.report
+    rep.update(report_extra)
     print(f"  planes: {rep['planes']}  angles: {rep['plane_angles']}  "
           f"residual: {rep['residual_points']}")
     if rep.get("point_spacing", 0) > 0.05:
@@ -902,7 +966,6 @@ def _cmd_project(args) -> int:
     rep["texture"] = texture_info
     print(f"Textur: {texture_info['source']}")
 
-    output = args.output or (args.directory / "scantobim_modell.html")
     ext = output.suffix.lower()
     if ext in (".stp", ".step"):
         from scantobim.io.step import write_step
@@ -913,20 +976,16 @@ def _cmd_project(args) -> int:
 
         out = write_ifc(result.surfaces, output, storeys=rep.get("storeys"))
     else:
-        freeform, freeform_viewer = (
-            _apply_freeform(result)
-            if getattr(args, "freeform", True)
-            else (None, None)
-        )
         out = write_mesh(
             output_mesh, output,
-            residual=None if freeform is not None else result.residual,
-            freeform=freeform_viewer,
+            residual=None if full_viewer is not None else result.residual,
+            freeform=full_viewer,
+            freeform_label="Komplett-Mesh (Scan)",
         )
-        if freeform is not None:
-            ff_path = output.with_name(output.stem + "_freiform.glb")
-            write_mesh(freeform, ff_path)
-            print(f"wrote {ff_path} (Freiform-Restgeometrie)")
+        if full_mesh is not None:
+            glb = output.with_name(output.stem + "_komplett.glb")
+            write_mesh(full_mesh, glb)
+            print(f"wrote {glb} (Komplett-Mesh, volle Auflösung)")
         elif ext in (".html", ".htm") and len(result.residual):
             print(
                 f"  Viewer: {min(len(result.residual), 800_000):,} Scan-Restpunkte "
@@ -992,36 +1051,64 @@ def _cmd_compare(args) -> int:
     return 0
 
 
-def _apply_freeform(result):
-    """Hybrid model: free-form skin around the plane-residual points.
+def _build_full_mesh(cloud, report=None):
+    """Stage 1 of the mesh-first pipeline: the COMPLETE scan as one colored
+    triangle mesh, built from all points before any structure analysis.
 
-    Returns ``(fine, viewer)`` — a high-resolution mesh for the GLB export
-    and a lighter variant for the self-contained HTML viewer — or
-    ``(None, None)``. Statistics of the fine mesh land in the report.
+    Returns ``(fine, viewer)`` — full resolution for the GLB export and a
+    lighter variant for the embedded HTML viewer — or ``(None, None)``.
     """
     from scantobim.core.freeform import freeform_mesh_from_points
 
-    if len(result.residual) < 300:
+    if len(cloud) < 300:
         return None, None
-    print("Freiform-Rekonstruktion der Restgeometrie (Hybrid-Modell) …")
-    freeform = freeform_mesh_from_points(result.residual, max_faces=2_000_000)
-    if freeform is None:
-        print("  keine zusammenhängende Restgeometrie — übersprungen")
+    print("Komplett-Mesh: gesamter Scan wird vernetzt …")
+    fine = freeform_mesh_from_points(cloud, max_faces=4_000_000)
+    if fine is None:
+        print("  zu wenig zusammenhängende Geometrie — übersprungen")
         return None, None
-    st = freeform.freeform_stats
-    result.report["freeform"] = st
+    st = fine.freeform_stats
+    if report is not None:
+        report["komplett_mesh"] = st
     print(
-        f"  Freiform-Mesh: {st['triangles']:,} Dreiecke, "
+        f"  Komplett-Mesh: {st['triangles']:,} Dreiecke, "
         f"{st['components']} Bauteile, deckt {st['points_covered'] * 100:.0f}% "
-        f"der Restpunkte ab (Raster {st['voxel'] * 100:.1f} cm)"
+        f"des Scans ab (Raster {st['voxel'] * 100:.1f} cm)"
     )
-    viewer = freeform
-    if len(freeform.faces) > 600_000:
-        # Lighter rebuild so the single-file HTML stays loadable.
-        viewer = freeform_mesh_from_points(result.residual, max_faces=600_000)
-        if viewer is None:
-            viewer = freeform
-    return freeform, viewer
+    viewer = fine
+    if len(fine.faces) > 600_000:
+        lighter = freeform_mesh_from_points(cloud, max_faces=600_000)
+        if lighter is not None:
+            viewer = lighter
+    return fine, viewer
+
+
+def _write_full_only(output, full_mesh, full_viewer, report, report_path) -> int:
+    """Deliver the complete-mesh-only result (structure skipped or failed)."""
+    from scantobim.core.mesh import Mesh as _Mesh
+
+    if full_mesh is None:
+        raise ValueError(
+            "weder Strukturmodell noch Komplett-Mesh möglich — Scan prüfen"
+        )
+    ext = output.suffix.lower()
+    if ext in (".html", ".htm"):
+        empty = _Mesh(np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64))
+        out = write_mesh(
+            empty, output,
+            freeform=full_viewer, freeform_label="Komplett-Mesh (Scan)",
+        )
+    else:
+        out = write_mesh(full_mesh, output)
+    print(f"wrote {out}")
+    glb = output.with_name(output.stem + "_komplett.glb")
+    write_mesh(full_mesh, glb)
+    print(f"wrote {glb} (Komplett-Mesh, volle Auflösung)")
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, indent=2, default=_json_default))
+        print(f"wrote {report_path}")
+    return 0
 
 
 def _write_deviation(result, cloud, deviation_path: Path, tolerance: float) -> None:

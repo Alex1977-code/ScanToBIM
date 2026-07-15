@@ -17,6 +17,7 @@ def write_mesh(
     path: str | Path,
     residual: PointCloud | None = None,
     freeform: Mesh | None = None,
+    freeform_label: str = "Freiform-Restgeometrie",
 ) -> Path:
     """Write ``mesh`` to ``path``; format is chosen by extension
     (``.obj``, ``.ply``, ``.stl``, ``.glb``, ``.gltf``, ``.html``).
@@ -39,7 +40,10 @@ def write_mesh(
     elif ext in (".html", ".htm"):
         from scantobim.io.html_viewer import write_html_viewer
 
-        write_html_viewer(mesh, path, points=residual, freeform=freeform)
+        write_html_viewer(
+            mesh, path, points=residual, freeform=freeform,
+            freeform_label=freeform_label,
+        )
     else:
         raise ValueError(
             f"Unsupported mesh format: {ext!r} (use .obj .ply .stl .glb .html)"

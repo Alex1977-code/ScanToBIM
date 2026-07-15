@@ -260,7 +260,8 @@ button.ghost:hover{border-color:var(--accent)}
         <div style="margin-top:.6rem">
           <label class="opt"><input type="checkbox" id="watertight"> Wasserdichtes Volumenmodell (schließt Scanschatten)</label>
           <label class="opt"><input type="checkbox" id="texture" checked> Fototextur aus Punktfarben</label>
-          <label class="opt" title="Hybrid-Modell: alles, was das Flächenmodell nicht erklärt (Stahlbau, Geländer, Maschinen, Freiformen), wird als eigenes farbiges Dreiecksnetz rekonstruiert — im Viewer als Ebene schaltbar, Export als freiform.glb."><input type="checkbox" id="freeform" checked> Freiform-Restgeometrie vernetzen (Hybrid-Modell)</label>
+          <label class="opt" title="Stufe 1: Der GESAMTE Scan wird zuerst als farbiges Dreiecksnetz rekonstruiert (bis 4 Mio Dreiecke, komplett.glb) — maximale Fülle, nichts geht verloren. Im Viewer als Ebene schaltbar."><input type="checkbox" id="freeform" checked> Komplett-Mesh: ganzer Scan als Dreiecksnetz (Stufe 1)</label>
+          <label class="opt" title="Stufe 2 (Option): Ebenen, Kanten und Linien werden algorithmisch gesucht — liefert das Strukturmodell mit Maßen, Öffnungen, Bauteilklassen und die BIM/CAD-Exporte (IFC, STEP, DXF). Abschaltbar, wenn nur das Netz gebraucht wird."><input type="checkbox" id="structure" checked> Ebenen &amp; Linien suchen (Strukturmodell, Stufe 2)</label>
           <label class="opt"><input type="checkbox" id="align"> Achsen ausrichten, Boden auf Z=0</label>
           <label class="opt"><input type="checkbox" id="register"> Mehrere Scans automatisch registrieren (ICP)</label>
           <label class="opt"><input type="checkbox" id="deviation"> Soll-Ist-Abweichungsanalyse (QS-Heatmap + Statistik)</label>
@@ -439,6 +440,7 @@ function gatherOptions(){
   options.watertight = $("#watertight").checked;
   options.texture = $("#texture").checked;
   options.freeform = $("#freeform").checked;
+  options.structure = $("#structure").checked;
   options.align = $("#align").checked;
   options.register = $("#register").checked && state.files.length > 1;
   options.deviation = $("#deviation").checked;
@@ -467,7 +469,7 @@ function applySettings(s){
   if (!s) return;
   if (s.preset) $("#preset").value = s.preset;
   if (s.source) $("#source").value = s.source;
-  for (const id of ["watertight","texture","freeform","align","register","deviation","views","reporthtml"]) {
+  for (const id of ["watertight","texture","freeform","structure","align","register","deviation","views","reporthtml"]) {
     const key = id === "reporthtml" ? "report_html" : id;
     if (key in s) $("#" + id).checked = !!s[key];
   }

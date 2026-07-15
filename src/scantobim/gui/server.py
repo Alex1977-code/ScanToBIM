@@ -173,18 +173,25 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             if opts.get("report_html") else None,
             max_points=int(opts.get("max_points") or 40_000_000),
             freeform=opts.get("freeform", True),
+            structure=opts.get("structure", True),
             seed=None,
         )
         code = _cmd_project(ns)
         if code != 0:
             raise RuntimeError("Projekt-Import fehlgeschlagen")
         rep = json.loads((outdir / "bericht.json").read_text())
-        summary = {
-            "Flächen": rep["planes"],
-            "Exakte Ecken": rep.get("exact_corners", 0),
-            "Restpunkte": rep["residual_points"],
-            "Rechenzeit": f"{rep['runtime_seconds']} s",
-        }
+        summary = {}
+        km = rep.get("komplett_mesh")
+        if km:
+            summary["Komplett-Mesh"] = (
+                f"{km['triangles']:,} Dreiecke, {km['components']} Bauteile, "
+                f"{km['points_covered'] * 100:.0f}% des Scans"
+            )
+        if "planes" in rep:
+            summary["Flächen"] = rep["planes"]
+            summary["Exakte Ecken"] = rep.get("exact_corners", 0)
+            summary["Restpunkte"] = rep["residual_points"]
+            summary["Rechenzeit"] = f"{rep['runtime_seconds']} s"
         if "volume" in rep.get("quantities", {}):
             summary["Volumen"] = f"{rep['quantities']['volume']:.3f} m³"
         if rep.get("trajectory_positions"):
@@ -201,11 +208,6 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             summary["Modelltreue RMS"] = f"{fid['rms'] * 1000:.1f} mm"
             if dev.get("coverage") is not None:
                 summary["Modellabdeckung"] = f"{dev['coverage'] * 100:.1f}% des Scans"
-        ff = rep.get("freeform")
-        if ff:
-            summary["Freiform-Mesh"] = (
-                f"{ff['triangles']:,} Dreiecke, {ff['components']} Bauteile"
-            )
         return summary
 
     # Memory guard for the packaged app: huge scans are thinned block-wise.
@@ -225,23 +227,71 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     if opts.get("align"):
         cfg.align_axes = True
 
-    print(f"Rekonstruktion läuft (Preset: {preset}, Quelle: {source}) …")
-    if preset == "auto":
-        from scantobim.core.autotune import auto_reconstruct
+    # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
+    from scantobim.cli import _build_full_mesh
+    from scantobim.core.mesh import Mesh as _Mesh
 
-        result = auto_reconstruct(
-            cloud,
-            overrides={
-                **SOURCE_PROFILES.get(source, {}),
-                **advanced,
-                "watertight": cfg.watertight,
-                "align_axes": cfg.align_axes,
-                "cylinder_detection": cfg.cylinder_detection,
-            },
-        )
+    report_extra: dict = {}
+    full_mesh = full_viewer = None
+    if opts.get("freeform", True):
+        full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
+
+    # ---- Stufe 2 (Option): Ebenen & Linien suchen ---------------------------
+    result = None
+    if not opts.get("structure", True):
+        print("Strukturanalyse übersprungen (Option deaktiviert).")
     else:
-        result = reconstruct(cloud, cfg)
+        print(f"Rekonstruktion läuft (Preset: {preset}, Quelle: {source}) …")
+        try:
+            if preset == "auto":
+                from scantobim.core.autotune import auto_reconstruct
+
+                result = auto_reconstruct(
+                    cloud,
+                    overrides={
+                        **SOURCE_PROFILES.get(source, {}),
+                        **advanced,
+                        "watertight": cfg.watertight,
+                        "align_axes": cfg.align_axes,
+                        "cylinder_detection": cfg.cylinder_detection,
+                    },
+                )
+            else:
+                result = reconstruct(cloud, cfg)
+        except ValueError as exc:
+            if full_mesh is None:
+                raise
+            print(f"Strukturanalyse fehlgeschlagen ({exc})")
+            print("Komplett-Mesh bleibt als Ergebnis erhalten.")
+
+    if result is None:
+        if full_mesh is None:
+            raise ValueError(
+                "weder Strukturmodell noch Komplett-Mesh möglich — Scan prüfen"
+            )
+        empty = _Mesh(np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64))
+        write_mesh(
+            empty, outdir / "modell.html",
+            freeform=full_viewer, freeform_label="Komplett-Mesh (Scan)",
+        )
+        print("geschrieben: modell.html")
+        write_mesh(full_mesh, outdir / "komplett.glb")
+        print("geschrieben: komplett.glb (Komplett-Mesh, volle Auflösung)")
+        rep = {"input_points": len(cloud), **report_extra}
+        (outdir / "bericht.json").write_text(
+            json.dumps(rep, indent=2, default=_json_default)
+        )
+        km = report_extra.get("komplett_mesh", {})
+        return {
+            "Komplett-Mesh": (
+                f"{km.get('triangles', 0):,} Dreiecke, "
+                f"{km.get('components', 0)} Bauteile"
+            ),
+            "Punkte": f"{len(cloud):,}",
+        }
+
     rep = result.report
+    rep.update(report_extra)
     q = rep["quantities"]
 
     output_mesh = result.mesh
@@ -259,20 +309,16 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             output_mesh = bake_texture_from_cloud(result, cloud, transform=transform)
             texture_source = "punktfarben"
 
-    freeform = freeform_viewer = None
-    if opts.get("freeform", True):
-        from scantobim.cli import _apply_freeform
-
-        freeform, freeform_viewer = _apply_freeform(result)
     write_mesh(
         output_mesh, outdir / "modell.html",
-        residual=None if freeform is not None else result.residual,
-        freeform=freeform_viewer,
+        residual=None if full_viewer is not None else result.residual,
+        freeform=full_viewer,
+        freeform_label="Komplett-Mesh (Scan)",
     )
     print("geschrieben: modell.html")
-    if freeform is not None:
-        write_mesh(freeform, outdir / "freiform.glb")
-        print("geschrieben: freiform.glb (Freiform-Restgeometrie)")
+    if full_mesh is not None:
+        write_mesh(full_mesh, outdir / "komplett.glb")
+        print("geschrieben: komplett.glb (Komplett-Mesh, volle Auflösung)")
     for fmt in opts.get("formats", []):
         if fmt == "step":
             from scantobim.io.step import write_step
@@ -347,10 +393,11 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             f"{fid.get('within_tolerance', dev['within_tolerance']) * 100:.1f}% "
             f"(±{dev['tolerance'] * 1000:.0f} mm)"
         )
-    ff = rep.get("freeform")
-    if ff:
-        summary["Freiform-Mesh"] = (
-            f"{ff['triangles']:,} Dreiecke, {ff['components']} Bauteile"
+    km = rep.get("komplett_mesh")
+    if km:
+        summary["Komplett-Mesh"] = (
+            f"{km['triangles']:,} Dreiecke, {km['components']} Bauteile, "
+            f"{km['points_covered'] * 100:.0f}% des Scans"
         )
     summary["Dreiecke"] = rep["mesh"]["triangles"]
     summary["Restpunkte"] = rep["residual_points"]
