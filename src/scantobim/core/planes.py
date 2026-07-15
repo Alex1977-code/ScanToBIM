@@ -88,6 +88,8 @@ def detect_planes(
     ransac_iterations: int = 600,
     seed: int = 7,
     max_rms_ratio: float = 0.5,
+    core_fraction_min: float = 0.45,
+    surface_variation_max: float = 0.01,
 ) -> tuple[list[Plane], np.ndarray]:
     """Sequentially extract planes; returns ``(planes, unassigned_mask)``.
 
@@ -179,8 +181,8 @@ def detect_planes(
         core = np.abs(points[cand] @ normal + d) < distance_threshold / 3.0
         if (
             rms > max_rms_ratio * distance_threshold
-            or core.mean() < 0.45
-            or _surface_variation(points[cand]) > 0.01
+            or core.mean() < core_fraction_min
+            or _surface_variation(points[cand]) > surface_variation_max
         ):
             # Not a surface. Do not consume the points — they may still
             # support a better-oriented plane later.

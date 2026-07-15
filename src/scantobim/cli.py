@@ -690,11 +690,15 @@ def _cmd_reconstruct(args) -> int:
         n_storeys = max(1, len(result.report.get("storeys", [])))
         print(f"wrote {out} (IFC4, {n_storeys} Geschoss(e))")
     else:
-        freeform = _apply_freeform(result) if getattr(args, "freeform", True) else None
+        freeform, freeform_viewer = (
+            _apply_freeform(result)
+            if getattr(args, "freeform", True)
+            else (None, None)
+        )
         out = write_mesh(
             output_mesh, args.output,
             residual=None if freeform is not None else result.residual,
-            freeform=freeform,
+            freeform=freeform_viewer,
         )
         print(f"wrote {out}")
         if freeform is not None:
@@ -781,6 +785,12 @@ def _cmd_project(args) -> int:
     from scantobim.core.pipeline import SOURCE_PROFILES, apply_source_profile
 
     source = getattr(args, "source", "slam")
+    if source != "slam" and project.trajectory is not None:
+        print(
+            f"  ACHTUNG: Quelle '{source}' bei einem SLAM-Projekt — empfohlen "
+            "ist 'SLAM-Handscanner' (verschmilzt Registrierungs-Doppelwände, "
+            "sonst drohen null erkannte Ebenen)."
+        )
     apply_source_profile(cfg, source)
     for key, value in (getattr(args, "advanced", None) or {}).items():
         setattr(cfg, key, value)
@@ -903,11 +913,15 @@ def _cmd_project(args) -> int:
 
         out = write_ifc(result.surfaces, output, storeys=rep.get("storeys"))
     else:
-        freeform = _apply_freeform(result) if getattr(args, "freeform", True) else None
+        freeform, freeform_viewer = (
+            _apply_freeform(result)
+            if getattr(args, "freeform", True)
+            else (None, None)
+        )
         out = write_mesh(
             output_mesh, output,
             residual=None if freeform is not None else result.residual,
-            freeform=freeform,
+            freeform=freeform_viewer,
         )
         if freeform is not None:
             ff_path = output.with_name(output.stem + "_freiform.glb")
@@ -981,18 +995,19 @@ def _cmd_compare(args) -> int:
 def _apply_freeform(result):
     """Hybrid model: free-form skin around the plane-residual points.
 
-    Returns the free-form ``Mesh`` (or ``None``) and stores its statistics
-    in the report.
+    Returns ``(fine, viewer)`` — a high-resolution mesh for the GLB export
+    and a lighter variant for the self-contained HTML viewer — or
+    ``(None, None)``. Statistics of the fine mesh land in the report.
     """
     from scantobim.core.freeform import freeform_mesh_from_points
 
     if len(result.residual) < 300:
-        return None
+        return None, None
     print("Freiform-Rekonstruktion der Restgeometrie (Hybrid-Modell) …")
-    freeform = freeform_mesh_from_points(result.residual)
+    freeform = freeform_mesh_from_points(result.residual, max_faces=2_000_000)
     if freeform is None:
         print("  keine zusammenhängende Restgeometrie — übersprungen")
-        return None
+        return None, None
     st = freeform.freeform_stats
     result.report["freeform"] = st
     print(
@@ -1000,7 +1015,13 @@ def _apply_freeform(result):
         f"{st['components']} Bauteile, deckt {st['points_covered'] * 100:.0f}% "
         f"der Restpunkte ab (Raster {st['voxel'] * 100:.1f} cm)"
     )
-    return freeform
+    viewer = freeform
+    if len(freeform.faces) > 600_000:
+        # Lighter rebuild so the single-file HTML stays loadable.
+        viewer = freeform_mesh_from_points(result.residual, max_faces=600_000)
+        if viewer is None:
+            viewer = freeform
+    return freeform, viewer
 
 
 def _write_deviation(result, cloud, deviation_path: Path, tolerance: float) -> None:

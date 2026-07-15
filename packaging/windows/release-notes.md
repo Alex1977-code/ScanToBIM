@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 2.9.0 — Auto-Rettung statt Abbruch, feineres Freiform-Mesh
+
+- **„No planar structure found" ist Geschichte**: Bei SLAM-Scans ohne das SLAM-Quellenprofil (Quelle „Standard") füllen Registrierungs-Doppelwände das komplette Toleranzband — alle Rausch-Tore der Ebenenerkennung lehnten ab, der Lauf brach nach Minuten mit einem Fehler ab. Jetzt startet automatisch ein **zweiter Erkennungsversuch mit gelockerten Toleranzen** (breiteres Band, entschärfte Tore); der Bericht dokumentiert die Rettung und empfiehlt das SLAM-Profil.
+- **Deutliche Warnung im Protokoll**, wenn ein SLAM-Projekt (Trajektorie gefunden) mit einer anderen Quelle als „SLAM-Handscanner" gestartet wird — genau das war die Ursache des gemeldeten Abbruchs.
+- **Freiform-Mesh deutlich feiner**: Startraster jetzt 2,5× Punktabstand (vorher 4×) und das `freiform.glb` darf bis **2 Mio Dreiecke** nutzen — Geländer, Roste und Stahlprofile kommen sichtbar schärfer heraus. Der eingebettete Viewer erhält eine eigene, leichtere Variante (≤ 600 000 Dreiecke), damit die HTML-Datei handlich bleibt.
+
 ### Neu in 2.8.0 — Hybrid-Modell: Freiform-Rekonstruktion der Restgeometrie
 
 - **Alles wird jetzt Modell**: Was das parametrische Flächen-/Zylindermodell nicht erklärt — gekrümmte Stahltore, Bögen, Geländer, Maschinen, Rohrleitungen — wird jetzt als **eigenes farbiges Dreiecksnetz rekonstruiert** (Freiform-Skin). Verfahren: dünn besetztes Voxel-Belegungsgitter → Hüllflächen-Extraktion → Laplace-Glättung → Rückprojektion jeder Netz-Ecke auf die echten Messpunkte → Einfärbung aus den Punktfarben. Rausch-Sprenkel werden über eine Zusammenhangs-Analyse verworfen; das Dreiecks-Budget wird über die Rasterweite eingehalten, nie durch Weglassen von Geometrie.

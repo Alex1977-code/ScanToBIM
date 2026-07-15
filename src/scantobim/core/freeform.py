@@ -85,7 +85,9 @@ def freeform_mesh_from_points(
 
         spacing = estimate_point_spacing(cloud)
     if voxel is None:
-        voxel = max(4.0 * spacing, 1e-6)
+        # Fine start: railings and steel members are only a few cm thick.
+        # The budget loop below grows the voxel as far as necessary.
+        voxel = max(2.5 * spacing, 1e-6)
 
     lo = pts.min(axis=0)
     hi = pts.max(axis=0)
@@ -104,6 +106,12 @@ def freeform_mesh_from_points(
         solid = counts >= 2
         if not solid.any():
             solid = counts >= 1
+        # A voxel finer than the point density supports fragments the shell
+        # (half the cells hold a single point and fall to the noise gate) —
+        # grow until most occupied cells are multi-point.
+        if solid.sum() < 0.6 * len(occ) and voxel < 20.0 * spacing:
+            voxel *= 1.35
+            continue
         occ_solid = occ[solid]  # sorted (np.unique)
         occ_points = counts[solid]
 

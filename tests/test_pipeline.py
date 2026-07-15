@@ -243,3 +243,35 @@ def test_cli_source_profile(tmp_path):
     config = _json.loads(rep_path.read_text())["config"]
     assert config["distance_factor"] == 3.5
     assert config["ghost_offset_tol"] == 0.03
+
+
+def test_rescue_on_slam_double_walls():
+    """Un-merged SLAM registration ghosts (double sheets inside the
+    tolerance band) used to kill plane detection entirely — the rescue
+    pass must recover and flag itself in the report."""
+    rng = np.random.default_rng(4)
+
+    def double_sheet(u_axis, v_axis, n_axis, extent, n=40000):
+        u = rng.uniform(0, extent, n)[:, None] * u_axis
+        v = rng.uniform(0, extent, n)[:, None] * v_axis
+        base = u + v + rng.normal(0, 0.0015, (n, 3))
+        ghost = base + 0.015 * np.asarray(n_axis)  # 1.5 cm registration ghost
+        return np.vstack([base, ghost])
+
+    ex, ey, ez = np.eye(3)
+    pts = np.vstack([
+        double_sheet(ex, ey, ez, 2.0),  # doubled floor
+        double_sheet(ex, ez, ey, 2.0),  # doubled wall y=0
+        double_sheet(ey, ez, ex, 2.0),  # doubled wall x=0
+    ])
+    from scantobim.core.cloud import PointCloud
+
+    cloud = PointCloud(points=pts)
+    cfg = PipelineConfig.preset("building")
+    cfg.voxel_size = 0.006          # keep both sheets (no coarse merge)
+    cfg.distance_threshold = 0.020  # > ghost gap → mid-plane fit, gates reject
+    cfg.detect_openings = False
+    result = reconstruct(cloud, cfg)
+    assert result.report["planes"] >= 2
+    assert "rescue" in result.report
+    assert "gelockerten toleranzen" in result.report["rescue"]

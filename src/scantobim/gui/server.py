@@ -259,15 +259,15 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             output_mesh = bake_texture_from_cloud(result, cloud, transform=transform)
             texture_source = "punktfarben"
 
-    freeform = None
+    freeform = freeform_viewer = None
     if opts.get("freeform", True):
         from scantobim.cli import _apply_freeform
 
-        freeform = _apply_freeform(result)
+        freeform, freeform_viewer = _apply_freeform(result)
     write_mesh(
         output_mesh, outdir / "modell.html",
         residual=None if freeform is not None else result.residual,
-        freeform=freeform,
+        freeform=freeform_viewer,
     )
     print("geschrieben: modell.html")
     if freeform is not None:

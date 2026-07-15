@@ -287,6 +287,37 @@ def reconstruct(
         seed=cfg.seed,
     )
     if not planes:
+        # Rescue pass: un-merged SLAM registration ghosts (double walls a
+        # few cm apart) fill the whole tolerance band, so every candidate
+        # fails the noise gates and the search dies with zero planes.
+        # Retry once with widened band and relaxed gates instead of
+        # aborting a multi-minute run.
+        print(
+            "  keine Ebenen mit Standard-Toleranzen gefunden — zweiter "
+            "Versuch mit gelockerten Toleranzen (SLAM-Doppelwände?) …"
+        )
+        rescue_thresh = 1.6 * dist_thresh
+        planes, unassigned = detect_planes(
+            work.points,
+            work.normals,
+            distance_threshold=rescue_thresh,
+            normal_threshold_deg=cfg.normal_threshold_deg,
+            min_inliers=max(cfg.min_inliers_abs, min_inliers // 2),
+            max_planes=cfg.max_planes,
+            ransac_iterations=cfg.ransac_iterations,
+            seed=cfg.seed,
+            max_rms_ratio=0.7,
+            core_fraction_min=0.30,
+            surface_variation_max=0.02,
+        )
+        if planes:
+            dist_thresh = rescue_thresh
+            report["rescue"] = (
+                "ebenen-erkennung mit gelockerten toleranzen wiederholt "
+                "(tipp: bei SLAM-Scannern Quelle 'SLAM-Handscanner' wählen — "
+                "verschmilzt Registrierungs-Doppelwände)"
+            )
+    if not planes:
         raise ValueError(
             "No planar structure found — for organic shapes use a Poisson-based "
             "tool; this pipeline targets built environments and CAD-like objects"
