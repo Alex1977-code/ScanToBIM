@@ -153,15 +153,21 @@ def estimate_normals(
     k = min(k_neighbors + 1, n)
     tree = cKDTree(pts)
     _, idx = tree.query(pts, k=k, workers=-1)
-    neighborhoods = pts[idx]  # (N, k, 3)
-    centered = neighborhoods - neighborhoods.mean(axis=1, keepdims=True)
-    # Covariance per point: (N, 3, 3)
-    cov = np.einsum("nki,nkj->nij", centered, centered) / k
-    # Smallest eigenvector = normal. eigh returns ascending eigenvalues.
-    _, vecs = np.linalg.eigh(cov)
-    normals = vecs[:, :, 0]
-    norms = np.linalg.norm(normals, axis=1, keepdims=True)
-    normals = np.divide(normals, norms, out=np.zeros_like(normals), where=norms > 0)
+    from scantobim.core.accel import pca_normals
+
+    normals = pca_normals(pts, idx)  # GPU when available and worthwhile
+    if normals is None:
+        neighborhoods = pts[idx]  # (N, k, 3)
+        centered = neighborhoods - neighborhoods.mean(axis=1, keepdims=True)
+        # Covariance per point: (N, 3, 3)
+        cov = np.einsum("nki,nkj->nij", centered, centered) / k
+        # Smallest eigenvector = normal. eigh returns ascending eigenvalues.
+        _, vecs = np.linalg.eigh(cov)
+        normals = vecs[:, :, 0]
+        norms = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals = np.divide(
+            normals, norms, out=np.zeros_like(normals), where=norms > 0
+        )
 
     if orient_towards is not None:
         to_sensor = np.asarray(orient_towards, dtype=np.float64) - pts

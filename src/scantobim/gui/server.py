@@ -232,6 +232,9 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     from scantobim.core.mesh import Mesh as _Mesh
 
     report_extra: dict = {}
+    from scantobim.cli import _print_gpu_status
+
+    _print_gpu_status(report_extra)
     full_mesh = full_viewer = None
     if opts.get("freeform", True):
         full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)

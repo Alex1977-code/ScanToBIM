@@ -16,6 +16,13 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - variant: cpu
+            suffix: ""
+          - variant: gpu
+            suffix: "-gpu"
     steps:
       - uses: actions/checkout@v4
 
@@ -27,16 +34,27 @@ jobs:
       - name: Install
         run: pip install .[laz,photos,e57] pyinstaller
 
+      - name: Install CUDA backend (GPU-Variante)
+        if: matrix.variant == 'gpu'
+        run: pip install cupy-cuda12x
+
       - name: Run test suite
+        if: matrix.variant == 'cpu'
         run: |
           pip install pytest
           pytest -q
 
       - name: Build exe
-        run: >
-          pyinstaller --onefile --console --name scantobim
-          --collect-all laspy --collect-all lazrs --collect-all pye57
-          packaging/windows/launcher.py
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "${{ matrix.variant }}" = "gpu" ]; then
+            EXTRA="--collect-all cupy --collect-all cupyx --collect-all cupy_backends --collect-all fastrlock"
+          fi
+          pyinstaller --onefile --console --name scantobim \
+            --collect-all laspy --collect-all lazrs --collect-all pye57 \
+            $EXTRA \
+            packaging/windows/launcher.py
 
       - name: Smoke test the exe
         shell: bash
@@ -83,14 +101,15 @@ jobs:
           cp dist/scantobim.exe pkg/
           cp packaging/windows/LIESMICH.txt pkg/
           cp LICENSE pkg/LICENSE.txt
-          cd pkg && 7z a ../scantobim-windows-x64.zip . && cd ..
-          sha256sum scantobim-windows-x64.zip > scantobim-windows-x64.zip.sha256
-          ls -la scantobim-windows-x64.zip*
+          NAME="scantobim-windows-x64${{ matrix.suffix }}"
+          cd pkg && 7z a "../$NAME.zip" . && cd ..
+          sha256sum "$NAME.zip" > "$NAME.zip.sha256"
+          ls -la "$NAME.zip"*
 
       - uses: actions/upload-artifact@v4
         with:
-          name: scantobim-windows-x64
-          path: scantobim-windows-x64.zip*
+          name: scantobim-windows-x64${{ matrix.suffix }}
+          path: scantobim-windows-x64${{ matrix.suffix }}.zip*
 
       - name: Create GitHub release
         shell: bash
@@ -98,9 +117,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="scantobim-windows-x64${{ matrix.suffix }}"
           gh release create "$TAG" \
             --target "$GITHUB_SHA" \
             --title "ScanToBIM $TAG (Windows)" \
             --notes-file packaging/windows/release-notes.md \
-            scantobim-windows-x64.zip scantobim-windows-x64.zip.sha256 \
-          || gh release upload "$TAG" scantobim-windows-x64.zip scantobim-windows-x64.zip.sha256 --clobber
+            "$NAME.zip" "$NAME.zip.sha256" \
+          || gh release upload "$TAG" "$NAME.zip" "$NAME.zip.sha256" --clobber

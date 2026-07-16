@@ -155,7 +155,9 @@ class StreamingThinner:
         idx = np.floor_divide(pts - origin, voxel).astype(np.int64)
         np.clip(idx, 0, (1 << 21) - 1, out=idx)
         keys = (idx[:, 0] << 42) | (idx[:, 1] << 21) | idx[:, 2]
-        _, first = np.unique(keys, return_index=True)
+        from scantobim.core.accel import unique_i64
+
+        _, first = unique_i64(keys, return_index=True)
         return first
 
     def _fit_voxel(self, pts, origin, diag: float) -> np.ndarray:

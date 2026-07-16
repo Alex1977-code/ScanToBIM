@@ -614,6 +614,7 @@ def _cmd_reconstruct(args) -> int:
 
     # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
     report_extra: dict = {}
+    _print_gpu_status(report_extra)
     full_mesh = full_viewer = None
     if (
         getattr(args, "freeform", True)
@@ -846,6 +847,7 @@ def _cmd_project(args) -> int:
     # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
     output = args.output or (args.directory / "scantobim_modell.html")
     report_extra: dict = {}
+    _print_gpu_status(report_extra)
     full_mesh = full_viewer = None
     if getattr(args, "freeform", True):
         full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
@@ -1118,6 +1120,19 @@ def _cmd_compare(args) -> int:
         args.output.write_text(json.dumps(report, indent=2, default=_json_default))
         print(f"wrote {args.output}")
     return 0
+
+
+def _print_gpu_status(report_extra: dict | None = None) -> None:
+    from scantobim.core.accel import gpu_name
+
+    name = gpu_name()
+    if name:
+        print(f"GPU: {name} — CUDA-Beschleunigung aktiv")
+    else:
+        print("GPU: nicht verfügbar — CPU-Modus "
+              "(NVIDIA-Karten: GPU-Version scantobim-windows-x64-gpu.zip)")
+    if report_extra is not None:
+        report_extra["gpu"] = name
 
 
 def _build_full_mesh(cloud, report=None):

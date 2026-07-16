@@ -100,7 +100,9 @@ def freeform_mesh_from_points(
         origin = lo - 1.5 * voxel  # 1-cell empty margin, no index ever 0
         idx = np.floor((pts - origin) / voxel).astype(np.int64)
         keys = _pack(idx)
-        occ, inverse, counts = np.unique(
+        from scantobim.core.accel import unique_i64
+
+        occ, inverse, counts = unique_i64(
             keys, return_inverse=True, return_counts=True
         )
         solid = counts >= 2
@@ -189,7 +191,9 @@ def freeform_mesh_from_points(
 
     corner_keys = np.concatenate(corner_keys_parts)
     tris = np.vstack(tri_parts)
-    uniq_corners, corner_map = np.unique(corner_keys, return_inverse=True)
+    from scantobim.core.accel import unique_i64 as _uniq
+
+    uniq_corners, corner_map = _uniq(corner_keys, return_inverse=True)
     faces = corner_map[tris]
 
     cx = (uniq_corners >> (2 * _FIELD_BITS)) & _FIELD_MASK
@@ -258,21 +262,45 @@ def _taubin(
     edges = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
     ii = np.concatenate([edges[:, 0], edges[:, 1]])
     jj = np.concatenate([edges[:, 1], edges[:, 0]])
-    deg = np.bincount(ii, minlength=len(vertices)).astype(np.float64)
-    deg = np.maximum(deg, 1.0)
-    v = vertices.copy()
+    from scantobim.core.accel import asnumpy, xp_for
+
+    xp = xp_for(len(vertices), min_gpu=500_000)
+    dtype = xp.float32 if xp is not np else np.float64
+    ii_x = xp.asarray(ii)
+    jj_x = xp.asarray(jj)
+    deg = xp.bincount(ii_x, minlength=len(vertices)).astype(dtype)
+    deg = xp.maximum(deg, 1.0)
+    v = xp.asarray(vertices, dtype=dtype)
 
     def step(v, factor):
-        acc = np.zeros_like(v)
+        acc = xp.zeros_like(v)
         for c in range(3):
-            acc[:, c] = np.bincount(ii, weights=v[jj, c], minlength=len(v))
+            acc[:, c] = xp.bincount(
+                ii_x, weights=v[jj_x, c], minlength=len(v)
+            )
         mean = acc / deg[:, None]
         return v + factor * (mean - v)
 
-    for _ in range(iterations):
-        v = step(v, lam)
-        v = step(v, mu)
-    return v
+    try:
+        for _ in range(iterations):
+            v = step(v, lam)
+            v = step(v, mu)
+        return np.asarray(asnumpy(v), dtype=np.float64)
+    except Exception:
+        # GPU hiccup → plain numpy retry.
+        v = vertices.copy()
+        deg_c = np.maximum(
+            np.bincount(ii, minlength=len(vertices)).astype(np.float64), 1.0
+        )
+        for _ in range(iterations):
+            for factor in (lam, mu):
+                acc = np.zeros_like(v)
+                for c in range(3):
+                    acc[:, c] = np.bincount(
+                        ii, weights=v[jj, c], minlength=len(v)
+                    )
+                v = v + factor * (acc / deg_c[:, None] - v)
+        return v
 
 
 def sharpen_mesh_with_planes(

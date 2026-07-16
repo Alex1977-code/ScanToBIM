@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.6.0 — GPU-Beschleunigung (NVIDIA CUDA)
+
+- **Neue GPU-Ausgabe `scantobim-windows-x64-gpu.zip`**: nutzt NVIDIA-Grafikkarten (CUDA) für die rechenintensivsten Kerne — Normalenschätzung (Kovarianz + Eigenvektoren für Millionen Nachbarschaften), die Voxel-Sortierung von Komplett-Mesh und Einlese-Ausdünnung sowie die Netz-Glättung. Beim Start zeigt das Protokoll „GPU: <Kartenname> — CUDA-Beschleunigung aktiv“.
+- **Automatischer CPU-Rückfall**: keine NVIDIA-Karte, kein Treiber, GPU-Speicher voll — jede GPU-Operation fällt transparent auf die CPU zurück, Ergebnisse sind identisch. Die normale `scantobim-windows-x64.zip` bleibt die kompakte CPU-Version.
+- Auf der GPU wird bewusst mit fp32 gerechnet, wo die Genauigkeit es erlaubt (Normalen, Glättung) — Consumer-Karten rechnen fp64 mit 1/32-Rate; die maßkritischen Ebenen-Fits (TLS) bleiben fp64 auf der CPU.
+
 ### Neu in 3.5.0 — Turbo: deutlich schnellere Berechnung (CPU)
 
 - **Vorverarbeitung nur noch einmal statt viermal**: Szene „Automatisch“ hat für jeden der vier Kandidaten die komplette Vorverarbeitung wiederholt (Ausdünnen, Entrauschen, Normalenschätzung auf Millionen Punkten) — obwohl alle Kandidaten dieselben Parameter dafür nutzen. Jetzt läuft sie **einmal** und wird geteilt (auch für den finalen wasserdichten Lauf).
