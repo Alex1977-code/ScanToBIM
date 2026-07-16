@@ -106,6 +106,7 @@ class SlamProject:
     cloud_note: str | None = None
     color_source: Path | None = None
     colmap_model: Path | None = None
+    xyzopk: Path | None = None
     images_dir: Path | None = None
     image_count: int = 0
     trajectory: Path | None = None
@@ -138,10 +139,20 @@ class SlamProject:
                 f"Fotos:        {self.image_count} Bilder in "
                 f"{self.images_dir.relative_to(self.root)}"
             )
-        if self.images_dir is not None and self.colmap_model is None:
+        if self.colmap_model is None and self.xyzopk is not None:
+            lines.append(
+                f"Kameraposen:  {self.xyzopk.relative_to(self.root)} "
+                "(xyzopk — Ausrichtung & Brennweite werden am Scan "
+                "selbstkalibriert)"
+            )
+        if (
+            self.images_dir is not None
+            and self.colmap_model is None
+            and self.xyzopk is None
+        ):
             lines.append(
                 "Kameraposen:  NICHT gefunden — Foto-Projektion nicht möglich "
-                "(COLMAP-Ordner cameras/images fehlt oder liegt zu tief)"
+                "(weder COLMAP-Modell noch xyzopk.txt)"
             )
         if self.trajectory is not None:
             lines.append(f"Trajektorie:  {self.trajectory.relative_to(self.root)}")
@@ -192,6 +203,8 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
                 project.bags.append(e)
             elif ext in (".txt", ".csv") and ("traj" in name or "path" in name):
                 traj_candidates.append(e)
+            elif ext == ".txt" and "xyzopk" in name:
+                project.xyzopk = e
         if n_images:
             image_dirs[d] = n_images
 

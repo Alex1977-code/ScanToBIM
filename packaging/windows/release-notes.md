@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.3.0 — xyzopk-Kameraposen mit Selbstkalibrierung (S20)
+
+- **Dein Posen-Format wird jetzt gelesen**: Der S20 legt die Kameraposen nicht als COLMAP-Modell ab, sondern als **`xyzopk.txt`** im `undistort`-Ordner (je Foto: Position X/Y/Z + Drehwinkel Omega/Phi/Kappa). Der neue Leser versteht Kopfzeilen, Komma/Leerzeichen, Namen vorn oder hinten, Grad oder Radiant.
+- **Selbstkalibrierung statt Raten**: Die Datei nennt weder Brennweite noch Winkel-Konvention. Beides ermittelt das Programm selbst: Es projiziert eine Stichprobe der **farbigen Punktwolke** in Probefotos und wählt die Kombination (8 Rotations-Konventionen × Brennweiten-Reihe), deren Projektion die Punktfarben am besten reproduziert — die Wolke wurde ja aus genau diesen Fotos eingefärbt. Ergebnis im Protokoll: „Konvention …, Brennweite … px, Übereinstimmung … %“.
+- Damit laufen **Foto-Projektion aufs Strukturmodell** und **Foto-Farben aufs Komplett-Mesh** jetzt auch ohne COLMAP-Export — das Protokoll zeigt „Kameraposen: …xyzopk.txt (Selbstkalibrierung)“, die GUI-Dateiliste „Kameraposen (xyzopk)“.
+
 ### Neu in 3.2.0 — hochauflösende Fotos auf dem Netz, runde Bauteile geregelt
 
 - **Gefunden: warum die Foto-Projektion nie lief.** Der S20 legt seine Kameraposen unter `output\colmap\sparse\0` — **eine Ordnerebene tiefer, als die Projektsuche bisher schaute**. Deshalb stand im Protokoll nie „Kameraposen:“ und alles blieb bei den verwaschenen Punktfarben. Die Suche geht jetzt bis Tiefe 6, und wenn Fotos ohne Kameraposen gefunden werden, sagt das Protokoll das ausdrücklich.

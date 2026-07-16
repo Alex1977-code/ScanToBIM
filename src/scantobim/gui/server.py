@@ -744,6 +744,8 @@ def _make_handler(state: GuiState):
                         detail.append(f"{project.image_count} Fotos")
                     if project.colmap_model is not None:
                         detail.append("Kameraposen")
+                    elif project.xyzopk is not None:
+                        detail.append("Kameraposen (xyzopk)")
                     if project.trajectory is not None:
                         detail.append("Trajektorie")
                     self._json(

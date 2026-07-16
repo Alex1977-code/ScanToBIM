@@ -123,6 +123,15 @@ def bake_texture_from_cloud(
 
 # ------------------------------------------------------------------ photo bake
 
+def _resolve_cameras(model_or_cameras):
+    """Accept a COLMAP model dir OR an already-built CameraPose list."""
+    if isinstance(model_or_cameras, (list, tuple)):
+        return list(model_or_cameras)
+    from scantobim.photogrammetry.colmap import read_colmap_model
+
+    return read_colmap_model(model_or_cameras)
+
+
 def bake_texture_from_photos(
     result,
     model_dir,
@@ -142,8 +151,6 @@ def bake_texture_from_photos(
     """
     from pathlib import Path
 
-    from scantobim.photogrammetry.colmap import read_colmap_model
-
     try:
         from PIL import Image
     except ImportError as exc:  # pragma: no cover
@@ -151,7 +158,7 @@ def bake_texture_from_photos(
             "photo texturing requires Pillow: pip install scantobim[photos]"
         ) from exc
 
-    cameras = read_colmap_model(model_dir)
+    cameras = _resolve_cameras(model_dir)
     if not cameras:
         raise ValueError(f"{model_dir}: no registered images in COLMAP model")
     images_dir = Path(images_dir)
@@ -498,8 +505,6 @@ def photo_colors_for_mesh(
     """
     from pathlib import Path
 
-    from scantobim.photogrammetry.colmap import read_colmap_model
-
     try:
         from PIL import Image
     except ImportError as exc:  # pragma: no cover
@@ -507,7 +512,7 @@ def photo_colors_for_mesh(
             "photo coloring requires Pillow: pip install scantobim[photos]"
         ) from exc
 
-    cameras = read_colmap_model(model_dir)
+    cameras = _resolve_cameras(model_dir)
     if not cameras or not len(mesh.vertices):
         return 0.0
     images_dir = Path(images_dir)

@@ -557,3 +557,101 @@ def test_photo_colors_for_mesh(tmp_path):
     assert stats["cameras_used"] == 1
     med = np.median(mesh.vertex_colors, axis=0)
     assert np.all(np.abs(med - [200, 40, 90]) < 12)  # JPEG-kompression
+
+
+def test_read_xyzopk_variants(tmp_path):
+    from scantobim.photogrammetry.xyzopk import read_xyzopk
+
+    # Header, name first, comma-separated, name last.
+    p = tmp_path / "xyzopk.txt"
+    p.write_text(
+        "# name x y z omega phi kappa\n"
+        "foto_001.jpg 1.0 2.0 3.0 180.0 0.0 10.0\n"
+        "foto_002.jpg, 4.0, 5.0, 6.0, -90.0, 5.0, 0.0\n"
+        "7 8 9 10 20 30 foto_003.jpg\n"
+    )
+    entries = read_xyzopk(p)
+    assert [e[0] for e in entries] == ["foto_001.jpg", "foto_002.jpg", "foto_003.jpg"]
+    assert np.allclose(entries[0][1], [1, 2, 3])
+    assert np.allclose(entries[0][2], [180, 0, 10])
+    assert np.allclose(entries[2][1], [7, 8, 9])
+
+    # All-radian angles are converted to degrees.
+    q = tmp_path / "rad.txt"
+    q.write_text("a.jpg 0 0 0 3.14159265 0 0.5\n")
+    (name, xyz, opk) = read_xyzopk(q)[0]
+    assert abs(opk[0] - 180.0) < 0.01
+
+
+def test_scan_project_dir_detects_xyzopk(tmp_path):
+    root = tmp_path / "projekt"
+    img_dir = root / "output" / "undistort"
+    img_dir.mkdir(parents=True)
+    (img_dir / "a.jpg").write_bytes(b"\xff\xd8\xff\xdb x")
+    (img_dir / "xyzopk.txt").write_text("a.jpg 0 0 -5 180 0 0\n")
+    _write_ply_cloud(root / "wolke.ply", 800, colored=True)
+    project = scan_project_dir(root)
+    assert project.xyzopk is not None and project.xyzopk.name == "xyzopk.txt"
+    text = "\n".join(project.describe())
+    assert "xyzopk" in text and "selbstkalibriert" in text
+    assert "NICHT gefunden" not in text
+
+
+def test_cameras_from_xyzopk_selfcalibration(tmp_path):
+    """Convention + focal length recovered from the colorized cloud."""
+    PIL = pytest.importorskip("PIL.Image")
+    from scantobim.core.cloud import PointCloud
+    from scantobim.core.mesh import Mesh
+    from scantobim.core.texture import photo_colors_for_mesh
+    from scantobim.photogrammetry.xyzopk import cameras_from_xyzopk
+
+    fx_true, W, H = 350.0, 400, 300
+
+    # Smooth color field on the floor plane z=0.
+    def field(x, y):
+        r = 50 + 100 * (x + 1) / 2
+        b = 120 + 100 * (y + 1) / 2
+        return np.stack([r, np.full_like(r, 80.0), b], axis=-1)
+
+    # Photo from camera at (0,0,-5), looking +z (COLMAP identity):
+    # pixel (px,py) sees world (x,y) with x=(px-cx)*5/fx, y=(py-cy)*5/fx.
+    px, py = np.meshgrid(np.arange(W), np.arange(H))
+    photo = field((px - W / 2) * 5.0 / fx_true, (py - H / 2) * 5.0 / fx_true)
+    img_dir = tmp_path / "bilder"
+    img_dir.mkdir()
+    PIL.fromarray(photo.astype(np.uint8)).save(img_dir / "foto.png")
+
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([
+        rng.uniform(-1, 1, 20000), rng.uniform(-0.7, 0.7, 20000),
+        np.zeros(20000),
+    ])
+    cloud = PointCloud(
+        points=pts, colors=field(pts[:, 0], pts[:, 1]).astype(np.uint8)
+    )
+
+    # Convention A ("opk/cam2world"): R_colmap = I needs omega=180.
+    opk = tmp_path / "xyzopk.txt"
+    opk.write_text("foto.png 0.0 0.0 -5.0 180.0 0.0 0.0\n")
+
+    stats = {}
+    cams = cameras_from_xyzopk(opk, img_dir, cloud, stats_out=stats)
+    assert len(cams) == 1
+    assert 290 < stats["fx"] < 440  # true 350, recovered on the sweep grid
+    assert stats["score"] > 0.85
+    # The calibrated camera must reproduce the field on a floor mesh.
+    g = np.linspace(-0.8, 0.8, 20)
+    xx, yy = np.meshgrid(g, g)
+    verts = np.column_stack([xx.ravel(), yy.ravel(), np.zeros(xx.size)])
+    faces = []
+    for i in range(19):
+        for j in range(19):
+            a = i * 20 + j
+            faces.append([a, a + 20, a + 21])
+            faces.append([a, a + 21, a + 1])
+    mesh = Mesh(vertices=verts, faces=np.array(faces))
+    frac = photo_colors_for_mesh(mesh, cams, img_dir)
+    assert frac > 0.9
+    expected = field(verts[:, 0], verts[:, 1])
+    err = np.abs(mesh.vertex_colors.astype(float) - expected).mean()
+    assert err < 25  # fx grid quantization + rounding

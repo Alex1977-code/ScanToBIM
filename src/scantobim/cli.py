@@ -900,22 +900,47 @@ def _cmd_project(args) -> int:
     # Texture: photo projection when poses + photos exist, else cloud colors.
     output_mesh = result.mesh
     texture_info: dict = {"source": "keine"}
+    camera_source = project.colmap_model
     use_photos = (
         not args.no_photos
-        and project.colmap_model is not None
         and project.images_dir is not None
+        and (camera_source is not None or project.xyzopk is not None)
     )
     transform = None
     if "alignment" in rep:
         transform = np.array(rep["alignment"])
 
+    if use_photos and camera_source is None:
+        # xyzopk poses carry neither intrinsics nor a rotation convention —
+        # both are self-calibrated against the (photo-)colorized cloud.
+        try:
+            from scantobim.photogrammetry.xyzopk import cameras_from_xyzopk
+
+            print("Kameraposen (xyzopk): Selbstkalibrierung von Ausrichtung "
+                  "und Brennweite am Scan …")
+            xy_stats: dict = {}
+            camera_source = cameras_from_xyzopk(
+                project.xyzopk, project.images_dir, cloud, stats_out=xy_stats
+            )
+            rep["kameraposen"] = {"quelle": "xyzopk", **xy_stats}
+            print(
+                f"  → Konvention {xy_stats['convention']}, Brennweite "
+                f"{xy_stats['fx']:.0f} px, Übereinstimmung "
+                f"{xy_stats['score'] * 100:.0f}%"
+            )
+        except Exception as exc:  # noqa: BLE001 — photos are best-effort
+            print(f"  Selbstkalibrierung fehlgeschlagen ({exc}) — "
+                  "Foto-Projektion übersprungen")
+            use_photos = False
+            camera_source = None
+
     if use_photos:
         # Sanity check: the camera path must live in the same coordinate
         # frame as the cloud — SLAM exports sometimes keep poses in a local
         # session frame while the cloud is georeferenced.
-        from scantobim.photogrammetry.colmap import read_colmap_model
+        from scantobim.core.texture import _resolve_cameras
 
-        cams = read_colmap_model(project.colmap_model)
+        cams = _resolve_cameras(camera_source)
         centers = np.array([-c.rotation.T @ c.translation for c in cams])
         lo, hi = cloud.aabb
         diag = float(np.linalg.norm(hi - lo))
@@ -932,7 +957,7 @@ def _cmd_project(args) -> int:
             print(f"projecting {project.image_count} photos onto the model …")
             stats: dict = {}
             photo_mesh = bake_texture_from_photos(
-                result, project.colmap_model, project.images_dir,
+                result, camera_source, project.images_dir,
                 texel_size=args.texel, transform=transform, stats_out=stats,
             )
             coverage = stats.get("coverage", 0.0)
@@ -976,7 +1001,7 @@ def _cmd_project(args) -> int:
     if (
         full_mesh is not None
         and use_photos
-        and project.colmap_model is not None
+        and camera_source is not None
         and project.images_dir is not None
     ):
         try:
@@ -985,7 +1010,7 @@ def _cmd_project(args) -> int:
             print("Foto-Farben werden auf das Komplett-Mesh übertragen …")
             ff_stats: dict = {}
             frac = photo_colors_for_mesh(
-                full_mesh, project.colmap_model, project.images_dir,
+                full_mesh, camera_source, project.images_dir,
                 transform=transform, stats_out=ff_stats,
             )
             if frac > 0 and full_viewer is not None and full_viewer is not full_mesh:
