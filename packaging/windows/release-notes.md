@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.1.0 — konturiert statt geschmolzen
+
+- **Struktur-geführte Kontur-Schärfung**: Die in Stufe 2 gefundenen Ebenen ziehen jetzt die Ecken des Komplett-Meshes auf sich — Wände und Böden werden **exakt plan**, und wo zwei Ebenen zusammenstoßen, werden die Netz-Ecken **auf die Schnittkante projiziert**: messerscharfe Kanten statt verschmolzener Rundungen. Der Anteil konturierter Ecken steht im Bericht (`konturiert_anteil`) und im Protokoll.
+- **Taubin- statt Laplace-Glättung**: Die Voxel-Treppen werden weiterhin geglättet, aber ohne das globale Schrumpfen/Anschmelzen dünner Bauteile (λ/μ-Schema erhält das Volumen). Zusätzlich stärkerer Rückzug auf die Messpunkte.
+- **Ebenen-Schalter jetzt unübersehbar**: Das Panel oben rechts im Viewer ist größer, mit Überschrift „EBENEN EIN/AUS“ — und hat einen **neuen Schalter „Strukturmodell (Flächen & Kanten)“**, mit dem sich das Flächenmodell ausblenden lässt, um nur das Komplett-Mesh zu sehen (und umgekehrt).
+
 ### Neu in 3.0.0 — neue Architektur: erst das Komplett-Netz, dann die Struktur
 
 - **Stufe 1 — Komplett-Mesh zuerst**: Der GESAMTE Scan wird als erstes zu einem farbigen Dreiecksnetz rekonstruiert (dünn besetztes Belegungsgitter → Hüllfläche → Glättung → Rückprojektion auf die Messpunkte → Punktfarben) — **maximale Modellfülle, bevor irgendeine Interpretation stattfindet**. Bis 4 Mio Dreiecke als `komplett.glb`, eine leichtere Variante im Viewer als schaltbare Ebene „Komplett-Mesh (Scan)“.

@@ -188,10 +188,15 @@ _TEMPLATE = """<!DOCTYPE html>
   #hud h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
   #hud div { font-size: 12px; opacity: .75; }
   #help { position: fixed; right: 12px; bottom: 10px; color: #99a3ad; font-size: 11px; pointer-events: none; }
-  #layers { position: fixed; right: 12px; top: 10px; color: #dde3ea; font-size: 12px;
-            background: rgba(30,34,40,.85); border: 1px solid #3a414b; border-radius: 8px;
-            padding: 6px 10px; user-select: none; }
-  #layers label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  #layers { position: fixed; right: 12px; top: 10px; color: #e8edf4; font-size: 13px;
+            background: rgba(24,28,35,.94); border: 1px solid #4a5568; border-radius: 10px;
+            padding: 10px 14px; user-select: none; box-shadow: 0 4px 18px rgba(0,0,0,.45);
+            min-width: 220px; }
+  #layers .lt { font-size: 10px; letter-spacing: .14em; color: #93a0b4;
+                margin-bottom: 6px; font-weight: 700; }
+  #layers label { display: flex; gap: 8px; align-items: center; cursor: pointer;
+                  padding: 3px 0; }
+  #layers input { width: 15px; height: 15px; accent-color: #5c9bff; }
   #layers label[hidden] { display: none; }
 </style>
 </head>
@@ -199,6 +204,9 @@ _TEMPLATE = """<!DOCTYPE html>
 <canvas id="c"></canvas>
 <div id="hud"><h1>__TITLE__</h1><div id="stats"></div></div>
 <div id="layers" hidden>
+  <div class="lt">EBENEN EIN/AUS</div>
+  <label id="baseRow" hidden><input type="checkbox" id="baseToggle" checked>
+    Strukturmodell (Fl&auml;chen &amp; Kanten)</label>
   <label id="ffRow" hidden><input type="checkbox" id="ffToggle" checked>
     __FF_LABEL__ (<span id="ffCount"></span> Dreiecke)</label>
   <label id="ptsRow" hidden><input type="checkbox" id="ptsToggle" checked>
@@ -231,8 +239,15 @@ document.getElementById("stats").textContent =
   META.vertices + " Vertices · " + META.triangles + " Dreiecke · " + META.surfaces + " Flächen";
 let showPoints = META.points > 0;
 let showFF = META.ff_indices > 0;
+let showBase = true;
 if (META.points > 0 || META.ff_indices > 0) {
   document.getElementById("layers").hidden = false;
+  if (META.triangles > 0) {
+    document.getElementById("baseRow").hidden = false;
+    document.getElementById("baseToggle").addEventListener("change", e => {
+      showBase = e.target.checked;
+    });
+  }
 }
 if (META.points > 0) {
   document.getElementById("ptsRow").hidden = false;
@@ -400,10 +415,12 @@ function draw() {
   gl.uniform1i(uTex, 0);
 
   gl.uniform1f(uFlat, 0.0); gl.uniform1f(uBias, 0.0);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
-  gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_INT, 0);
+  if (showBase) {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_INT, 0);
+  }
 
-  if (creases.length) {
+  if (showBase && creases.length) {
     gl.uniform1f(uFlat, 1.0); gl.uniform3f(uLine, 0.05, 0.05, 0.06); gl.uniform1f(uBias, 0.0012);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lineBuf);
     gl.drawElements(gl.LINES, creases.length, gl.UNSIGNED_INT, 0);

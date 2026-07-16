@@ -167,3 +167,49 @@ def test_cli_reconstruct_no_mesh_flag(tmp_path, capsys):
     assert not (tmp_path / "modell_komplett.glb").exists()
     log = capsys.readouterr().out
     assert "Komplett-Mesh:" not in log
+
+
+def test_sharpen_mesh_with_planes():
+    """Vertices on detected planes land exactly on them; edge vertices on
+    the intersection line — walls flat, edges crisp instead of molten."""
+    from scantobim.core.freeform import sharpen_mesh_with_planes
+    from scantobim.core.pipeline import SurfaceGeometry
+
+    rng = np.random.default_rng(0)
+    # Two orthogonal noisy sheets meeting at the edge x=0/z=0.
+    n = 40000
+    floor = np.column_stack([
+        rng.uniform(0, 4, n), rng.uniform(0, 4, n), rng.normal(0, 0.004, n)])
+    wall = np.column_stack([
+        rng.normal(0, 0.004, n), rng.uniform(0, 4, n), rng.uniform(0, 3, n)])
+    cloud = PointCloud(points=np.vstack([floor, wall]))
+    mesh = freeform_mesh_from_points(cloud)
+    assert mesh is not None
+    voxel = mesh.freeform_stats["voxel"]
+
+    surfaces = [
+        SurfaceGeometry(
+            plane_index=0, normal=np.array([0.0, 0.0, 1.0]),
+            outer=np.array([[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0]], float),
+            holes=[], surface_class="slab", name="slab_000",
+        ),
+        SurfaceGeometry(
+            plane_index=1, normal=np.array([1.0, 0.0, 0.0]),
+            outer=np.array([[0, 0, 0], [0, 4, 0], [0, 4, 3], [0, 0, 3]], float),
+            holes=[], surface_class="wall", name="wall_001",
+        ),
+    ]
+    frac = sharpen_mesh_with_planes(mesh, surfaces, voxel)
+    assert frac > 0.5  # most of the skin lies on the two planes
+
+    v = mesh.vertices
+    # Flat-floor vertices (away from the edge) must sit EXACTLY on z=0.
+    interior = (v[:, 0] > 1.0) & (v[:, 0] < 3.0) & (v[:, 1] > 1.0) & (v[:, 1] < 3.0)
+    near_floor = interior & (np.abs(v[:, 2]) < 0.8 * voxel)
+    assert near_floor.sum() > 50
+    # The clear majority snaps EXACTLY onto the plane (rim vertices with
+    # sideways normals are deliberately left alone).
+    assert (np.abs(v[near_floor, 2]) < 1e-9).mean() > 0.6
+    # Edge vertices must sit exactly on the intersection line x=0, z=0.
+    edge = (np.abs(v[:, 0]) < 1e-9) & (np.abs(v[:, 2]) < 1e-9)
+    assert edge.sum() > 3

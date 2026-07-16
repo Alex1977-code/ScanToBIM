@@ -198,7 +198,9 @@ def freeform_mesh_from_points(
     vertices = np.column_stack([cx, cy, cz]).astype(np.float64) * voxel + origin
 
     # ---- smooth the staircase, then pull the skin onto the scan -------------
-    vertices = _laplacian(vertices, faces, iterations=3, lam=0.5)
+    # Taubin lambda/mu schedule: smooths the voxel steps WITHOUT the global
+    # shrinking/melting of plain Laplacian passes.
+    vertices = _taubin(vertices, faces, iterations=3)
     from scipy.spatial import cKDTree
 
     sample = pts
@@ -215,8 +217,8 @@ def freeform_mesh_from_points(
     step = np.linalg.norm(pull, axis=1, keepdims=True)
     cap = 0.75 * voxel
     scale = np.where(step > cap, cap / np.maximum(step, 1e-12), 1.0)
-    vertices = vertices + 0.6 * pull * scale
-    vertices = _laplacian(vertices, faces, iterations=1, lam=0.3)
+    vertices = vertices + 0.8 * pull * scale
+    vertices = _taubin(vertices, faces, iterations=1)
 
     colors = (
         sample_colors[nearest].astype(np.uint8)
@@ -241,20 +243,111 @@ def freeform_mesh_from_points(
     return mesh
 
 
-def _laplacian(
-    vertices: np.ndarray, faces: np.ndarray, iterations: int, lam: float
+def _taubin(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    iterations: int,
+    lam: float = 0.5,
+    mu: float = -0.53,
 ) -> np.ndarray:
-    """Uniform-weight Laplacian smoothing (vectorized via bincount)."""
+    """Taubin smoothing: a shrink step (λ) followed by an inflate step (μ).
+
+    Unlike plain Laplacian smoothing this keeps the enclosed volume — thin
+    members and sharp corners stop "melting" away.
+    """
     edges = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
     ii = np.concatenate([edges[:, 0], edges[:, 1]])
     jj = np.concatenate([edges[:, 1], edges[:, 0]])
     deg = np.bincount(ii, minlength=len(vertices)).astype(np.float64)
     deg = np.maximum(deg, 1.0)
     v = vertices.copy()
-    for _ in range(iterations):
+
+    def step(v, factor):
         acc = np.zeros_like(v)
         for c in range(3):
             acc[:, c] = np.bincount(ii, weights=v[jj, c], minlength=len(v))
         mean = acc / deg[:, None]
-        v = (1.0 - lam) * v + lam * mean
+        return v + factor * (mean - v)
+
+    for _ in range(iterations):
+        v = step(v, lam)
+        v = step(v, mu)
     return v
+
+
+def sharpen_mesh_with_planes(
+    mesh: Mesh, surfaces, voxel: float, max_angle_deg: float = 32.0
+) -> float:
+    """Contour the free-form skin with the detected structure planes.
+
+    Every mesh vertex that verifiably lies ON a detected plane (close in
+    distance, normal-aligned, inside the plane's footprint) is projected
+    exactly onto it — walls become dead flat. Vertices claimed by TWO
+    non-parallel planes are pulled onto their intersection line — edges
+    become crisp instead of molten. Returns the sharpened vertex fraction.
+    """
+    if not surfaces or not len(mesh.vertices):
+        return 0.0
+    v = mesh.vertices
+    vn = mesh.vertex_normals()
+    tol = 0.8 * voxel
+    cos_tol = np.cos(np.deg2rad(max_angle_deg))
+
+    # Up to two plane constraints per vertex. Membership is geometric
+    # (distance + footprint); the normal gate is applied only for the
+    # single-plane snap — edge vertices where two planes meet carry
+    # diagonal normals and must still be pulled onto the crease line.
+    n1 = np.zeros((len(v), 3))
+    d1 = np.zeros(len(v))
+    a1 = np.zeros(len(v), dtype=bool)  # normal-aligned with plane 1
+    n2 = np.zeros((len(v), 3))
+    d2 = np.zeros(len(v))
+    count = np.zeros(len(v), dtype=np.int8)
+
+    for geo in surfaces:
+        n = np.asarray(geo.normal, dtype=np.float64)
+        norm = float(np.linalg.norm(n))
+        if norm < 1e-12 or len(geo.outer) < 3:
+            continue
+        n = n / norm
+        d = -float(np.mean(geo.outer @ n))
+        lo = geo.outer.min(axis=0) - 2.0 * voxel
+        hi = geo.outer.max(axis=0) + 2.0 * voxel
+        dist = v @ n + d
+        ok = (np.abs(dist) < tol) & np.all((v >= lo) & (v <= hi), axis=1)
+        if not ok.any():
+            continue
+        aligned = np.abs(vn @ n) > cos_tol
+        first = ok & (count == 0)
+        n1[first] = n
+        d1[first] = d
+        a1[first] = aligned[first]
+        # Second constraint only if clearly non-parallel to the first.
+        second = ok & (count == 1) & (np.abs(n1 @ n) < 0.94)
+        n2[second] = n
+        d2[second] = d
+        count[first] += 1
+        count[second] += 1
+
+    single = (count == 1) & a1
+    if single.any():
+        dist = np.einsum("ij,ij->i", v[single], n1[single]) + d1[single]
+        v[single] -= dist[:, None] * n1[single]
+
+    double = count >= 2
+    if double.any():
+        # Project onto the intersection line of the two planes: solve the
+        # 2x2 normal equations of the constraint pair per vertex.
+        a = n1[double]
+        b = n2[double]
+        ra = np.einsum("ij,ij->i", v[double], a) + d1[double]
+        rb = np.einsum("ij,ij->i", v[double], b) + d2[double]
+        ab = np.einsum("ij,ij->i", a, b)
+        det = 1.0 - ab**2
+        det = np.where(np.abs(det) < 1e-9, 1e-9, det)
+        la = (ra - ab * rb) / det
+        lb = (rb - ab * ra) / det
+        v[double] -= la[:, None] * a + lb[:, None] * b
+
+    mesh.vertices = v
+    return float((single | (count >= 2)).mean())

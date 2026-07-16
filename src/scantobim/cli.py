@@ -661,6 +661,7 @@ def _cmd_reconstruct(args) -> int:
         )
     rep = result.report
     rep.update(report_extra)
+    _contour_full_mesh(full_mesh, full_viewer, result, rep)
     openings = sum(s.get("openings", 0) for s in rep["surfaces"])
     q = rep["quantities"]
     print(f"  planes:    {rep['planes']}")
@@ -881,6 +882,7 @@ def _cmd_project(args) -> int:
         )
     rep = result.report
     rep.update(report_extra)
+    _contour_full_mesh(full_mesh, full_viewer, result, rep)
     print(f"  planes: {rep['planes']}  angles: {rep['plane_angles']}  "
           f"residual: {rep['residual_points']}")
     if rep.get("point_spacing", 0) > 0.05:
@@ -1081,6 +1083,27 @@ def _build_full_mesh(cloud, report=None):
         if lighter is not None:
             viewer = lighter
     return fine, viewer
+
+
+def _contour_full_mesh(full_mesh, full_viewer, result, rep) -> None:
+    """Contour stage-1's skin with stage-2's planes (walls flat, edges crisp)."""
+    if full_mesh is None or not result.surfaces:
+        return
+    from scantobim.core.freeform import sharpen_mesh_with_planes
+
+    frac = sharpen_mesh_with_planes(
+        full_mesh, result.surfaces, full_mesh.freeform_stats["voxel"]
+    )
+    if full_viewer is not None and full_viewer is not full_mesh:
+        sharpen_mesh_with_planes(
+            full_viewer, result.surfaces, full_viewer.freeform_stats["voxel"]
+        )
+    if "komplett_mesh" in rep:
+        rep["komplett_mesh"]["konturiert_anteil"] = round(frac, 3)
+    print(
+        f"  Kontur-Schärfung: {frac * 100:.0f}% der Netz-Ecken auf "
+        "Strukturflächen/-kanten gezogen"
+    )
 
 
 def _write_full_only(output, full_mesh, full_viewer, report, report_path) -> int:

@@ -292,6 +292,9 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
 
     rep = result.report
     rep.update(report_extra)
+    from scantobim.cli import _contour_full_mesh
+
+    _contour_full_mesh(full_mesh, full_viewer, result, rep)
     q = rep["quantities"]
 
     output_mesh = result.mesh
