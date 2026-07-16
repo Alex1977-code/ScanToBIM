@@ -578,17 +578,29 @@ def photo_colors_for_mesh(
     if colors is None:
         colors = np.full((n_v, 3), 150, dtype=np.uint8)
     colored = 0
-    for ci in used:
+
+    def _sample(ci: int):
         cam = cameras[int(ci)]
         path = image_index.get(cam.name) or image_index.get(Path(cam.name).name)
         if path is None or not path.exists():
-            continue
+            return None
         photo = np.asarray(Image.open(path).convert("RGB"))
         sel = best_cam == ci
         sy = np.clip(best_py[sel].round().astype(int), 0, photo.shape[0] - 1)
         sx = np.clip(best_px[sel].round().astype(int), 0, photo.shape[1] - 1)
-        colors[sel] = photo[sy, sx]
-        colored += int(sel.sum())
+        return sel, photo[sy, sx]
+
+    # JPEG decoding dominates this pass — decode in parallel (PIL releases
+    # the GIL while decompressing).
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for out in pool.map(_sample, used.tolist()):
+            if out is None:
+                continue
+            sel, sampled = out
+            colors[sel] = sampled
+            colored += int(sel.sum())
     mesh.vertex_colors = colors
     frac = colored / n_v
     if stats_out is not None:

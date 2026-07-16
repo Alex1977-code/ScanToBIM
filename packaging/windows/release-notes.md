@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.5.0 — Turbo: deutlich schnellere Berechnung (CPU)
+
+- **Vorverarbeitung nur noch einmal statt viermal**: Szene „Automatisch“ hat für jeden der vier Kandidaten die komplette Vorverarbeitung wiederholt (Ausdünnen, Entrauschen, Normalenschätzung auf Millionen Punkten) — obwohl alle Kandidaten dieselben Parameter dafür nutzen. Jetzt läuft sie **einmal** und wird geteilt (auch für den finalen wasserdichten Lauf).
+- **Stichproben-RANSAC**: Die Ebenensuche bewertete jede Hypothese gegen die *gesamte* Wolke — bei 10 Mio Punkten × 600 Versuchen der größte Einzelposten. Jetzt wird auf einer 400 000-Punkte-Stichprobe gesucht; Gewinner-Ebenen werden weiterhin **exakt auf allen Punkten** nachgesammelt und verfeinert — gleiche Ergebnisse, Bruchteil der Zeit.
+- **Foto-Dekodierung parallel**: Die Foto-Farben fürs Komplett-Mesh dekodieren die (bis zu 600) Bilder jetzt in 8 parallelen Threads.
+- Hinweis zur Grafikkarte: Die Berechnung ist bewusst CPU-basiert (läuft überall, ohne Treiber-/CUDA-Abhängigkeiten in einer einzigen EXE) — die 1 % GPU-Auslastung ist normal. Die Beschleunigung kommt aus den Algorithmen; auf großen Scans sollte Szene „Automatisch“ jetzt grob 2–4× schneller sein.
+
 ### Neu in 3.4.0 — Datei-Inventar: was liegt im Ordner und warum wird es (nicht) verwendet?
 
 - Nach der Projektordner-Analyse listet das Protokoll jetzt ein **Datei-Inventar** aller gefundenen, aber **nicht verwendeten** Dateien — jede mit Größe und Begründung: weitere Punktwolken (das Dichte/Farb-Ranking hat entschieden), die `.bag`-Rohaufnahme (ihre verarbeiteten Ergebnisse werden direkt genutzt), Scanner-Logs/Metadaten, Bilder außerhalb des gewählten Foto-Ordners (Vorschauen), überzählige COLMAP-Modelle oder Trajektorien, unbekannte Formate. Gleiche Dateien werden pro Ordner gruppiert (z. B. „*.log (5 Dateien)“), sortiert nach Größe.

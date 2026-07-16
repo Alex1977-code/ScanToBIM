@@ -62,6 +62,7 @@ def auto_reconstruct(
     only the winning configuration is re-run watertight at the end.
     """
     from scantobim.core.deviation import deviation_analysis
+    from scantobim.core.pipeline import preprocess_cloud, preprocess_signature
     from scantobim.core.preprocess import estimate_point_spacing
 
     overrides = dict(overrides or {})
@@ -70,13 +71,26 @@ def auto_reconstruct(
     scoreboard = []
     best: tuple[float, ReconstructionResult, PipelineConfig] | None = None
 
+    # All candidates share thin/denoise/normals parameters — preprocess the
+    # cloud ONCE instead of once per candidate (the single biggest cost on
+    # multi-million-point scans).
+    shared_pre = None
+    shared_sig = None
+
     for name, cfg in _candidates(spacing):
         if seed is not None:
             cfg.seed = seed
         for key, value in overrides.items():
             setattr(cfg, key, value)
         try:
-            result = reconstruct(cloud, cfg, trajectory=trajectory)
+            sig = preprocess_signature(cfg)
+            if shared_pre is None or sig != shared_sig:
+                log("  Vorverarbeitung (einmalig für alle Kandidaten) …")
+                shared_pre = preprocess_cloud(cloud, cfg, trajectory)
+                shared_sig = sig
+            result = reconstruct(
+                cloud, cfg, trajectory=trajectory, preprocessed=shared_pre
+            )
         except ValueError as exc:
             scoreboard.append({"candidate": name, "status": f"verworfen ({exc})"})
             log(f"  [{name}] keine brauchbare Rekonstruktion — übersprungen")
@@ -127,7 +141,15 @@ def auto_reconstruct(
         log(f"Auto-Tuning: '{winner['candidate']}' gewinnt — "
             "finaler wasserdichter Lauf …")
         best_cfg.watertight = True
-        result = reconstruct(cloud, best_cfg, trajectory=trajectory)
+        pre = (
+            shared_pre
+            if shared_pre is not None
+            and preprocess_signature(best_cfg) == shared_sig
+            else None
+        )
+        result = reconstruct(
+            cloud, best_cfg, trajectory=trajectory, preprocessed=pre
+        )
     else:
         log(f"Auto-Tuning: '{winner['candidate']}' gewinnt — Einstellungen "
             "stehen im Bericht und sind als Profil speicherbar")

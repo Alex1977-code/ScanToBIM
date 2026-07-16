@@ -219,22 +219,26 @@ class ReconstructionResult:
     report: dict = field(default_factory=dict)
 
 
-def reconstruct(
+def preprocess_signature(cfg: PipelineConfig) -> tuple:
+    """The config fields that influence preprocessing — candidates sharing
+    this signature can share one preprocessing pass (auto-tuning)."""
+    return (
+        cfg.voxel_size, cfg.sor_neighbors, cfg.sor_std_ratio,
+        cfg.edge_artifact_filter, cfg.normal_neighbors, cfg.ghost_offset_tol,
+    )
+
+
+def preprocess_cloud(
     cloud: PointCloud,
-    config: PipelineConfig | None = None,
+    cfg: PipelineConfig,
     trajectory: np.ndarray | None = None,
-) -> ReconstructionResult:
-    """Run the full scan-to-model pipeline on ``cloud``.
+) -> tuple[PointCloud, float, dict]:
+    """Stage 0-1: thin, denoise, estimate + orient normals.
 
-    ``trajectory``: optional (N, 3) scanner path (SLAM/mobile mapping) —
-    normals are oriented towards the nearest scanner position, which makes
-    detection more robust on real-world scans.
+    Returns ``(work, spacing, report_fields)`` — reusable across candidate
+    runs whose ``preprocess_signature`` matches.
     """
-    cfg = config or PipelineConfig()
-    report: dict = {"input_points": len(cloud), "config": _config_dict(cfg)}
-    t0 = time.perf_counter()
-
-    # ---- 1. preprocessing --------------------------------------------------
+    pre: dict = {}
     raw_spacing = estimate_point_spacing(cloud)
     voxel = cfg.voxel_size if cfg.voxel_size is not None else 2.0 * raw_spacing
     work = voxel_downsample(cloud, voxel) if voxel and voxel > 0 else cloud
@@ -244,7 +248,7 @@ def reconstruct(
         # Buildings have no legitimate string-like geometry — filter dense
         # mixed-pixel strings too (linearity-only criterion).
         work, _ = remove_edge_artifacts(work, require_sparse=False)
-        report["edge_artifacts_removed"] = n_before - len(work)
+        pre["edge_artifacts_removed"] = n_before - len(work)
     if len(work) < 16:
         raise ValueError(
             f"Too few points after preprocessing ({len(work)}); "
@@ -255,12 +259,39 @@ def reconstruct(
         from scantobim.core.preprocess import orient_normals_along_trajectory
 
         work = orient_normals_along_trajectory(work, trajectory)
-        report["trajectory_positions"] = int(len(trajectory))
+        pre["trajectory_positions"] = int(len(trajectory))
     spacing = estimate_point_spacing(work)
     if spacing <= 0:
         raise ValueError("Degenerate point cloud (zero spacing)")
-    report["preprocessed_points"] = len(work)
-    report["point_spacing"] = round(spacing, 6)
+    pre["preprocessed_points"] = len(work)
+    pre["point_spacing"] = round(spacing, 6)
+    return work, spacing, pre
+
+
+def reconstruct(
+    cloud: PointCloud,
+    config: PipelineConfig | None = None,
+    trajectory: np.ndarray | None = None,
+    preprocessed: tuple | None = None,
+) -> ReconstructionResult:
+    """Run the full scan-to-model pipeline on ``cloud``.
+
+    ``trajectory``: optional (N, 3) scanner path (SLAM/mobile mapping) —
+    normals are oriented towards the nearest scanner position, which makes
+    detection more robust on real-world scans.
+
+    ``preprocessed``: optional ``preprocess_cloud`` result to reuse — the
+    auto-tuner preprocesses ONCE for all candidates instead of per run.
+    """
+    cfg = config or PipelineConfig()
+    report: dict = {"input_points": len(cloud), "config": _config_dict(cfg)}
+    t0 = time.perf_counter()
+
+    # ---- 1. preprocessing (or reuse of a shared pass) -----------------------
+    if preprocessed is None:
+        preprocessed = preprocess_cloud(cloud, cfg, trajectory)
+    work, spacing, pre = preprocessed
+    report.update(pre)
 
     # ---- 2. plane detection ------------------------------------------------
     dist_thresh = (

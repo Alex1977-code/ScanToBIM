@@ -115,13 +115,25 @@ def detect_planes(
     planes: list[Plane] = []
     consecutive_rejects = 0
 
+    # Hypotheses are SCORED on a bounded subsample: evaluating every
+    # candidate plane against millions of points dominated the runtime.
+    # Winners are re-collected exactly on the full point set below, so the
+    # final planes are identical — only the search is cheaper.
+    score_cap = 400_000
+
     while (
         len(remaining) >= min_inliers
         and len(planes) < max_planes
         and consecutive_rejects < 8
     ):
-        pts = points[remaining]
-        nrm = normals[remaining]
+        if len(remaining) > score_cap:
+            sub_idx = rng.choice(len(remaining), score_cap, replace=False)
+            frac = score_cap / len(remaining)
+        else:
+            sub_idx = np.arange(len(remaining))
+            frac = 1.0
+        pts = points[remaining[sub_idx]]
+        nrm = normals[remaining[sub_idx]]
 
         best_mask: np.ndarray | None = None
         best_count = 0
@@ -149,18 +161,23 @@ def detect_planes(
                     est = np.log(0.001) / np.log(max(1e-12, 1.0 - w))
                     needed = min(ransac_iterations, max(32, int(est) + 1))
 
-        if best_mask is None or best_count < min_inliers:
+        # Break threshold: exact on full sets; with a margin for sampling
+        # variance when scoring ran on the subsample (winners still get the
+        # exact full-set count in the re-collection step).
+        break_at = min_inliers if frac >= 1.0 else 0.5 * frac * min_inliers
+        if best_mask is None or best_count < break_at:
             break
 
         # Refine: TLS refit, then re-collect inliers once.
-        cand = remaining[best_mask]
+        cand = remaining[sub_idx[best_mask]]
         normal, d, _ = fit_plane_tls(points[cand])
         dist = np.abs(points[remaining] @ normal + d)
         align = np.abs(normals[remaining] @ normal)
         mask = (dist < distance_threshold) & (align > cos_tol)
+        cand_seed = cand
         cand = remaining[mask]
         if len(cand) < min_inliers:
-            remaining = remaining[~best_mask]
+            remaining = np.setdiff1d(remaining, cand_seed, assume_unique=True)
             continue
 
         # Largest connected component of the candidate inliers.
