@@ -655,3 +655,48 @@ def test_cameras_from_xyzopk_selfcalibration(tmp_path):
     expected = field(verts[:, 0], verts[:, 1])
     err = np.abs(mesh.vertex_colors.astype(float) - expected).mean()
     assert err < 25  # fx grid quantization + rounding
+
+
+def test_unused_report_lists_files_with_reasons(tmp_path):
+    """Every file the import does not use is listed with a reason."""
+    root = tmp_path / "projekt"
+    (root / "output" / "undistort").mkdir(parents=True)
+    _write_ply_cloud(root / "wolke_colorized.ply", 3000, colored=True)
+    _write_ply_cloud(root / "wolke_uncolorized.ply", 4000, colored=False)
+    for i in range(3):
+        (root / "output" / "undistort" / f"f{i}.jpg").write_bytes(b"\xff\xd8\xff\xdb x")
+    (root / "output" / "undistort" / "xyzopk.txt").write_text("f0.jpg 0 0 -5 180 0 0\n")
+    (root / "preview" / "thumbs").mkdir(parents=True)
+    (root / "preview" / "thumbs" / "t1.jpg").write_bytes(b"\xff\xd8\xff\xdb x")
+    (root / "trajectory.txt").write_text("0 0 1.7\n1 0 1.7\n")
+    (root / "aufnahme.bag").write_bytes(b"B" * 5000)
+    (root / "scanner.log").write_text("log")
+    (root / "meta.json").write_text("{}")
+    (root / "kalib.xml").write_text("<x/>")
+
+    project = scan_project_dir(root)
+    report = "\n".join(project.unused_report())
+    # Unused, each with its reason:
+    assert "wolke_uncolorized.ply" in report and "Ranking" in report
+    assert "aufnahme.bag" in report and "Rohaufnahme" in report
+    assert "scanner.log" in report or "*.log" in report
+    assert "Vorschau" in report or "Foto-Ordners" in report  # thumbs/t1.jpg
+    assert ".xml" in report or "kalib.xml" in report
+    # Used files must NOT be listed as unused (the chosen cloud's name may
+    # appear inside a REASON text, so check line starts):
+    lines = project.unused_report()
+    assert not any(l.startswith("wolke_colorized.ply") for l in lines)
+    assert "xyzopk.txt" not in report
+    assert "trajectory.txt" not in report
+    assert "f0.jpg" not in report and "*.jpg (3" not in report
+
+
+def test_project_cli_prints_inventory(tmp_path, capsys):
+    from scantobim.cli import main
+
+    root = _build_project(tmp_path, with_photos=False)
+    out = tmp_path / "modell.html"
+    assert main(["project", str(root), "-o", str(out), "--seed", "1"]) == 0
+    log = capsys.readouterr().out
+    assert "Datei-Inventar" in log
+    assert "raw.bag" in log and "Rohaufnahme" in log

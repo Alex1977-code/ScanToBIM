@@ -111,6 +111,9 @@ class SlamProject:
     image_count: int = 0
     trajectory: Path | None = None
     bags: list[Path] = field(default_factory=list)
+    all_files: list = field(default_factory=list)  # [(Path, bytes), …]
+    traj_candidates: list = field(default_factory=list)
+    colmap_dirs: list = field(default_factory=list)
 
     def describe(self) -> list[str]:
         """Human-readable German summary of what was found."""
@@ -163,6 +166,86 @@ class SlamProject:
             )
         return lines
 
+    def _classify(self, f: Path) -> tuple[bool, str]:
+        """(used?, reason) for one file of the project folder."""
+        ext = f.suffix.lower()
+        if f == self.cloud:
+            return True, "gewählte Punktwolke"
+        if f == self.color_source:
+            return True, "Farbquelle für die Farbübertragung"
+        if f in self.clouds:
+            return False, (
+                "weitere Punktwolke — das Ranking nach Dichte und Farben "
+                f"wählte {self.cloud.name if self.cloud else '—'}"
+            )
+        if ext in IMAGE_EXTS:
+            if self.images_dir is not None and (
+                self.images_dir in f.parents or f.parent == self.images_dir
+            ):
+                return True, "Foto (Projektion/Farben)"
+            return False, (
+                "Bild außerhalb des gewählten Foto-Ordners "
+                "(z. B. Vorschau/Thumbnail)"
+            )
+        if f == self.trajectory:
+            return True, "Trajektorie (Normalen-Orientierung)"
+        if f in self.traj_candidates:
+            return False, "weitere Trajektorien-Datei — die größte wurde gewählt"
+        if f == self.xyzopk:
+            return True, "Kameraposen (xyzopk, selbstkalibriert)"
+        if self.colmap_model is not None and f.parent == self.colmap_model:
+            if f.stem in ("cameras", "images"):
+                return True, "Kameraposen (COLMAP)"
+            return False, (
+                "Teil des COLMAP-Modells — für die Projektion nicht benötigt"
+            )
+        if any(f.parent == d for d in self.colmap_dirs):
+            return False, "weiteres COLMAP-Modell — das flachste wurde gewählt"
+        if ext == ".bag":
+            return False, (
+                "Rohaufnahme des Scanners — ihre verarbeiteten Ergebnisse "
+                "(Punktwolke, Fotos, Posen, Trajektorie) werden direkt genutzt"
+            )
+        if ext in (".json", ".log"):
+            return False, "Scanner-Protokoll/Metadaten — enthält keine Geometrie"
+        if ext in (".txt", ".csv"):
+            return False, "Textdatei ohne erkannte Rolle"
+        return False, f"Format {ext or '(ohne Endung)'} wird nicht verwendet"
+
+    def unused_report(self, max_groups: int = 20) -> list[str]:
+        """Grouped listing of files that are NOT used, with the reason.
+
+        Files are grouped per (folder, extension, reason) so 1000 photos or
+        logs collapse to one line; sorted by size, largest first.
+        """
+        groups: dict[tuple, list] = {}
+        for f, size in self.all_files:
+            used, reason = self._classify(f)
+            if used:
+                continue
+            try:
+                rel = f.relative_to(self.root).parent
+            except ValueError:
+                rel = f.parent
+            key = (str(rel), f.suffix.lower(), reason)
+            g = groups.setdefault(key, [0, 0, f.name])
+            g[0] += 1
+            g[1] += size
+        lines = []
+        ordered = sorted(groups.items(), key=lambda kv: -kv[1][1])
+        for (rel, ext, reason), (count, size, first_name) in ordered[:max_groups]:
+            where = f"{rel}/" if rel not in (".", "") else ""
+            label = (
+                f"{where}{first_name}" if count == 1
+                else f"{where}*{ext or ''} ({count} Dateien)"
+            )
+            mb = size / 1e6
+            size_txt = f"{mb / 1000:.2f} GB" if mb >= 1000 else f"{mb:.1f} MB"
+            lines.append(f"{label} ({size_txt}) — {reason}")
+        if len(ordered) > max_groups:
+            lines.append(f"… und {len(ordered) - max_groups} weitere Gruppen")
+        return lines
+
 
 def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
     """Detect the usable components of a SLAM scanner project folder."""
@@ -193,6 +276,10 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
                 if depth < max_depth:
                     walk(e, depth + 1)
                 continue
+            try:
+                project.all_files.append((e, e.stat().st_size))
+            except OSError:
+                pass
             ext = e.suffix.lower()
             name = e.name.lower()
             if ext in CLOUD_EXTS:
@@ -294,6 +381,8 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
 
     if traj_candidates:
         project.trajectory = max(traj_candidates, key=lambda p: p.stat().st_size)
+    project.traj_candidates = traj_candidates
+    project.colmap_dirs = colmap_dirs
 
     return project
 

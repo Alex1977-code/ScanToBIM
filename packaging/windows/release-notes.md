@@ -4,6 +4,11 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.4.0 — Datei-Inventar: was liegt im Ordner und warum wird es (nicht) verwendet?
+
+- Nach der Projektordner-Analyse listet das Protokoll jetzt ein **Datei-Inventar** aller gefundenen, aber **nicht verwendeten** Dateien — jede mit Größe und Begründung: weitere Punktwolken (das Dichte/Farb-Ranking hat entschieden), die `.bag`-Rohaufnahme (ihre verarbeiteten Ergebnisse werden direkt genutzt), Scanner-Logs/Metadaten, Bilder außerhalb des gewählten Foto-Ordners (Vorschauen), überzählige COLMAP-Modelle oder Trajektorien, unbekannte Formate. Gleiche Dateien werden pro Ordner gruppiert (z. B. „*.log (5 Dateien)“), sortiert nach Größe.
+- Werden alle erkannten Dateien genutzt, steht das ebenso ausdrücklich im Protokoll.
+
 ### Neu in 3.3.0 — xyzopk-Kameraposen mit Selbstkalibrierung (S20)
 
 - **Dein Posen-Format wird jetzt gelesen**: Der S20 legt die Kameraposen nicht als COLMAP-Modell ab, sondern als **`xyzopk.txt`** im `undistort`-Ordner (je Foto: Position X/Y/Z + Drehwinkel Omega/Phi/Kappa). Der neue Leser versteht Kopfzeilen, Komma/Leerzeichen, Namen vorn oder hinten, Grad oder Radiant.

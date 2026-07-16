@@ -788,6 +788,13 @@ def _cmd_project(args) -> int:
     print(f"SLAM-Projekt: {args.directory}")
     for line in project.describe():
         print(f"  {line}")
+    unused = project.unused_report()
+    if unused:
+        print("  Datei-Inventar — im Ordner gefunden, aber NICHT verwendet:")
+        for line in unused:
+            print(f"    • {line}")
+    else:
+        print("  Datei-Inventar: alle erkannten Dateien werden verwendet.")
 
     cloud = read_point_cloud(project.cloud, max_points=args.max_points)
     print(f"  geladen: {len(cloud):,} Punkte"
