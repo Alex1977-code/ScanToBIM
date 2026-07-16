@@ -498,3 +498,62 @@ def test_project_photo_projection_stereo(tmp_path, capsys):
     log = capsys.readouterr().out
     assert "Fotos gefunden: 2 von 2" in log
     assert "Textur: foto-projektion" in log
+
+
+def test_scan_project_dir_finds_deep_colmap(tmp_path):
+    """S20 layout: sparse/0 lives at depth 5 — must still be found."""
+    root = tmp_path / "projekt"
+    deep = root / "steuerhaus" / "output" / "colmap" / "sparse" / "0"
+    _write_binary_model(deep, [("frame_0000.jpg", (1.0, 0, 0, 0), (0, 0, 5.0))])
+    img_dir = root / "steuerhaus" / "output" / "undistort"
+    img_dir.mkdir(parents=True)
+    (img_dir / "frame_0000.jpg").write_bytes(b"\xff\xd8\xff\xdb x")
+    _write_ply_cloud(root / "wolke.ply", 800, colored=True)
+    project = scan_project_dir(root)
+    assert project.colmap_model is not None
+    assert project.colmap_model.name == "0"
+    assert "Kameraposen:" in "\n".join(project.describe())
+
+
+def test_describe_warns_when_poses_missing(tmp_path):
+    root = tmp_path / "projekt"
+    img_dir = root / "fotos"
+    img_dir.mkdir(parents=True)
+    (img_dir / "a.jpg").write_bytes(b"\xff\xd8\xff\xdb x")
+    _write_ply_cloud(root / "wolke.ply", 800, colored=True)
+    project = scan_project_dir(root)
+    text = "\n".join(project.describe())
+    assert "NICHT gefunden" in text and "Foto-Projektion" in text
+
+
+def test_photo_colors_for_mesh(tmp_path):
+    """Vertices seen by a camera get the photo's pixel colors."""
+    PIL = pytest.importorskip("PIL.Image")
+    from scantobim.core.mesh import Mesh
+    from scantobim.core.texture import photo_colors_for_mesh
+
+    # Floor patch around the origin; camera at (0,0,-5) looking +z (COLMAP
+    # identity pose with t=(0,0,5)) sees it from below.
+    g = np.linspace(-1, 1, 30)
+    xx, yy = np.meshgrid(g, g)
+    verts = np.column_stack([xx.ravel(), yy.ravel(), np.zeros(xx.size)])
+    idx = lambda i, j: i * 30 + j
+    faces = []
+    for i in range(29):
+        for j in range(29):
+            faces.append([idx(i, j), idx(i + 1, j), idx(i + 1, j + 1)])
+            faces.append([idx(i, j), idx(i + 1, j + 1), idx(i, j + 1)])
+    mesh = Mesh(vertices=verts, faces=np.array(faces))
+
+    model = tmp_path / "sparse"
+    _write_binary_model(model, [("foto.jpg", (1.0, 0, 0, 0), (0.0, 0.0, 5.0))])
+    img_dir = tmp_path / "bilder"
+    img_dir.mkdir()
+    PIL.new("RGB", (400, 300), (200, 40, 90)).save(img_dir / "foto.jpg")
+
+    stats = {}
+    frac = photo_colors_for_mesh(mesh, model, img_dir, stats_out=stats)
+    assert frac > 0.9
+    assert stats["cameras_used"] == 1
+    med = np.median(mesh.vertex_colors, axis=0)
+    assert np.all(np.abs(med - [200, 40, 90]) < 12)  # JPEG-kompression

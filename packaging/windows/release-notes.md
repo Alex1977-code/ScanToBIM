@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.2.0 — hochauflösende Fotos auf dem Netz, runde Bauteile geregelt
+
+- **Gefunden: warum die Foto-Projektion nie lief.** Der S20 legt seine Kameraposen unter `output\colmap\sparse\0` — **eine Ordnerebene tiefer, als die Projektsuche bisher schaute**. Deshalb stand im Protokoll nie „Kameraposen:“ und alles blieb bei den verwaschenen Punktfarben. Die Suche geht jetzt bis Tiefe 6, und wenn Fotos ohne Kameraposen gefunden werden, sagt das Protokoll das ausdrücklich.
+- **Foto-Farben auf dem Komplett-Mesh**: Jede Netz-Ecke wird in die am besten passende Original-Kamera projiziert (Blickwinkel × Nähe, zwei Pässe über bis zu 600 Fotos) und erhält die echte Pixel-Farbe des hochauflösenden Fotos — deutlich schärfer als die bisherigen gemittelten Punktfarben. Anteil und Kamerazahl stehen im Protokoll und Bericht (`foto_farben_anteil`).
+- **Runde Bauteile werden Regelgeometrie**: Die Zylinder-Erkennung (Rohre, Stützen, Bögen) ist im Projektlauf jetzt **standardmäßig aktiv**, und erkannte Zylinder konturieren das Komplett-Mesh genauso wie die Ebenen: Netz-Ecken auf der Mantelfläche werden **radial exakt auf den Zylinder projiziert** — runde Bauteile sind wirklich rund, mit Durchmesser im Bericht. Ebenen → plan, Kanten → scharf, Rundungen → geregelt: das Modell folgt der realen, geometrisch geregelten Bauwelt.
+
 ### Neu in 3.1.0 — konturiert statt geschmolzen
 
 - **Struktur-geführte Kontur-Schärfung**: Die in Stufe 2 gefundenen Ebenen ziehen jetzt die Ecken des Komplett-Meshes auf sich — Wände und Böden werden **exakt plan**, und wo zwei Ebenen zusammenstoßen, werden die Netz-Ecken **auf die Schnittkante projiziert**: messerscharfe Kanten statt verschmolzener Rundungen. Der Anteil konturierter Ecken steht im Bericht (`konturiert_anteil`) und im Protokoll.

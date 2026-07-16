@@ -351,3 +351,43 @@ def sharpen_mesh_with_planes(
 
     mesh.vertices = v
     return float((single | (count >= 2)).mean())
+
+
+def sharpen_mesh_with_cylinders(
+    mesh: Mesh, cylinders, voxel: float
+) -> float:
+    """Contour the skin with detected cylinders (pipes, columns, arches).
+
+    Vertices whose radial distance to a detected cylinder axis matches the
+    cylinder radius (within the voxel regime) are projected radially onto
+    the exact cylinder surface — round members become truly round.
+    ``cylinders`` are report entries with center/axis/radius/length.
+    Returns the sharpened vertex fraction.
+    """
+    if not cylinders or not len(mesh.vertices):
+        return 0.0
+    v = mesh.vertices
+    tol = 0.8 * voxel
+    done = np.zeros(len(v), dtype=bool)
+    for cyl in cylinders:
+        axis = np.asarray(cyl["axis"], dtype=np.float64)
+        axis = axis / max(np.linalg.norm(axis), 1e-12)
+        center = np.asarray(cyl["center"], dtype=np.float64)
+        radius = float(cyl["radius"])
+        half = 0.5 * float(cyl["length"]) + voxel
+        rel = v - center
+        t = rel @ axis
+        radial = rel - t[:, None] * axis
+        r = np.linalg.norm(radial, axis=1)
+        ok = (
+            (~done)
+            & (np.abs(r - radius) < tol)
+            & (np.abs(t) <= half)
+            & (r > 1e-9)
+        )
+        if not ok.any():
+            continue
+        v[ok] = center + t[ok, None] * axis + radial[ok] * (radius / r[ok])[:, None]
+        done |= ok
+    mesh.vertices = v
+    return float(done.mean())

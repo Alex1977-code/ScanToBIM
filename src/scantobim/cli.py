@@ -817,6 +817,9 @@ def _cmd_project(args) -> int:
     from scantobim.core.pipeline import SOURCE_PROFILES, apply_source_profile
 
     source = getattr(args, "source", "slam")
+    # Real structures carry round members (pipes, columns, arches) — detect
+    # them by default so curved parts become regular geometry, not blobs.
+    cfg.cylinder_detection = True
     if source != "slam" and project.trajectory is not None:
         print(
             f"  ACHTUNG: Quelle '{source}' bei einem SLAM-Projekt — empfohlen "
@@ -867,6 +870,7 @@ def _cmd_project(args) -> int:
                     **(getattr(args, "advanced", None) or {}),
                     "watertight": cfg.watertight,
                     "align_axes": cfg.align_axes,
+                    "cylinder_detection": True,
                 },
             )
         else:
@@ -967,6 +971,37 @@ def _cmd_project(args) -> int:
             print("Hinweis: Punktwolke ohne Farbwerte — Modell bleibt untexturiert")
     rep["texture"] = texture_info
     print(f"Textur: {texture_info['source']}")
+
+    # High-resolution photo colors onto the complete mesh (per vertex).
+    if (
+        full_mesh is not None
+        and use_photos
+        and project.colmap_model is not None
+        and project.images_dir is not None
+    ):
+        try:
+            from scantobim.core.texture import photo_colors_for_mesh
+
+            print("Foto-Farben werden auf das Komplett-Mesh übertragen …")
+            ff_stats: dict = {}
+            frac = photo_colors_for_mesh(
+                full_mesh, project.colmap_model, project.images_dir,
+                transform=transform, stats_out=ff_stats,
+            )
+            if frac > 0 and full_viewer is not None and full_viewer is not full_mesh:
+                from scipy.spatial import cKDTree
+
+                tree = cKDTree(full_mesh.vertices)
+                _, nearest = tree.query(full_viewer.vertices, k=1, workers=-1)
+                full_viewer.vertex_colors = full_mesh.vertex_colors[nearest]
+            if "komplett_mesh" in rep:
+                rep["komplett_mesh"]["foto_farben_anteil"] = round(frac, 3)
+            print(
+                f"  → {frac * 100:.0f}% der Netz-Ecken mit Foto-Farben "
+                f"({ff_stats.get('cameras_used', 0)} Kameras verwendet)"
+            )
+        except Exception as exc:  # noqa: BLE001 — photo colors are best-effort
+            print(f"  Foto-Farben übersprungen ({exc})")
 
     ext = output.suffix.lower()
     if ext in (".stp", ".step"):
@@ -1104,6 +1139,23 @@ def _contour_full_mesh(full_mesh, full_viewer, result, rep) -> None:
         f"  Kontur-Schärfung: {frac * 100:.0f}% der Netz-Ecken auf "
         "Strukturflächen/-kanten gezogen"
     )
+    cylinders = rep.get("cylinders") or []
+    if cylinders:
+        from scantobim.core.freeform import sharpen_mesh_with_cylinders
+
+        frac_c = sharpen_mesh_with_cylinders(
+            full_mesh, cylinders, full_mesh.freeform_stats["voxel"]
+        )
+        if full_viewer is not None and full_viewer is not full_mesh:
+            sharpen_mesh_with_cylinders(
+                full_viewer, cylinders, full_viewer.freeform_stats["voxel"]
+            )
+        if "komplett_mesh" in rep:
+            rep["komplett_mesh"]["zylinder_konturiert_anteil"] = round(frac_c, 3)
+        print(
+            f"  Zylinder-Kontur: {frac_c * 100:.1f}% der Netz-Ecken auf "
+            f"{len(cylinders)} erkannte Rundbauteile gezogen"
+        )
 
 
 def _write_full_only(output, full_mesh, full_viewer, report, report_path) -> int:

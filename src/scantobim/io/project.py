@@ -138,6 +138,11 @@ class SlamProject:
                 f"Fotos:        {self.image_count} Bilder in "
                 f"{self.images_dir.relative_to(self.root)}"
             )
+        if self.images_dir is not None and self.colmap_model is None:
+            lines.append(
+                "Kameraposen:  NICHT gefunden — Foto-Projektion nicht möglich "
+                "(COLMAP-Ordner cameras/images fehlt oder liegt zu tief)"
+            )
         if self.trajectory is not None:
             lines.append(f"Trajektorie:  {self.trajectory.relative_to(self.root)}")
         if self.bags:
@@ -148,7 +153,7 @@ class SlamProject:
         return lines
 
 
-def scan_project_dir(root: str | Path, max_depth: int = 4) -> SlamProject:
+def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
     """Detect the usable components of a SLAM scanner project folder."""
     root = Path(root)
     if not root.is_dir():

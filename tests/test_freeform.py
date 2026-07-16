@@ -213,3 +213,31 @@ def test_sharpen_mesh_with_planes():
     # Edge vertices must sit exactly on the intersection line x=0, z=0.
     edge = (np.abs(v[:, 0]) < 1e-9) & (np.abs(v[:, 2]) < 1e-9)
     assert edge.sum() > 3
+
+
+def test_sharpen_mesh_with_cylinders():
+    """Round members snap radially onto the detected cylinder surface."""
+    from scantobim.core.freeform import (
+        freeform_mesh_from_points,
+        sharpen_mesh_with_cylinders,
+    )
+
+    rng = np.random.default_rng(1)
+    n = 50000
+    phi = rng.uniform(0, 2 * np.pi, n)
+    z = rng.uniform(0, 4, n)
+    r = 0.3
+    pts = np.column_stack([
+        r * np.cos(phi), r * np.sin(phi), z
+    ]) + rng.normal(0, 0.003, (n, 3))
+    mesh = freeform_mesh_from_points(PointCloud(points=pts))
+    assert mesh is not None
+    voxel = mesh.freeform_stats["voxel"]
+    cyl = {"radius": r, "length": 4.0, "axis": [0, 0, 1], "center": [0, 0, 2.0]}
+    frac = sharpen_mesh_with_cylinders(mesh, [cyl], voxel)
+    assert frac > 0.5
+    v = mesh.vertices
+    rr = np.sqrt(v[:, 0] ** 2 + v[:, 1] ** 2)
+    body = (v[:, 2] > 0.5) & (v[:, 2] < 3.5)
+    snapped = body & (np.abs(rr - r) < 1e-9)
+    assert snapped.sum() > 100  # cylinder body is exactly round now

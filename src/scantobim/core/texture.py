@@ -476,3 +476,117 @@ def _build_textured_mesh(result, charts: list[_Chart], atlas: np.ndarray) -> Mes
         texture=atlas,
     )
     return textured
+
+
+def photo_colors_for_mesh(
+    mesh,
+    model_dir,
+    images_dir,
+    transform: np.ndarray | None = None,
+    stats_out: dict | None = None,
+    min_facing: float = 0.25,
+    max_used_cameras: int = 600,
+) -> float:
+    """Sample the ORIGINAL photos onto a mesh's vertex colors.
+
+    Designed for the free-form complete mesh (millions of vertices, no UV
+    atlas). Two passes: (1) geometry only — every registered camera scores
+    the vertices it sees (facing angle / distance²) and the best camera per
+    vertex wins; (2) each winning photo is decoded once and sampled at the
+    projected pixel positions. Vertices no camera sees keep their previous
+    (point-derived) colors. Returns the photo-colored fraction.
+    """
+    from pathlib import Path
+
+    from scantobim.photogrammetry.colmap import read_colmap_model
+
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "photo coloring requires Pillow: pip install scantobim[photos]"
+        ) from exc
+
+    cameras = read_colmap_model(model_dir)
+    if not cameras or not len(mesh.vertices):
+        return 0.0
+    images_dir = Path(images_dir)
+    image_index = _index_images(images_dir)
+
+    rot_w = transform[:3, :3] if transform is not None else np.eye(3)
+    t_w = transform[:3, 3] if transform is not None else np.zeros(3)
+    v_scan = (mesh.vertices - t_w) @ rot_w  # model → scan frame
+    vn_scan = mesh.vertex_normals() @ rot_w
+
+    n_v = len(v_scan)
+    best_score = np.zeros(n_v, dtype=np.float32)
+    best_cam = np.full(n_v, -1, dtype=np.int32)
+    best_px = np.zeros(n_v, dtype=np.float32)
+    best_py = np.zeros(n_v, dtype=np.float32)
+
+    for ci, cam in enumerate(cameras):
+        if cam.name not in image_index and Path(cam.name).name not in image_index:
+            continue
+        pc = v_scan @ cam.rotation.T + cam.translation
+        in_front = pc[:, 2] > 0.05
+        if not in_front.any():
+            continue
+        px, py = cam.project(pc)
+        center = -cam.rotation.T @ cam.translation
+        view = center - v_scan
+        d2 = np.einsum("ij,ij->i", view, view)
+        facing = np.abs(
+            np.einsum("ij,ij->i", vn_scan, view)
+        ) / np.sqrt(np.maximum(d2, 1e-12))
+        ok = (
+            in_front
+            & (px >= 0) & (px <= cam.width - 1)
+            & (py >= 0) & (py <= cam.height - 1)
+            & (facing > min_facing)
+        )
+        if not ok.any():
+            continue
+        score = (facing / np.maximum(d2, 1e-6)).astype(np.float32)
+        better = ok & (score > best_score)
+        if not better.any():
+            continue
+        best_score[better] = score[better]
+        best_cam[better] = ci
+        best_px[better] = px[better]
+        best_py[better] = py[better]
+
+    used = np.unique(best_cam[best_cam >= 0])
+    if len(used) > max_used_cameras:
+        # Bound photo decodes: keep the cameras that win the most vertices;
+        # the rest keep their point-derived colors.
+        wins = np.bincount(
+            best_cam[best_cam >= 0], minlength=len(cameras)
+        )
+        keep = np.argsort(wins)[::-1][:max_used_cameras]
+        keep_mask = np.zeros(len(cameras), dtype=bool)
+        keep_mask[keep] = True
+        drop = (best_cam >= 0) & ~keep_mask[np.maximum(best_cam, 0)]
+        best_cam[drop] = -1
+        used = np.unique(best_cam[best_cam >= 0])
+
+    colors = mesh.vertex_colors
+    if colors is None:
+        colors = np.full((n_v, 3), 150, dtype=np.uint8)
+    colored = 0
+    for ci in used:
+        cam = cameras[int(ci)]
+        path = image_index.get(cam.name) or image_index.get(Path(cam.name).name)
+        if path is None or not path.exists():
+            continue
+        photo = np.asarray(Image.open(path).convert("RGB"))
+        sel = best_cam == ci
+        sy = np.clip(best_py[sel].round().astype(int), 0, photo.shape[0] - 1)
+        sx = np.clip(best_px[sel].round().astype(int), 0, photo.shape[1] - 1)
+        colors[sel] = photo[sy, sx]
+        colored += int(sel.sum())
+    mesh.vertex_colors = colors
+    frac = colored / n_v
+    if stats_out is not None:
+        stats_out["colored"] = round(frac, 4)
+        stats_out["cameras_used"] = int(len(used))
+    return frac
