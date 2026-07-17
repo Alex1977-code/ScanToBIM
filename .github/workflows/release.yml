@@ -36,7 +36,9 @@ jobs:
 
       - name: Install CUDA backend (GPU-Variante)
         if: matrix.variant == 'gpu'
-        run: pip install cupy-cuda12x
+        # Die nvidia-Wheels liefern cudart + NVRTC mit — auf dem Zielrechner
+        # genügt dann der normale NVIDIA-Treiber (kein CUDA-Toolkit nötig).
+        run: pip install cupy-cuda12x nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12
 
       - name: Run test suite
         if: matrix.variant == 'cpu'
@@ -49,7 +51,9 @@ jobs:
         run: |
           EXTRA=""
           if [ "${{ matrix.variant }}" = "gpu" ]; then
-            EXTRA="--collect-all cupy --collect-all cupyx --collect-all cupy_backends --collect-all fastrlock"
+            NVDIR=$(python -c "import nvidia; print(list(nvidia.__path__)[0])")
+            echo "CUDA-Runtime-Wheels: $NVDIR"
+            EXTRA="--collect-all cupy --collect-all cupyx --collect-all cupy_backends --collect-all fastrlock --add-data $NVDIR;nvidia"
           fi
           pyinstaller --onefile --console --name scantobim \
             --collect-all laspy --collect-all lazrs --collect-all pye57 \

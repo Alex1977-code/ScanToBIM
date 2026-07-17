@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.7.0 — GPU-Fix + fotorealistischer Textur-Atlas
+
+- **GPU-Version läuft jetzt ohne CUDA-Toolkit** — Fix für „cuda path could not be detected": Das GPU-Zip von 3.6.0 erwartete die CUDA-Laufzeitbibliotheken vom (auf den meisten PCs nicht installierten) CUDA-Toolkit — deshalb blieb die RTX bei 0 %. Jetzt sind **cudart + NVRTC direkt im Exe gebündelt**; es genügt der normale NVIDIA-Grafiktreiber. Zusätzlich rechnet die Normalenschätzung ihre Eigenvektoren jetzt in geschlossener Form (elementweise Kernels statt cuSOLVER) — weniger Abhängigkeiten, gleicher Output. Wenn CUDA dennoch nicht startet, nennt das Protokoll jetzt den **konkreten Grund** („GPU: CUDA nicht nutzbar (…) — CPU-Modus").
+- **Fotorealistisches Komplett-Mesh (View-Dependent Texture Mapping)**: Statt einer Farbe pro Netz-Ecke bekommt das Komplett-Mesh jetzt einen echten **Foto-Textur-Atlas in Foto-Auflösung** — das Verfahren hinter dem „textured mesh" der Photogrammetrie-Tools: Das Netz wird in Charts entfaltet (bis 8192×8192-Atlas), für jedes Dreieck wählt ein Z-Buffer-Sichtbarkeitstest die **am besten blickende, nicht verdeckte Kamera**, und jeder Texel wird bilinear aus dem Originalfoto abgetastet. Texel ohne Fotoabdeckung behalten die Scan-Farben — der Atlas ist immer vollständig.
+- Neue Ausgabe **`<name>_foto.glb`**: das fotorealistische Komplett-Mesh mit JPEG-Textur-Atlas — direkt nutzbar in Blender, 3D-Viewern, Präsentationen. Der HTML-Viewer zeigt die Foto-Textur ebenfalls (Layer „Komplett-Mesh (Scan)").
+- Die Kamera-Zuweisung des Atlas (alle Kameras × alle Dreiecke + Tiefenpuffer) läuft **auf der GPU**, wenn vorhanden — zusammen mit dem CUDA-Fix wird die Grafikkarte jetzt wirklich ausgelastet.
+- Protokoll/Bericht: „Foto-Textur: Atlas … px, … cm/Texel, … % Foto-Anteil (… Kameras)" bzw. `komplett_mesh.foto_textur`.
+
 ### Neu in 3.6.0 — GPU-Beschleunigung (NVIDIA CUDA)
 
 - **Neue GPU-Ausgabe `scantobim-windows-x64-gpu.zip`**: nutzt NVIDIA-Grafikkarten (CUDA) für die rechenintensivsten Kerne — Normalenschätzung (Kovarianz + Eigenvektoren für Millionen Nachbarschaften), die Voxel-Sortierung von Komplett-Mesh und Einlese-Ausdünnung sowie die Netz-Glättung. Beim Start zeigt das Protokoll „GPU: <Kartenname> — CUDA-Beschleunigung aktiv“.

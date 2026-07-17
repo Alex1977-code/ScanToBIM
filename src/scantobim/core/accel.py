@@ -5,6 +5,14 @@ CuPy installed, no NVIDIA device, out-of-memory or any other GPU error →
 transparent numpy fallback with identical results. The GPU build of the
 Windows exe ships CuPy; the standard build simply never finds it.
 
+The GPU build also bundles the CUDA runtime and NVRTC as pip wheels
+(``nvidia-cuda-runtime-cu12`` / ``nvidia-cuda-nvrtc-cu12``) so users need
+nothing but the NVIDIA driver — no CUDA-Toolkit installation. Their DLL
+directories are registered before CuPy is imported. Everything here sticks
+to CuPy's elementwise/reduction/sort kernels (compiled via NVRTC at
+runtime); cuBLAS/cuSOLVER are deliberately avoided, which is why the PCA
+eigenvectors are computed in closed form instead of ``linalg.eigh``.
+
 Accelerated hot spots (all dense, transfer-amortized math):
 
 * 64-bit key sorting/deduplication (``unique_i64``) — the heart of the
@@ -20,20 +28,85 @@ projections) — consumer cards run fp64 at 1/32 rate.
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
 
 _gpu = None
 _checked = False
 _name: str | None = None
+_error: str | None = None
+
+
+def _cuda_library_dirs() -> list[Path]:
+    """Directories holding bundled / pip-installed CUDA runtime libraries.
+
+    The ``nvidia-*-cu12`` wheels install ``nvidia/<lib>/{bin,lib}`` into
+    site-packages; the PyInstaller exe bundles the same tree next to its
+    extraction root. CuPy's wheels expect those libraries from a CUDA
+    Toolkit installation — registering the wheel directories instead lets
+    the GPU build run on machines with nothing but the NVIDIA driver.
+    """
+    roots: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)  # PyInstaller onefile
+    if meipass:
+        roots.append(Path(meipass))
+    for entry in sys.path:
+        if not entry:
+            continue
+        try:
+            p = Path(entry)
+            if (p / "nvidia").is_dir():
+                roots.append(p)
+        except OSError:
+            continue
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        nv = root / "nvidia"
+        if not nv.is_dir():
+            continue
+        try:
+            subs = sorted(nv.iterdir())
+        except OSError:
+            continue
+        for sub in subs:
+            for leaf in ("bin", "lib"):
+                d = sub / leaf
+                if d.is_dir() and d not in seen:
+                    seen.add(d)
+                    dirs.append(d)
+    return dirs
+
+
+def _register_cuda_dirs() -> None:
+    dirs = _cuda_library_dirs()
+    if not dirs:
+        return
+    runtime = next(
+        (d.parent for d in dirs if d.parent.name == "cuda_runtime"),
+        dirs[0].parent,
+    )
+    os.environ.setdefault("CUDA_PATH", str(runtime))
+    for d in dirs:
+        os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(str(d))
+            except OSError:
+                pass
 
 
 def gpu():
     """The ``cupy`` module when a working CUDA device exists, else None."""
-    global _gpu, _checked, _name
+    global _gpu, _checked, _name, _error
     if _checked:
         return _gpu
     _checked = True
     try:
+        _register_cuda_dirs()
         import cupy
 
         if cupy.cuda.runtime.getDeviceCount() > 0:
@@ -42,10 +115,22 @@ def gpu():
             _name = raw.decode() if isinstance(raw, bytes) else str(raw)
             float(cupy.arange(8).sum())  # end-to-end sanity check
             _gpu = cupy
-    except Exception:
+        else:
+            _error = "kein CUDA-Gerät gefunden (NVIDIA-Treiber installiert?)"
+    except ImportError:
+        _error = None  # CPU build without CuPy — nothing to report
+    except Exception as exc:
         _gpu = None
         _name = None
+        msg = str(exc).splitlines()[0] if str(exc) else ""
+        _error = f"{type(exc).__name__}: {msg[:200]}"
     return _gpu
+
+
+def gpu_error() -> str | None:
+    """Why CUDA is unavailable (None: no CuPy installed / GPU works)."""
+    gpu()
+    return _error
 
 
 def gpu_name() -> str | None:
@@ -98,10 +183,97 @@ def unique_i64(
     )
 
 
+def smallest_eigvec_sym33(xp, a00, a01, a02, a11, a12, a22):
+    """Unit eigenvector of the smallest eigenvalue, batched symmetric 3x3.
+
+    Closed form — trigonometric eigenvalues (Cardano) plus row cross
+    products — so the GPU path needs only elementwise kernels, no cuSOLVER.
+    Works with numpy or cupy as ``xp``; matrices are scale-normalized first,
+    making the degeneracy thresholds dimensionless.
+    """
+    scale = xp.abs(a00)
+    for a in (a01, a02, a11, a12, a22):
+        scale = xp.maximum(scale, xp.abs(a))
+    s = xp.maximum(scale, 1e-30)
+    a00, a01, a02 = a00 / s, a01 / s, a02 / s
+    a11, a12, a22 = a11 / s, a12 / s, a22 / s
+
+    q = (a00 + a11 + a22) / 3.0
+    b00, b11, b22 = a00 - q, a11 - q, a22 - q
+    p2 = b00 * b00 + b11 * b11 + b22 * b22 + 2.0 * (
+        a01 * a01 + a02 * a02 + a12 * a12
+    )
+    p = xp.sqrt(xp.maximum(p2 / 6.0, 0.0))
+    ps = xp.maximum(p, 1e-12)
+    c00, c11, c22 = b00 / ps, b11 / ps, b22 / ps
+    c01, c02, c12 = a01 / ps, a02 / ps, a12 / ps
+    det_b = (
+        c00 * (c11 * c22 - c12 * c12)
+        - c01 * (c01 * c22 - c12 * c02)
+        + c02 * (c01 * c12 - c11 * c02)
+    )
+    r = xp.clip(det_b / 2.0, -1.0, 1.0)
+    phi = xp.arccos(r) / 3.0
+    lam = q + 2.0 * p * xp.cos(phi + 2.0 * np.pi / 3.0)  # smallest eigenvalue
+
+    # Eigenvector ⊥ two independent rows of (A − λI): best cross product.
+    r0 = xp.stack([a00 - lam, a01, a02], axis=-1)
+    r1 = xp.stack([a01, a11 - lam, a12], axis=-1)
+    r2 = xp.stack([a02, a12, a22 - lam], axis=-1)
+
+    def _cross(u, v):
+        return xp.stack(
+            [
+                u[:, 1] * v[:, 2] - u[:, 2] * v[:, 1],
+                u[:, 2] * v[:, 0] - u[:, 0] * v[:, 2],
+                u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0],
+            ],
+            axis=-1,
+        )
+
+    best = _cross(r0, r1)
+    best_n = (best * best).sum(axis=1)
+    for u, v in ((r0, r2), (r1, r2)):
+        c = _cross(u, v)
+        n = (c * c).sum(axis=1)
+        take = n > best_n
+        best = xp.where(take[:, None], c, best)
+        best_n = xp.where(take, n, best_n)
+
+    # Repeated smallest eigenvalue → all crosses vanish; any direction
+    # orthogonal to the strongest remaining row is a valid eigenvector.
+    rows = xp.stack([r0, r1, r2], axis=1)  # (n, 3, 3)
+    row_n = (rows * rows).sum(axis=2)
+    strongest = rows[
+        xp.arange(len(row_n)), xp.argmax(row_n, axis=1)
+    ]
+    helper = xp.zeros_like(strongest)
+    use_x = xp.abs(strongest[:, 0]) < 0.9 * xp.sqrt(
+        xp.maximum((strongest * strongest).sum(axis=1), 1e-30)
+    )
+    helper[:, 0] = xp.where(use_x, 1.0, 0.0)
+    helper[:, 1] = xp.where(use_x, 0.0, 1.0)
+    fallback = _cross(strongest, helper)
+    fb_n = (fallback * fallback).sum(axis=1)
+    degenerate = best_n < 1e-12
+    best = xp.where(degenerate[:, None], fallback, best)
+    best_n = xp.where(degenerate, fb_n, best_n)
+    # Fully isotropic (sphere-like) — direction is arbitrary: use +Z.
+    zaxis = xp.zeros_like(best)
+    zaxis[:, 2] = 1.0
+    still = best_n < 1e-12
+    best = xp.where(still[:, None], zaxis, best)
+
+    norm = xp.sqrt(xp.maximum((best * best).sum(axis=1), 1e-30))
+    return best / norm[:, None]
+
+
 def pca_normals(points: np.ndarray, idx: np.ndarray, min_gpu: int = 1_000_000):
     """Batched neighborhood-PCA normals on the GPU; None → use the CPU path.
 
     ``idx``: (N, k) neighbor indices. Chunked so GPU memory stays bounded.
+    Covariances and eigenvectors are computed with elementwise kernels only
+    (see :func:`smallest_eigvec_sym33`) — no cuBLAS/cuSOLVER required.
     """
     cp = gpu()
     n, k = idx.shape
@@ -114,11 +286,16 @@ def pca_normals(points: np.ndarray, idx: np.ndarray, min_gpu: int = 1_000_000):
         for s in range(0, n, chunk):
             nb = pts_g[cp.asarray(idx[s:s + chunk])]  # (c, k, 3) fp32
             nb = nb - nb.mean(axis=1, keepdims=True)
-            cov = cp.einsum("nki,nkj->nij", nb, nb)
-            _, vecs = cp.linalg.eigh(cov)
-            normals = vecs[:, :, 0]
-            norms = cp.linalg.norm(normals, axis=1, keepdims=True)
-            normals = normals / cp.maximum(norms, 1e-12)
+            x, y, z = nb[..., 0], nb[..., 1], nb[..., 2]
+            normals = smallest_eigvec_sym33(
+                cp,
+                (x * x).sum(axis=1),
+                (x * y).sum(axis=1),
+                (x * z).sum(axis=1),
+                (y * y).sum(axis=1),
+                (y * z).sum(axis=1),
+                (z * z).sum(axis=1),
+            )
             out[s:s + chunk] = cp.asnumpy(normals).astype(np.float64)
         return out
     except Exception:

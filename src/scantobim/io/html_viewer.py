@@ -85,14 +85,16 @@ def write_html_viewer(
     indices = mesh.faces.astype(np.uint32)
     creases = extract_crease_edges(mesh).astype(np.uint32)
 
+    from scantobim.io.teximg import encode_texture
+
+    def _texture_uri(image: np.ndarray) -> str:
+        data, mime = encode_texture(image)
+        return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+
     textured = mesh.texture is not None and mesh.uvs is not None
     if textured:
         uvs = mesh.uvs.astype(np.float32)
-        from scantobim.io.png import encode_png
-
-        texture_uri = "data:image/png;base64," + base64.b64encode(
-            encode_png(mesh.texture)
-        ).decode("ascii")
+        texture_uri = _texture_uri(mesh.texture)
     else:
         uvs = np.zeros((len(positions), 2), dtype=np.float32)
         texture_uri = ""
@@ -117,7 +119,9 @@ def write_html_viewer(
             else np.full((len(pt_positions), 3), 150, dtype=np.uint8)
         )
 
-    # Optional free-form mesh layer (hybrid model).
+    # Optional free-form mesh layer (hybrid model), photo-textured if baked.
+    ff_textured = False
+    ff_texture_uri = ""
     if freeform is not None and len(freeform.faces):
         ff_positions = freeform.vertices.astype(np.float32)
         ff_normals = freeform.vertex_normals().astype(np.float32)
@@ -127,11 +131,18 @@ def write_html_viewer(
             else np.full((len(ff_positions), 3), 150, dtype=np.uint8)
         )
         ff_indices = freeform.faces.astype(np.uint32)
+        if freeform.texture is not None and freeform.uvs is not None:
+            ff_textured = True
+            ff_uvs = freeform.uvs.astype(np.float32)
+            ff_texture_uri = _texture_uri(freeform.texture)
+        else:
+            ff_uvs = np.zeros((len(ff_positions), 2), dtype=np.float32)
     else:
         ff_positions = np.zeros((0, 3), dtype=np.float32)
         ff_normals = np.zeros((0, 3), dtype=np.float32)
         ff_colors = np.zeros((0, 3), dtype=np.uint8)
         ff_indices = np.zeros((0, 3), dtype=np.uint32)
+        ff_uvs = np.zeros((0, 2), dtype=np.float32)
 
     all_pos = positions if not len(ff_positions) else np.vstack([positions, ff_positions])
     center = (all_pos.min(axis=0) + all_pos.max(axis=0)) / 2.0 if len(all_pos) else np.zeros(3)
@@ -153,6 +164,7 @@ def write_html_viewer(
     }
 
     meta["textured"] = bool(textured)
+    meta["ff_textured"] = bool(ff_textured)
     html = (
         _TEMPLATE.replace("__TITLE__", title)
         .replace("__FF_LABEL__", freeform_label)
@@ -169,6 +181,8 @@ def write_html_viewer(
         .replace("__FF_POSITIONS__", b64(ff_positions))
         .replace("__FF_NORMALS__", b64(ff_normals))
         .replace("__FF_COLORS__", b64(ff_colors))
+        .replace("__FF_UVS__", b64(ff_uvs))
+        .replace("__FF_TEXTURE_URI__", ff_texture_uri)
         .replace("__FF_INDICES__", b64(ff_indices))
     )
     path.write_text(html, encoding="utf-8")
@@ -232,8 +246,10 @@ const ptColors    = decode("__PT_COLORS__", Uint8Array);
 const ffPositions = decode("__FF_POSITIONS__", Float32Array);
 const ffNormals   = decode("__FF_NORMALS__", Float32Array);
 const ffColors    = decode("__FF_COLORS__", Uint8Array);
+const ffUvs       = decode("__FF_UVS__", Float32Array);
 const ffIndices   = decode("__FF_INDICES__", Uint32Array);
 const TEXTURE_URI = "__TEXTURE_URI__";
+const FF_TEXTURE_URI = "__FF_TEXTURE_URI__";
 
 document.getElementById("stats").textContent =
   META.vertices + " Vertices · " + META.triangles + " Dreiecke · " + META.surfaces + " Flächen";
@@ -315,6 +331,7 @@ const ptColBuf = META.points ? buffer(gl.ARRAY_BUFFER, ptColors) : null;
 const ffPosBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffPositions) : null;
 const ffNrmBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffNormals) : null;
 const ffColBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffColors) : null;
+const ffUvBuf  = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffUvs) : null;
 const ffIdxBuf = META.ff_indices ? buffer(gl.ELEMENT_ARRAY_BUFFER, ffIndices) : null;
 const pAPos = gl.getAttribLocation(pprog, "aPos");
 const pACol = gl.getAttribLocation(pprog, "aCol");
@@ -332,11 +349,11 @@ const uBias = gl.getUniformLocation(prog, "uBias");
 const uTextured = gl.getUniformLocation(prog, "uTextured");
 const uTex = gl.getUniformLocation(prog, "uTex");
 
-let texReady = false;
-if (META.textured && TEXTURE_URI) {
+function loadTexture(uri, unit, done) {
   const tex = gl.createTexture();
   const img = new Image();
   img.onload = () => {
+    gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -344,11 +361,14 @@ if (META.textured && TEXTURE_URI) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    texReady = true;
+    done();
   };
-  img.src = TEXTURE_URI;
+  img.src = uri;
 }
+let texReady = false;
+let ffTexReady = false;
+if (META.textured && TEXTURE_URI) loadTexture(TEXTURE_URI, 0, () => { texReady = true; });
+if (META.ff_textured && FF_TEXTURE_URI) loadTexture(FF_TEXTURE_URI, 1, () => { ffTexReady = true; });
 
 let theta = -1.0, phi = 1.1, dist = META.radius * 2.6;
 const target = META.center.slice();
@@ -427,17 +447,25 @@ function draw() {
   }
 
   if (META.ff_indices && showFF) {
-    // Free-form layer: same lighting, vertex colors, never textured.
-    gl.uniform1f(uFlat, 0.0); gl.uniform1f(uBias, 0.0); gl.uniform1f(uTextured, 0.0);
-    if (aUV >= 0) gl.disableVertexAttribArray(aUV);
+    // Free-form layer: photo-textured when an atlas was baked, else vertex colors.
+    gl.uniform1f(uFlat, 0.0); gl.uniform1f(uBias, 0.0);
     gl.bindBuffer(gl.ARRAY_BUFFER, ffPosBuf);
     gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, ffNrmBuf);
     gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, ffColBuf);
     gl.vertexAttribPointer(aCol, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+    if (ffTexReady && aUV >= 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, ffUvBuf);
+      gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
+      gl.uniform1f(uTextured, 1.0); gl.uniform1i(uTex, 1);
+    } else {
+      gl.uniform1f(uTextured, 0.0);
+      if (aUV >= 0) gl.disableVertexAttribArray(aUV);
+    }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ffIdxBuf);
     gl.drawElements(gl.TRIANGLES, META.ff_indices, gl.UNSIGNED_INT, 0);
+    gl.uniform1i(uTex, 0);
   }
 
   if (META.points && showPoints) {

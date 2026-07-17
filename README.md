@@ -102,6 +102,7 @@ geht den Weg der aktuellen Forschung zu strukturierter Rekonstruktion
 | 📦 **Mehrere Eingangsdateien** | `scantobim reconstruct scan1.laz scan2.e57 wolke.ply -o model.glb` verschmilzt beliebig viele Quellen zu einem Modell; `--register-inputs` registriert sie vorher per ICP. |
 | 📷 **Foto-Texturierung** (`--texture`) | Die RGB-Daten der Punktwolke (Photogrammetrie, RGB-Scanner) werden als Textur-Atlas auf die sauberen Flächen gebacken – fotorealistische Darstellung auf exakter Geometrie. Auflösung folgt der Punktdichte (`--texel` überschreibt). |
 | 📸 **Foto-Projektion** (`--texture-photos`) | Noch schärfer: Die Originalfotos werden über die COLMAP-Kameraposen direkt auf das Modell projiziert – pro Texel wählt ScanToBIM das am besten blickende, **nicht verdeckte** Foto (Verdeckung wird gegen das Modell selbst per Ray-Test geprüft). Volle Fotoauflösung auf dem Modell. |
+| 🖼️ **Fotorealistisches Komplett-Mesh** | Im Projektlauf wird auf das Komplett-Mesh ein **Foto-Textur-Atlas in Foto-Auflösung** gebacken (View-Dependent Texture Mapping: Chart-Entfaltung, beste Kamera pro Dreieck per Z-Buffer-Sichtbarkeit, bilineares Foto-Sampling). Ergebnis zusätzlich als `<name>_foto.glb`; der HTML-Viewer zeigt die Textur direkt. |
 | ⚙️ **STEP-Export** (`-o model.stp`) | Echtes CAD-B-Rep (AP214): analytische Ebenen, exakte Kantenzüge, Öffnungen als Innenkonturen; wasserdichte Modelle als Volumenkörper (`MANIFOLD_SOLID_BREP`). Importierbar in SolidWorks, Inventor, Fusion, FreeCAD, AutoCAD und **HiCAD**. |
 | 🏗️ **IFC-Export** (`-o model.ifc`) | IFC4-Bauwerksmodell: Wände als `IfcWall`, Böden als `IfcSlab`, Decken als `IfcCovering` – inkl. Projekt/Gebäude/Geschoss-Struktur und Fenster-Öffnungen. Öffnet in Revit, ArchiCAD, Solibri, BlenderBIM. |
 | 🖥️ **Grafische Oberfläche** (`scantobim gui`) | Lokale Web-App: Drag & Drop, Modus-Karten, Live-Protokoll, integrierter 3D-Viewer, Messbericht, Export-Downloads – ganz ohne Kommandozeile. |
@@ -312,7 +313,8 @@ CAD-Geometrie an.
 
 Direktlinks — zeigen immer auf die **neueste Version**:
 
-- **GPU-Version** (NVIDIA-Grafikkarte, CUDA-beschleunigt):
+- **GPU-Version** (NVIDIA-Grafikkarte, CUDA-beschleunigt — die CUDA-Laufzeit
+  ist gebündelt, es genügt der normale Grafiktreiber):
   <https://github.com/Alex1977-code/ScanToBIM/releases/latest/download/scantobim-windows-x64-gpu.zip>
 - CPU-Version (läuft überall, ohne CUDA):
   <https://github.com/Alex1977-code/ScanToBIM/releases/latest/download/scantobim-windows-x64.zip>

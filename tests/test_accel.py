@@ -32,6 +32,41 @@ def test_xp_for_and_asnumpy_cpu():
     assert accel.asnumpy(a) is a
 
 
+def test_smallest_eigvec_matches_eigh():
+    """Closed-form smallest eigenvector ≡ np.linalg.eigh (up to sign)."""
+    rng = np.random.default_rng(3)
+    m = rng.normal(size=(500, 3, 3))
+    cov = m @ m.transpose(0, 2, 1)  # random SPD, mixed scales
+    cov *= 10.0 ** rng.integers(-6, 6, size=(500, 1, 1))
+    got = accel.smallest_eigvec_sym33(
+        np,
+        cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2],
+        cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2],
+    )
+    _, vecs = np.linalg.eigh(cov)
+    want = vecs[:, :, 0]
+    agree = np.abs(np.einsum("ij,ij->i", got, want))
+    assert np.all(np.linalg.norm(got, axis=1) > 0.999)
+    assert np.median(agree) > 0.9999
+    assert np.all(agree > 0.99)
+
+
+def test_smallest_eigvec_degenerate_isotropic():
+    """Isotropic and rank-deficient matrices return a unit vector, no NaN."""
+    eye = np.tile(np.eye(3), (4, 1, 1))
+    eye[1] *= 0.0  # zero matrix
+    eye[2, 2, 2] = 5.0  # repeated smallest eigenvalue (1, 1, 5)
+    got = accel.smallest_eigvec_sym33(
+        np,
+        eye[:, 0, 0], eye[:, 0, 1], eye[:, 0, 2],
+        eye[:, 1, 1], eye[:, 1, 2], eye[:, 2, 2],
+    )
+    assert np.all(np.isfinite(got))
+    assert np.allclose(np.linalg.norm(got, axis=1), 1.0)
+    # Repeated smallest eigenvalue: any vector ⊥ the large axis is valid.
+    assert abs(got[2] @ np.array([0, 0, 1.0])) < 1e-6
+
+
 def test_pca_normals_cpu_fallback():
     rng = np.random.default_rng(1)
     pts = rng.uniform(0, 1, (500, 3))

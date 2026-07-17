@@ -287,16 +287,16 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
         "buffers": [{"byteLength": offset}],
     }
     if textured:
-        from scantobim.io.png import encode_png
+        from scantobim.io.teximg import encode_texture
 
-        png_bytes = encode_png(mesh.texture)
+        img_bytes, mime = encode_texture(mesh.texture)
         img_view = len(buffer_views)
-        data = _pad(png_bytes)
+        data = _pad(img_bytes)
         buffer_views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(data)})
         buffers.append(data)
         offset += len(data)
         gltf["buffers"][0]["byteLength"] = offset
-        gltf["images"] = [{"bufferView": img_view, "mimeType": "image/png"}]
+        gltf["images"] = [{"bufferView": img_view, "mimeType": mime}]
         gltf["samplers"] = [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}]
         gltf["textures"] = [{"sampler": 0, "source": 0}]
         material["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}

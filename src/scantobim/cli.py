@@ -713,6 +713,20 @@ def _cmd_reconstruct(args) -> int:
             th, tw = output_mesh.texture.shape[:2]
             print(f"  texture atlas: {tw} x {th} px")
 
+    if (
+        full_viewer is not None
+        and args.texture_photos is not None
+        and args.colmap_model is not None
+        and ext not in (".stp", ".step", ".ifc")
+    ):
+        transform = None
+        if "alignment" in result.report:
+            transform = np.array(result.report["alignment"])
+        full_viewer = _bake_full_photo_atlas(
+            full_viewer, args.colmap_model, args.texture_photos,
+            transform, rep, args.output,
+        )
+
     if ext in (".stp", ".step"):
         from scantobim.io.step import write_step
 
@@ -864,6 +878,9 @@ def _cmd_project(args) -> int:
     # ---- Stufe 2 (Option): Ebenen & Linien suchen ---------------------------
     if not getattr(args, "structure", True):
         print("Strukturanalyse übersprungen (--no-structure).")
+        full_viewer = _fallback_photo_atlas(
+            project, args, cloud, full_viewer, fallback_report, output
+        )
         return _write_full_only(
             output, full_mesh, full_viewer, fallback_report, fallback_report_path
         )
@@ -889,6 +906,9 @@ def _cmd_project(args) -> int:
             raise
         print(f"Strukturanalyse fehlgeschlagen ({exc})")
         print("Komplett-Mesh bleibt als Ergebnis erhalten.")
+        full_viewer = _fallback_photo_atlas(
+            project, args, cloud, full_viewer, fallback_report, output
+        )
         return _write_full_only(
             output, full_mesh, full_viewer,
             fallback_report, fallback_report_path,
@@ -1037,6 +1057,20 @@ def _cmd_project(args) -> int:
         except Exception as exc:  # noqa: BLE001 — photo colors are best-effort
             print(f"  Foto-Farben übersprungen ({exc})")
 
+    # Photo-realistic texture ATLAS on the complete mesh: full photo
+    # resolution instead of one color per vertex.
+    if (
+        full_viewer is not None
+        and use_photos
+        and camera_source is not None
+        and project.images_dir is not None
+        and output.suffix.lower() not in (".stp", ".step", ".ifc")
+    ):
+        full_viewer = _bake_full_photo_atlas(
+            full_viewer, camera_source, project.images_dir,
+            transform, rep, output,
+        )
+
     ext = output.suffix.lower()
     if ext in (".stp", ".step"):
         from scantobim.io.step import write_step
@@ -1123,16 +1157,21 @@ def _cmd_compare(args) -> int:
 
 
 def _print_gpu_status(report_extra: dict | None = None) -> None:
-    from scantobim.core.accel import gpu_name
+    from scantobim.core.accel import gpu_error, gpu_name
 
     name = gpu_name()
+    error = gpu_error()
     if name:
         print(f"GPU: {name} — CUDA-Beschleunigung aktiv")
+    elif error:
+        print(f"GPU: CUDA nicht nutzbar ({error}) — CPU-Modus")
     else:
         print("GPU: nicht verfügbar — CPU-Modus "
               "(NVIDIA-Karten: GPU-Version scantobim-windows-x64-gpu.zip)")
     if report_extra is not None:
         report_extra["gpu"] = name
+        if error:
+            report_extra["gpu_fehler"] = error
 
 
 def _build_full_mesh(cloud, report=None):
@@ -1203,6 +1242,87 @@ def _contour_full_mesh(full_mesh, full_viewer, result, rep) -> None:
             f"  Zylinder-Kontur: {frac_c * 100:.1f}% der Netz-Ecken auf "
             f"{len(cylinders)} erkannte Rundbauteile gezogen"
         )
+
+
+def _fallback_photo_atlas(project, args, cloud, full_viewer, report, output):
+    """Photo texture for the mesh-only result (structure skipped or failed).
+
+    The regular photo path runs after the structure stage — when that stage
+    is skipped, this brings the same photorealism to the complete mesh:
+    self-calibrate the xyzopk poses if needed, refresh the vertex colors
+    from the photos, then bake the atlas. Best-effort throughout.
+    """
+    if (
+        full_viewer is None
+        or getattr(args, "no_photos", False)
+        or project.images_dir is None
+    ):
+        return full_viewer
+    camera_source = project.colmap_model
+    if camera_source is None and project.xyzopk is not None:
+        try:
+            from scantobim.photogrammetry.xyzopk import cameras_from_xyzopk
+
+            print("Kameraposen (xyzopk): Selbstkalibrierung von Ausrichtung "
+                  "und Brennweite am Scan …")
+            xy_stats: dict = {}
+            camera_source = cameras_from_xyzopk(
+                project.xyzopk, project.images_dir, cloud, stats_out=xy_stats
+            )
+            report["kameraposen"] = {"quelle": "xyzopk", **xy_stats}
+        except Exception as exc:  # noqa: BLE001 — photos are best-effort
+            print(f"  Selbstkalibrierung fehlgeschlagen ({exc})")
+            return full_viewer
+    if camera_source is None:
+        return full_viewer
+    try:
+        from scantobim.core.texture import photo_colors_for_mesh
+
+        photo_colors_for_mesh(full_viewer, camera_source, project.images_dir)
+    except Exception:  # noqa: BLE001 — vertex colors are only the base layer
+        pass
+    return _bake_full_photo_atlas(
+        full_viewer, camera_source, project.images_dir, None, report, output
+    )
+
+
+def _bake_full_photo_atlas(
+    full_viewer, camera_source, images_dir, transform, rep, output
+):
+    """Bake the photo atlas onto the complete-mesh viewer layer.
+
+    Returns the textured mesh (and writes ``<stem>_foto.glb``) when enough
+    texels could be sampled from photos; otherwise returns ``full_viewer``
+    unchanged — vertex colors stay active. Best-effort: never raises.
+    """
+    try:
+        from scantobim.core.phototex import bake_photo_atlas
+
+        print("Foto-Textur: Atlas in Foto-Auflösung wird auf das "
+              "Komplett-Mesh projiziert …")
+        px_stats: dict = {}
+        textured = bake_photo_atlas(
+            full_viewer, camera_source, images_dir,
+            transform=transform, stats_out=px_stats,
+        )
+        if textured is not None and px_stats.get("photo_fraction", 0.0) >= 0.15:
+            aw, ah = px_stats["atlas"]
+            print(
+                f"  → Atlas {aw}×{ah} px, {px_stats['texel_cm']:.1f} cm/Texel, "
+                f"{px_stats['photo_fraction'] * 100:.0f}% Foto-Anteil "
+                f"({px_stats['cameras_used']} Kameras)"
+            )
+            if "komplett_mesh" in rep:
+                rep["komplett_mesh"]["foto_textur"] = px_stats
+            foto_glb = output.with_name(output.stem + "_foto.glb")
+            write_mesh(textured, foto_glb)
+            print(f"wrote {foto_glb} (fotorealistisches Komplett-Mesh)")
+            return textured
+        if textured is not None:
+            print("  Foto-Anteil zu gering — Vertex-Farben bleiben aktiv")
+    except Exception as exc:  # noqa: BLE001 — atlas is best-effort
+        print(f"  Foto-Textur übersprungen ({exc})")
+    return full_viewer
 
 
 def _write_full_only(output, full_mesh, full_viewer, report, report_path) -> int:
