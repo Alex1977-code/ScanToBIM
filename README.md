@@ -310,10 +310,17 @@ CAD-Geometrie an.
 
 ## Download (Windows)
 
-Fertige Windows-Version auf der
-**[Releases-Seite](https://github.com/Alex1977-code/ScanToBIM/releases/latest)**:
-`scantobim-windows-x64.zip` entpacken und `scantobim.exe` nutzen – keine
-Installation, kein Python nötig. SmartScreen-Hinweis beim ersten Start:
+Direktlinks — zeigen immer auf die **neueste Version**:
+
+- **GPU-Version** (NVIDIA-Grafikkarte, CUDA-beschleunigt):
+  <https://github.com/Alex1977-code/ScanToBIM/releases/latest/download/scantobim-windows-x64-gpu.zip>
+- CPU-Version (läuft überall, ohne CUDA):
+  <https://github.com/Alex1977-code/ScanToBIM/releases/latest/download/scantobim-windows-x64.zip>
+
+Zip entpacken und `scantobim.exe` nutzen – keine Installation, kein Python
+nötig. Alle Versionen mit Änderungsnotizen auf der
+[Releases-Seite](https://github.com/Alex1977-code/ScanToBIM/releases/latest).
+SmartScreen-Hinweis beim ersten Start:
 „Weitere Informationen → Trotzdem ausführen“ (nicht code-signiert);
 SHA256-Prüfsumme liegt bei. Schnellstart: `LIESMICH.txt` im Archiv.
 

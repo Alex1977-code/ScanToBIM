@@ -120,6 +120,7 @@ jobs:
           NAME="scantobim-windows-x64${{ matrix.suffix }}"
           gh release create "$TAG" \
             --target "$GITHUB_SHA" \
+            --latest \
             --title "ScanToBIM $TAG (Windows)" \
             --notes-file packaging/windows/release-notes.md \
             "$NAME.zip" "$NAME.zip.sha256" \
