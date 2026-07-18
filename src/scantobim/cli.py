@@ -859,7 +859,12 @@ def _cmd_project(args) -> int:
     trajectory = None
     if project.trajectory is not None:
         trajectory = read_trajectory(project.trajectory)
-        print(f"  Trajektorie: {len(trajectory)} Positionen "
+        if trajectory.shape[1] >= 4 and cloud.times is not None:
+            print(f"  Trajektorie: {len(trajectory)} Positionen mit Zeitstempeln "
+                  "— Normalen werden ZEIT-exakt zur Scannerposition orientiert "
+                  "(gps_time der Punkte ↔ Trajektorie)")
+        else:
+            print(f"  Trajektorie: {len(trajectory)} Positionen "
               "(Normalen werden zum Scanner orientiert)")
 
     cfg = PipelineConfig.preset(
@@ -963,13 +968,46 @@ def _cmd_project(args) -> int:
     use_photos = (
         not args.no_photos
         and project.images_dir is not None
-        and (camera_source is not None or project.xyzopk is not None)
+        and (
+            camera_source is not None
+            or project.xyzopk is not None
+            or project.imgpose is not None
+        )
     )
     transform = None
     if "alignment" in rep:
         transform = np.array(rep["alignment"])
 
-    if use_photos and camera_source is None:
+    if use_photos and camera_source is None and project.imgpose is not None:
+        # ImgPose carries QUATERNIONS — unambiguous rotations. Preferred
+        # over the angle-based xyzopk when both exist.
+        try:
+            from scantobim.photogrammetry.xyzopk import cameras_from_imgpose
+
+            print("Kameraposen (ImgPose): Quaternion-Posen werden am Scan "
+                  "validiert …")
+            ip_stats: dict = {}
+            cams = cameras_from_imgpose(
+                project.imgpose, project.images_dir, cloud,
+                stats_out=ip_stats, calibration=project.calibration_data,
+            )
+            if ip_stats.get("score", 0.0) >= 0.5:
+                camera_source = cams
+                rep["kameraposen"] = {"quelle": "imgpose", **ip_stats}
+                print(
+                    f"  → {ip_stats['convention']}, Brennweite "
+                    f"{ip_stats['fx']:.0f} px "
+                    f"({ip_stats.get('intrinsics_quelle', 'selbstkalibriert')}), "
+                    f"Übereinstimmung {ip_stats['score'] * 100:.0f}%"
+                )
+            else:
+                print(f"  ImgPose-Übereinstimmung zu gering "
+                      f"({ip_stats.get('score', 0.0) * 100:.0f}%) — "
+                      "versuche xyzopk")
+        except Exception as exc:  # noqa: BLE001 — photos are best-effort
+            print(f"  ImgPose übersprungen ({exc})")
+
+    if use_photos and camera_source is None and project.xyzopk is not None:
         # xyzopk poses carry neither intrinsics nor a rotation convention —
         # both are self-calibrated against the (photo-)colorized cloud.
         try:
@@ -992,8 +1030,12 @@ def _cmd_project(args) -> int:
         except Exception as exc:  # noqa: BLE001 — photos are best-effort
             print(f"  Selbstkalibrierung fehlgeschlagen ({exc}) — "
                   "Foto-Projektion übersprungen")
-            use_photos = False
             camera_source = None
+
+    if use_photos and camera_source is None:
+        print("Hinweis: keine nutzbaren Kameraposen — Foto-Projektion "
+              "übersprungen")
+        use_photos = False
 
     if use_photos:
         # Sanity check: the camera path must live in the same coordinate

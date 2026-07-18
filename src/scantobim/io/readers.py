@@ -107,6 +107,7 @@ class StreamingThinner:
         self._pts: list[np.ndarray] = []
         self._colors: list[np.ndarray] | None = []
         self._intensity: list[np.ndarray] | None = []
+        self._times: list[np.ndarray] | None = []
         self._count = 0
 
     def add(
@@ -114,6 +115,7 @@ class StreamingThinner:
         points: np.ndarray,
         colors: np.ndarray | None = None,
         intensity: np.ndarray | None = None,
+        times: np.ndarray | None = None,
     ) -> None:
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         self._pts.append(points)
@@ -127,6 +129,11 @@ class StreamingThinner:
                 self._intensity = None
             else:
                 self._intensity.append(np.asarray(intensity, dtype=np.float32))
+        if self._times is not None:
+            if times is None:
+                self._times = None
+            else:
+                self._times.append(np.asarray(times, dtype=np.float64))
         self._count += len(points)
         if self._count > 2 * self.target:
             self._compact()
@@ -135,6 +142,7 @@ class StreamingThinner:
         pts = np.vstack(self._pts)
         colors = np.vstack(self._colors) if self._colors else None
         intensity = np.concatenate(self._intensity) if self._intensity else None
+        times = np.concatenate(self._times) if self._times else None
         origin = pts.min(axis=0)
         diag = float(np.linalg.norm(pts.max(axis=0) - origin))
         if diag <= 0:  # all points identical
@@ -148,6 +156,7 @@ class StreamingThinner:
         self._intensity = (
             [intensity[first]] if intensity is not None else self._intensity
         )
+        self._times = [times[first]] if times is not None else self._times
         self._count = len(pts)
 
     def _cell_first(self, pts, origin, voxel: float) -> np.ndarray:
@@ -211,8 +220,10 @@ class StreamingThinner:
         pts = np.vstack(self._pts) if self._pts else np.zeros((0, 3))
         colors = np.vstack(self._colors) if self._colors else None
         intensity = np.concatenate(self._intensity) if self._intensity else None
+        times = np.concatenate(self._times) if self._times else None
         return PointCloud(
-            points=pts, colors=colors, intensity=intensity, source=source
+            points=pts, colors=colors, intensity=intensity, times=times,
+            source=source,
         )
 
 
@@ -242,7 +253,10 @@ def _read_las(path: Path, max_points: int | None = None) -> PointCloud:
                         intensity = None
                         if "intensity" in dims:
                             intensity = np.asarray(chunk.intensity, dtype=np.float32)
-                        thinner.add(pts, colors, intensity)
+                        times = None
+                        if "gps_time" in dims:
+                            times = np.asarray(chunk.gps_time, dtype=np.float64)
+                        thinner.add(pts, colors, intensity, times)
                     cloud = thinner.finish(source=str(path))
                     if cloud.intensity is not None and cloud.intensity.max() > 0:
                         cloud.intensity = cloud.intensity / cloud.intensity.max()
@@ -281,7 +295,14 @@ def _read_las(path: Path, max_points: int | None = None) -> PointCloud:
         if peak > 0:
             intensity = raw / peak
 
-    return PointCloud(points=points, colors=colors, intensity=intensity, source=str(path))
+    times = None
+    if "gps_time" in dims:
+        times = np.asarray(las.gps_time, dtype=np.float64)
+
+    return PointCloud(
+        points=points, colors=colors, intensity=intensity, times=times,
+        source=str(path),
+    )
 
 
 def _read_ply(path: Path) -> PointCloud:

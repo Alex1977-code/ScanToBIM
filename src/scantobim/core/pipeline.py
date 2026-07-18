@@ -258,8 +258,11 @@ def preprocess_cloud(
     if trajectory is not None and len(trajectory):
         from scantobim.core.preprocess import orient_normals_along_trajectory
 
-        work = orient_normals_along_trajectory(work, trajectory)
+        ostats: dict = {}
+        work = orient_normals_along_trajectory(work, trajectory, stats_out=ostats)
         pre["trajectory_positions"] = int(len(trajectory))
+        if ostats.get("mode"):
+            pre["normalen_orientierung"] = ostats["mode"]
     spacing = estimate_point_spacing(work)
     if spacing <= 0:
         raise ValueError("Degenerate point cloud (zero spacing)")

@@ -25,15 +25,17 @@ def test_read_trajectory_timestamped_and_tum(tmp_path):
     p = tmp_path / "traj_time.txt"
     p.write_text("# time x y z\n100.0 5 6 7\n100.1 5 6 8\n100.2 5 6 9\n")
     traj = read_trajectory(p)
-    assert np.allclose(traj[0], [5, 6, 7])
+    assert traj.shape == (3, 4)  # positions + recognized time column
+    assert np.allclose(traj[0, :3], [5, 6, 7]) and traj[0, 3] == 100.0
 
     tum = tmp_path / "traj_tum.txt"
     tum.write_text(
         "100.0 1 2 3 0 0 0 1\n100.1 1 2 4 0 0 0 1\n100.2 1 2 5 0 0 0 1\n"
     )
     traj = read_trajectory(tum)
-    assert traj.shape == (3, 3)
-    assert np.allclose(traj[:, 0], 1) and np.allclose(traj[-1], [1, 2, 5])
+    assert traj.shape == (3, 4)
+    assert np.allclose(traj[:, 0], 1) and np.allclose(traj[-1, :3], [1, 2, 5])
+    assert np.allclose(traj[:, 3], [100.0, 100.1, 100.2])
 
 
 def test_read_trajectory_csv(tmp_path):
@@ -216,26 +218,27 @@ def test_cloud_has_colors_e57(tmp_path):
 
 
 def test_scan_project_dir_prefers_colorized_by_name(tmp_path):
-    """S20 exports colorized + (larger) uncolorized: colors must win."""
+    """Colorized + LARGER uncolorized: geometry wins, colors transfer."""
     root = tmp_path / "export"
     _write_ply_cloud(root / "haus_uncolorized_segmented.ply", 4000, colored=False)
     _write_ply_cloud(root / "haus_colorized_segmented.ply", 1500, colored=True)
     project = scan_project_dir(root)
-    assert project.cloud.name == "haus_colorized_segmented.ply"
-    assert project.cloud_colored is True
-    assert "mit Farben" in "\n".join(project.describe())
+    assert project.cloud.name == "haus_uncolorized_segmented.ply"
+    assert project.color_source is not None
+    assert project.color_source.name == "haus_colorized_segmented.ply"
+    assert "Farbquelle" in "\n".join(project.describe())
 
 
 def test_scan_project_dir_prefers_colorized_by_probe(tmp_path):
-    """No name hints: the header probe promotes the RGB-carrying cloud."""
+    """Colored wins only when it is practically the same size (≥95%)."""
     root = tmp_path / "export"
-    _write_ply_cloud(root / "scan_a.ply", 4000, colored=False)  # larger
-    _write_ply_cloud(root / "scan_b.ply", 1500, colored=True)   # smaller, RGB
+    _write_ply_cloud(root / "scan_a.ply", 1500, colored=False)
+    _write_ply_cloud(root / "scan_b.ply", 1480, colored=True)  # ~99% as dense
     project = scan_project_dir(root)
     assert project.cloud.name == "scan_b.ply"
     assert project.cloud_colored is True
-    text = "\n".join(project.describe())
-    assert "farbige Wolke bevorzugt" in text and "mit Farben" in text
+    assert project.color_source is None  # chosen cloud carries the colors
+    assert "mit Farben" in "\n".join(project.describe())
 
 
 def test_scan_project_dir_uncolored_single(tmp_path):
@@ -675,9 +678,10 @@ def test_unused_report_lists_files_with_reasons(tmp_path):
     (root / "kalib.xml").write_text("<x/>")
 
     project = scan_project_dir(root)
+    # Densest cloud is the geometry source, the colored one the color donor.
+    assert project.cloud.name == "wolke_uncolorized.ply"
+    assert project.color_source is not None
     report = "\n".join(project.unused_report())
-    # Unused, each with its reason:
-    assert "wolke_uncolorized.ply" in report and "Ranking" in report
     assert "aufnahme.bag" in report and "Rohaufnahme" in report
     assert "scanner.log" in report or "*.log" in report
     assert "Vorschau" in report or "Foto-Ordners" in report  # thumbs/t1.jpg
@@ -686,6 +690,7 @@ def test_unused_report_lists_files_with_reasons(tmp_path):
     # appear inside a REASON text, so check line starts):
     lines = project.unused_report()
     assert not any(l.startswith("wolke_colorized.ply") for l in lines)
+    assert not any(l.startswith("wolke_uncolorized.ply") for l in lines)
     assert "xyzopk.txt" not in report
     assert "trajectory.txt" not in report
     assert "f0.jpg" not in report and "*.jpg (3" not in report
@@ -790,3 +795,144 @@ def test_scan_project_dir_detects_calibration(tmp_path):
     assert "Kalibrierung" in lines and "1234" in lines
     used, reason = project._classify(info / "calibration.yaml")
     assert used and "Kalibrierung" in reason
+
+
+# ------------------------------------- best-model sources (Auftrag Stufe 1)
+
+def test_trajectory_s20_time_last_layout(tmp_path):
+    """x y z roll pitch yaw qx qy qz qw TIME → positions + time column."""
+    p = tmp_path / "trajectory.txt"
+    rows = []
+    for i in range(20):
+        t = 1741600000.0 + i * 0.1
+        rows.append(f"{1 + i * 0.5} {2.0} {1.5} 0 0 0 0 0 0 1 {t}")
+    p.write_text("\n".join(rows))
+    traj = read_trajectory(p)
+    assert traj.shape == (20, 4)
+    assert np.allclose(traj[0, :3], [1, 2, 1.5])
+    assert traj[0, 3] == 1741600000.0
+    assert np.all(np.diff(traj[:, 3]) > 0)
+
+
+def test_time_based_normal_orientation():
+    """Each point faces the scanner position at its capture time."""
+    from scantobim.core.cloud import PointCloud
+    from scantobim.core.preprocess import orient_normals_along_trajectory
+
+    # Scanner moves along +x above the floor; floor points sampled at the
+    # matching times. Sensor is ALWAYS overhead at that moment.
+    n = 200
+    t = np.linspace(0.0, 10.0, n)
+    pts = np.column_stack([t * 2.0, np.zeros(n), np.zeros(n)])
+    cloud = PointCloud(points=pts, times=1741600000.0 + t)
+    cloud.normals = np.tile([0.0, 0.0, -1.0], (n, 1))  # all pointing DOWN
+
+    traj = np.column_stack([
+        t * 2.0, np.zeros(n), np.full(n, 3.0), 1741600000.0 + t
+    ])
+    stats = {}
+    orient_normals_along_trajectory(cloud, traj, stats_out=stats)
+    assert stats["mode"] == "zeitbasiert"
+    assert np.all(cloud.normals[:, 2] > 0)  # flipped up toward the sensor
+
+
+def test_time_orientation_clock_offset_alignment():
+    """Constant clock offset between LAS gps_time and trajectory is bridged."""
+    from scantobim.core.cloud import PointCloud
+    from scantobim.core.preprocess import orient_normals_along_trajectory
+
+    n = 100
+    t = np.linspace(0.0, 10.0, n)
+    pts = np.column_stack([t, np.zeros(n), np.zeros(n)])
+    cloud = PointCloud(points=pts, times=5000.0 + t)  # different clock
+    cloud.normals = np.tile([0.0, 0.0, -1.0], (n, 1))
+    traj = np.column_stack([t, np.zeros(n), np.full(n, 2.0), 999000.0 + t])
+    stats = {}
+    orient_normals_along_trajectory(cloud, traj, stats_out=stats)
+    assert stats["mode"] == "zeitbasiert"
+    assert np.all(cloud.normals[:, 2] > 0)
+
+
+def test_densest_cloud_wins_with_color_transfer(tmp_path):
+    """20M-uncolorized beats 18M-colorized: geometry first, colors follow."""
+    root = tmp_path / "proj"
+    (root / "output").mkdir(parents=True)
+    _write_ply_cloud(root / "output" / "steuerhaus_uncolorized.ply", 20000, False)
+    _write_ply_cloud(root / "output" / "steuerhaus_colorized.ply", 18000, True)
+    project = scan_project_dir(root)
+    assert project.cloud.name == "steuerhaus_uncolorized.ply"
+    assert project.color_source is not None
+    assert project.color_source.name == "steuerhaus_colorized.ply"
+    assert "Geometriequelle" in (project.cloud_note or "")
+
+
+def test_read_imgpose_layouts(tmp_path):
+    from scantobim.photogrammetry.xyzopk import read_imgpose
+
+    p = tmp_path / "ImgPose.txt"
+    p.write_text(
+        "# name x y z qx qy qz qw time\n"
+        "foto_001.jpg 10.0 20.0 3.0 0.0 0.0 0.0 1.0 1741600000.5\n"
+        "1741600001.5 11.0 21.0 3.1 0.0 0.0 0.0 1.0 foto_002.jpg\n"
+    )
+    entries = read_imgpose(p)
+    assert len(entries) == 2
+    name, xyz, quat, t = entries[0]
+    assert name == "foto_001.jpg"
+    assert np.allclose(xyz, [10, 20, 3])
+    assert np.allclose(quat, [0, 0, 0, 1])
+    assert t == 1741600000.5
+    name2, xyz2, _q2, t2 = entries[1]
+    assert name2 == "foto_002.jpg"
+    assert np.allclose(xyz2, [11, 21, 3.1])
+    assert t2 == 1741600001.5
+
+
+def test_cameras_from_imgpose_quaternion(tmp_path):
+    """Quaternion poses recover the projection like the xyzopk path."""
+    PIL = pytest.importorskip("PIL.Image")
+    from scantobim.core.cloud import PointCloud
+    from scantobim.photogrammetry.xyzopk import cameras_from_imgpose
+
+    fx_true, W, H = 350.0, 400, 300
+
+    def field(x, y):
+        r = 50 + 100 * (x + 1) / 2
+        b = 120 + 100 * (y + 1) / 2
+        return np.stack([r, np.full_like(r, 80.0), b], axis=-1)
+
+    px, py = np.meshgrid(np.arange(W), np.arange(H))
+    photo = field((px - W / 2) * 5.0 / fx_true, (py - H / 2) * 5.0 / fx_true)
+    img_dir = tmp_path / "bilder"
+    img_dir.mkdir()
+    PIL.fromarray(photo.astype(np.uint8)).save(img_dir / "foto.png")
+
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([
+        rng.uniform(-1, 1, 20000), rng.uniform(-0.7, 0.7, 20000),
+        np.zeros(20000),
+    ])
+    cloud = PointCloud(
+        points=pts, colors=field(pts[:, 0], pts[:, 1]).astype(np.uint8)
+    )
+    # Camera at (0,0,-5) looking +z: R_colmap = I → identity quaternion.
+    ip = tmp_path / "ImgPose.txt"
+    ip.write_text("foto.png 0.0 0.0 -5.0 0.0 0.0 0.0 1.0 1741600000.0\n")
+
+    stats = {}
+    cams = cameras_from_imgpose(ip, img_dir, cloud, stats_out=stats)
+    assert len(cams) == 1
+    assert stats["score"] > 0.85
+    assert 290 < stats["fx"] < 440
+    assert stats["convention"].startswith("quaternion")
+
+
+def test_scan_project_dir_detects_imgpose(tmp_path):
+    root = _build_project(tmp_path, with_photos=True)
+    (root / "camera" / "ImgPose.txt").write_text(
+        "frame_0000.jpg 0 0 0 0 0 0 1 1.0\n"
+    )
+    project = scan_project_dir(root)
+    assert project.imgpose is not None
+    used, reason = project._classify(root / "camera" / "ImgPose.txt")
+    assert used and "Quaternionen" in reason

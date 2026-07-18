@@ -178,27 +178,72 @@ def estimate_normals(
     return cloud
 
 
+def _sensor_positions_by_time(
+    point_times: np.ndarray, traj_xyz: np.ndarray, traj_t: np.ndarray
+) -> np.ndarray | None:
+    """Scanner position at each point's capture time (clock-aligned interp).
+
+    LAS ``gps_time`` and the trajectory timestamps usually share a clock;
+    when they differ by a constant offset (adjusted GPS time vs. system
+    time), both are aligned at their start as long as the recording
+    durations agree. Returns None when the clocks cannot be reconciled —
+    the caller falls back to nearest-in-space orientation.
+    """
+    order = np.argsort(traj_t)
+    traj_t = traj_t[order]
+    traj_xyz = traj_xyz[order]
+    span_p = float(point_times.max() - point_times.min())
+    span_t = float(traj_t[-1] - traj_t[0])
+    if span_t <= 0 or span_p <= 0:
+        return None
+    overlap = min(point_times.max(), traj_t[-1]) - max(point_times.min(), traj_t[0])
+    t = point_times
+    if overlap < 0.5 * min(span_p, span_t):
+        # Constant clock offset: align both at their start — but only if
+        # the durations roughly agree (same recording).
+        if abs(span_p - span_t) > 0.25 * max(span_p, span_t):
+            return None
+        t = point_times - point_times.min() + traj_t[0]
+    return np.column_stack([
+        np.interp(t, traj_t, traj_xyz[:, 0]),
+        np.interp(t, traj_t, traj_xyz[:, 1]),
+        np.interp(t, traj_t, traj_xyz[:, 2]),
+    ])
+
+
 def orient_normals_along_trajectory(
-    cloud: PointCloud, trajectory: np.ndarray
+    cloud: PointCloud, trajectory: np.ndarray, stats_out: dict | None = None
 ) -> PointCloud:
-    """Flip normals to face the nearest scanner position on the trajectory.
+    """Flip normals to face the scanner position that saw each point.
 
     SLAM scanners (handheld/mobile mapping) record their path; every surface
-    was seen FROM that path, so the outward normal of each point faces its
-    nearest trajectory position. This removes the sign ambiguity of PCA
-    normals — RANSAC normal gates, cylinder detection and inside/outside
-    decisions all become more reliable on real scans.
+    was seen FROM that path. With per-point capture times (LAS ``gps_time``)
+    and a timestamped trajectory, each point faces the scanner position at
+    its EXACT moment of capture — robust where the path passes a facade
+    twice. Without times: nearest trajectory position in space, as before.
     """
     if cloud.normals is None:
         raise ValueError("estimate normals before orienting them")
-    traj = np.asarray(trajectory, dtype=np.float64).reshape(-1, 3)
+    traj = np.asarray(trajectory, dtype=np.float64)
+    if traj.ndim != 2:
+        traj = traj.reshape(-1, 3)
     if len(traj) == 0:
         return cloud
-    tree = cKDTree(traj)
-    _, nearest = tree.query(cloud.points, k=1, workers=-1)
-    to_sensor = traj[nearest] - cloud.points
+    positions = traj[:, :3]
+
+    sensor = None
+    if traj.shape[1] >= 4 and cloud.times is not None and len(traj) > 1:
+        sensor = _sensor_positions_by_time(cloud.times, positions, traj[:, 3])
+    mode = "zeitbasiert" if sensor is not None else "raeumlich"
+    if sensor is None:
+        tree = cKDTree(positions)
+        _, nearest = tree.query(cloud.points, k=1, workers=-1)
+        sensor = positions[nearest]
+    to_sensor = sensor - cloud.points
     flip = np.einsum("ij,ij->i", cloud.normals, to_sensor) < 0
     cloud.normals[flip] *= -1
+    if stats_out is not None:
+        stats_out["mode"] = mode
     return cloud
 
 

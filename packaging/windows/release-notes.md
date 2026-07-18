@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.10.0 — bestmögliches Netz: alle Informationsquellen des S20-Exports
+
+- **Dichteste Wolke als Geometriequelle**: `uncolorized.las` (20,0 Mio Punkte) schlägt jetzt `colorized.las` (18,1 Mio) — die farbige Wolke gewinnt nur noch, wenn sie praktisch gleich groß ist (≥95 %). Die Farben werden verlustarm von der farbigen Schwester übertragen. **+10 % echte Geometrie.**
+- **Normalen ZEIT-exakt orientiert**: LAS 1.4 trägt `gps_time` pro Punkt, die Trajektorie Zeitstempel @10 Hz — jeder Punkt zeigt jetzt zur Scannerposition **im Moment seiner Aufnahme** (interpoliert), nicht zur räumlich nächsten. Konstante Uhren-Versätze werden automatisch ausgeglichen; ohne Zeitstempel wie bisher räumlich. Wichtig, wo der Pfad zweimal an derselben Fassade vorbeiführt.
+- **Trajektorie-Format-Fix**: Das S20-Layout `x y z roll pitch yaw qx qy qz qw time` (Zeit HINTEN) wurde bisher falsch gelesen (Spaltenverwechslung!) — die Zeitspalte wird jetzt per Monotonie erkannt, vorn oder hinten.
+- **`ImgPose.txt` (Quaternionen) wird bevorzugt**: Quaternionen sind eindeutig — statt 8 Rotationskonventionen × 14 Brennweiten reichen wenige farb-validierte Kandidaten. Präzisere Posen → schärfere Foto-Textur. `xyzopk.txt` bleibt Fallback.
+- Hinweis POLYFISHEYE: Die Fisheye-Originale (left/right) werden weiterhin nicht direkt projiziert — Bildquelle bleibt der `undistort`-Ordner. Echtes Fisheye-Sampling ist der nächste geplante Schritt.
+
 ### Neu in 3.9.1 — Scanner-Kalibrierung wird genutzt (bestmögliches Modell aus dem Projektordner)
 
 - **`info/calibration.yaml` wird jetzt gelesen und verwendet**: Die Werks-Kalibrierung der Scanner-Kamera (echte Brennweite, Bildhauptpunkt) ersetzt das breite Raten der Selbstkalibrierung — gesucht wird nur noch ein schmales Band um den Werkswert, weiterhin farb-validiert am Scan. Ergebnis: **präzisere Foto-Projektion → schärfere Foto-Textur**, und schnellere Kalibrierung. Protokoll: „Brennweite … px (calibration.yaml)" und neue Zeile „Kalibrierung: info/calibration.yaml (fx=… px)". Beide gängigen Formate werden verstanden (flache fx/fy/cx/cy-Schlüssel und OpenCV-`camera_matrix`).

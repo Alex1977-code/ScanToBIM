@@ -22,12 +22,17 @@ class PointCloud:
     intensity:
         Optional ``(N,)`` float32 sensor intensity (normalized 0..1 when read
         from LAS).
+    times:
+        Optional ``(N,)`` float64 per-point acquisition time (LAS
+        ``gps_time``). Lets SLAM scans match every point to the scanner
+        pose at its exact moment of capture.
     """
 
     points: np.ndarray
     colors: np.ndarray | None = None
     normals: np.ndarray | None = None
     intensity: np.ndarray | None = None
+    times: np.ndarray | None = None
     source: str = field(default="", compare=False)
 
     def __post_init__(self) -> None:
@@ -47,6 +52,10 @@ class PointCloud:
             self.intensity = np.ascontiguousarray(self.intensity, dtype=np.float32)
             if self.intensity.shape != (n,):
                 raise ValueError("intensity must be (N,)")
+        if self.times is not None:
+            self.times = np.ascontiguousarray(self.times, dtype=np.float64)
+            if self.times.shape != (n,):
+                raise ValueError("times must be (N,)")
 
     def __len__(self) -> int:
         return len(self.points)
@@ -58,6 +67,7 @@ class PointCloud:
             colors=None if self.colors is None else self.colors[indices],
             normals=None if self.normals is None else self.normals[indices],
             intensity=None if self.intensity is None else self.intensity[indices],
+            times=None if self.times is None else self.times[indices],
             source=self.source,
         )
 

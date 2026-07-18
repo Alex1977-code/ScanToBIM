@@ -53,6 +53,73 @@ def read_xyzopk(path: str | Path) -> list[tuple[str, np.ndarray, np.ndarray]]:
     return entries
 
 
+def read_imgpose(path: str | Path):
+    """Parse an ImgPose file → ``[(name|None, xyz, quat(4), t|None)] …``.
+
+    SHARE S20 exports ``images/ImgPose.txt``: per photo a position, a unit
+    QUATERNION and a timestamp — unambiguous rotations, unlike Omega/Phi/
+    Kappa. The parser is layout-tolerant: the quaternion is found as the
+    first 4-number window with norm ≈ 1, the position as the 3 numbers
+    right before it (or after), the timestamp as the largest remaining
+    magnitude. The component ORDER (xyzw vs wxyz) stays open — the caller
+    resolves it by color-scoring both.
+    """
+    entries = []
+    for raw in Path(path).read_text(errors="replace").splitlines():
+        line = raw.strip().lstrip("#")
+        if not line:
+            continue
+        parts = line.replace(",", " ").replace(";", " ").split()
+        name = None
+        nums: list[float] = []
+        for tok in parts:
+            try:
+                nums.append(float(tok))
+            except ValueError:
+                if name is None:
+                    name = tok
+        if len(nums) < 7:
+            continue
+        arr = np.array(nums)
+        qi = None
+        for i in range(len(arr) - 3):
+            if 0.85 < float(np.linalg.norm(arr[i:i + 4])) < 1.15:
+                qi = i
+                break
+        if qi is None:
+            continue
+        quat = arr[qi:qi + 4].copy()
+        if qi >= 3:
+            xyz = arr[qi - 3:qi].copy()
+            used = set(range(qi - 3, qi + 4))
+        elif len(arr) >= qi + 7:
+            xyz = arr[qi + 4:qi + 7].copy()
+            used = set(range(qi, qi + 7))
+        else:
+            continue
+        rest = [v for j, v in enumerate(arr) if j not in used]
+        t = float(max(rest, key=abs)) if rest else None
+        entries.append((name, xyz, quat, t))
+    return entries
+
+
+def _quat_to_rot(q: np.ndarray, order: str) -> np.ndarray:
+    """Unit quaternion → rotation matrix; ``order`` is 'xyzw' or 'wxyz'."""
+    if order == "wxyz":
+        w, x, y, z = q
+    else:
+        x, y, z, w = q
+    n = np.sqrt(w * w + x * x + y * y + z * z)
+    if n < 1e-12:
+        return np.eye(3)
+    w, x, y, z = w / n, x / n, y / n, z / n
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
 def _rx(a: float) -> np.ndarray:
     c, s = np.cos(a), np.sin(a)
     return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
@@ -220,6 +287,165 @@ def cameras_from_xyzopk(
     return _build_cameras(
         entries, _conventions()[conv_name], fx, width, height, cx=cx, cy=cy
     )
+
+
+def cameras_from_imgpose(
+    path: str | Path,
+    images_dir: str | Path,
+    cloud,
+    stats_out: dict | None = None,
+    sample_points: int = 30_000,
+    probe_cameras: int = 8,
+    calibration: dict | None = None,
+) -> list[CameraPose]:
+    """ImgPose (quaternion) poses → calibrated ``CameraPose`` list.
+
+    Quaternions carry the full rotation — only component order (xyzw/wxyz),
+    world↔camera direction and the axis flip remain open (8 candidates
+    instead of the 8×14 sweep of the angle-based xyzopk path). Validated
+    by the same color scoring against the colorized cloud.
+    """
+    from scantobim.core.texture import _index_images
+
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "ImgPose-Kalibrierung benötigt Pillow: pip install scantobim[photos]"
+        ) from exc
+
+    raw = read_imgpose(path)
+    entries = [(n, xyz, quat) for n, xyz, quat, _t in raw if n is not None]
+    if not entries:
+        raise ValueError(
+            f"{path}: keine benannten Kameraposen gefunden (ImgPose ohne "
+            "Bildnamen — xyzopk wird verwendet)"
+        )
+    image_index = _index_images(Path(images_dir))
+
+    width = height = None
+    probe_photos: list[tuple[int, np.ndarray]] = []
+    step = max(1, len(entries) // probe_cameras)
+    for ei in range(0, len(entries), step):
+        name = entries[ei][0]
+        p = image_index.get(name) or image_index.get(Path(name).name)
+        if p is None:
+            for ext in (".jpg", ".jpeg", ".png"):
+                p = image_index.get(Path(name).stem + ext)
+                if p is not None:
+                    break
+        if p is None or not p.exists():
+            continue
+        img = np.asarray(Image.open(p).convert("RGB"))
+        if width is None:
+            height, width = img.shape[:2]
+        if img.shape[0] == height and img.shape[1] == width:
+            probe_photos.append((ei, img))
+        if len(probe_photos) >= probe_cameras:
+            break
+    if width is None:
+        raise ValueError(
+            f"{images_dir}: keine der ImgPose-Kameras hat ein auffindbares Foto"
+        )
+
+    pts = np.asarray(cloud.points, dtype=np.float64)
+    colors = cloud.colors
+    if len(pts) > sample_points:
+        rng = np.random.default_rng(0)
+        sel = rng.choice(len(pts), sample_points, replace=False)
+        pts = pts[sel]
+        colors = None if colors is None else colors[sel]
+
+    cx = cy = None
+    if calibration and calibration.get("fx"):
+        fx_grid = np.geomspace(0.85, 1.2, 5) * float(calibration["fx"])
+        cx = calibration.get("cx")
+        cy = calibration.get("cy")
+        intrinsics_source = "calibration.yaml"
+    else:
+        fx_grid = np.geomspace(0.35, 1.8, 10) * width
+        intrinsics_source = "selbstkalibriert"
+
+    def _candidates():
+        for order in ("xyzw", "wxyz"):
+            for transpose in (False, True):
+                for flip in (False, True):
+                    def build(q, _o=order, _t=transpose, _f=flip):
+                        rot = _quat_to_rot(q, _o)
+                        if _t:
+                            rot = rot.T
+                        if _f:
+                            rot = _D @ rot
+                        return rot
+                    yield f"{order}{'ᵀ' if transpose else ''}{'/flip' if flip else ''}", build
+
+    best = None  # (score, label, fx, rot_builder)
+    for label, build in _candidates():
+        rots = [build(q) for _n, _xyz, q in entries]
+        for fx in fx_grid:
+            score = _score_rotations(
+                entries, rots, float(fx), width, height,
+                probe_photos, pts, colors, cx=cx, cy=cy,
+            )
+            if best is None or score > best[0]:
+                best = (score, label, float(fx), rots)
+
+    score, label, fx, rots = best
+    if stats_out is not None:
+        stats_out["convention"] = f"quaternion {label}"
+        stats_out["fx"] = round(fx, 1)
+        stats_out["score"] = round(float(score), 4)
+        stats_out["cameras"] = len(entries)
+        stats_out["intrinsics_quelle"] = intrinsics_source
+    cams = []
+    for (name, xyz, _q), rot in zip(entries, rots):
+        cams.append(
+            CameraPose(
+                name=name, width=width, height=height,
+                fx=fx, fy=fx,
+                cx=width / 2.0 if cx is None else cx,
+                cy=height / 2.0 if cy is None else cy,
+                k1=0.0, rotation=rot, translation=-rot @ xyz,
+            )
+        )
+    return cams
+
+
+def _score_rotations(
+    entries, rots, fx, width, height, probe_photos, pts, colors,
+    cx: float | None = None, cy: float | None = None,
+) -> float:
+    """Like :func:`_score`, but with precomputed per-entry rotations."""
+    px0 = width / 2.0 if cx is None else cx
+    py0 = height / 2.0 if cy is None else cy
+    total = 0.0
+    n = 0
+    for ei, photo in probe_photos:
+        xyz = entries[ei][1]
+        rot = rots[ei]
+        pc = (pts - xyz) @ rot.T
+        in_front = pc[:, 2] > 0.2
+        if in_front.sum() < 50:
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            px = fx * pc[:, 0] / pc[:, 2] + px0
+            py = fx * pc[:, 1] / pc[:, 2] + py0
+        ok = in_front & (px >= 0) & (px <= width - 1) & (py >= 0) & (py <= height - 1)
+        if ok.sum() < 50:
+            continue
+        frac = float(ok.mean())
+        if colors is None:
+            total += frac
+            n += 1
+            continue
+        sy = py[ok].round().astype(int)
+        sx = px[ok].round().astype(int)
+        diff = np.abs(
+            photo[sy, sx].astype(np.float64) - colors[ok].astype(np.float64)
+        ).mean()
+        total += (1.0 - diff / 255.0) + 0.1 * frac
+        n += 1
+    return total / n if n else -1.0
 
 
 def _score(

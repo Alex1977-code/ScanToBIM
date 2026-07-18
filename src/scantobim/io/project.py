@@ -107,6 +107,7 @@ class SlamProject:
     color_source: Path | None = None
     colmap_model: Path | None = None
     xyzopk: Path | None = None
+    imgpose: Path | None = None
     calibration: Path | None = None
     calibration_data: dict | None = None
     images_dir: Path | None = None
@@ -144,7 +145,12 @@ class SlamProject:
                 f"Fotos:        {self.image_count} Bilder in "
                 f"{self.images_dir.relative_to(self.root)}"
             )
-        if self.colmap_model is None and self.xyzopk is not None:
+        if self.colmap_model is None and self.imgpose is not None:
+            lines.append(
+                f"Kameraposen:  {self.imgpose.relative_to(self.root)} "
+                "(ImgPose — Quaternionen, eindeutige Rotationen)"
+            )
+        elif self.colmap_model is None and self.xyzopk is not None:
             lines.append(
                 f"Kameraposen:  {self.xyzopk.relative_to(self.root)} "
                 "(xyzopk — Ausrichtung & Brennweite werden am Scan "
@@ -154,6 +160,7 @@ class SlamProject:
             self.images_dir is not None
             and self.colmap_model is None
             and self.xyzopk is None
+            and self.imgpose is None
         ):
             lines.append(
                 "Kameraposen:  NICHT gefunden — Foto-Projektion nicht möglich "
@@ -200,6 +207,8 @@ class SlamProject:
             return True, "Trajektorie (Normalen-Orientierung)"
         if f in self.traj_candidates:
             return False, "weitere Trajektorien-Datei — die größte wurde gewählt"
+        if f == self.imgpose:
+            return True, "Kameraposen (ImgPose — Quaternionen, bevorzugt)"
         if f == self.xyzopk:
             return True, "Kameraposen (xyzopk, selbstkalibriert)"
         if f == self.calibration:
@@ -307,6 +316,8 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
                 traj_candidates.append(e)
             elif ext == ".txt" and "xyzopk" in name:
                 project.xyzopk = e
+            elif ext == ".txt" and "imgpose" in name:
+                project.imgpose = e
             elif ext in (".yaml", ".yml") and "calib" in name:
                 calib_candidates.append(e)
         if n_images:
@@ -360,7 +371,12 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
         densest = max(info, key=weight)
         colored = [p for p in info if info[p][1] is True]
         best_colored = max(colored, key=weight) if colored else None
-        if best_colored is not None and weight(best_colored) >= 0.25 * weight(densest):
+        # Geometry first: the densest cloud wins unless the colored sibling
+        # is practically the same size (≥95%). SLAM exports pair e.g. a
+        # 20.0M uncolorized with an 18.1M colorized cloud — those extra 10%
+        # points are real geometry, and the colors transfer losslessly
+        # enough via nearest neighbour from the colored sibling.
+        if best_colored is not None and weight(best_colored) >= 0.95 * weight(densest):
             chosen = best_colored
             if chosen is not clouds[0]:
                 project.cloud_note = (
@@ -368,11 +384,12 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
                 )
         else:
             chosen = densest
-            if best_colored is not None:
+            if best_colored is not None and info[chosen][1] is not True:
                 project.color_source = best_colored
                 project.cloud_note = (
-                    f"dichteste Wolke gewählt — {best_colored.name} ist zwar "
-                    f"farbig, aber stark ausgedünnt"
+                    f"dichteste Wolke als Geometriequelle gewählt "
+                    f"({chosen.name}); Farben werden von "
+                    f"{best_colored.name} übertragen"
                 )
             elif chosen is not clouds[0]:
                 project.cloud_note = (
@@ -415,14 +432,17 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
 
 
 def read_trajectory(path: str | Path) -> np.ndarray:
-    """Read a scanner trajectory file → ``(N, 3)`` positions.
+    """Read a scanner trajectory file → ``(N, 3)`` or ``(N, 4)`` array.
 
-    Tolerant of the common export layouts:
+    Column 4 (when present) is the pose TIMESTAMP — it lets the pipeline
+    match every LAS point (``gps_time``) to the scanner position at its
+    exact moment of capture. Tolerant of the common export layouts:
 
-    * ``x y z``                              (plain path)
-    * ``time x y z [...]``                   (timestamped)
-    * ``time x y z qx qy qz qw``             (TUM / SLAM pose format)
+    * ``x y z``                                          (plain path)
+    * ``time x y z [qx qy qz qw]``                       (TUM / SLAM)
+    * ``x y z roll pitch yaw qx qy qz qw time``          (SHARE S20)
 
+    The time column is recognized by monotony — first OR last column.
     Comma or whitespace separated; comment/header lines are skipped.
     """
     path = Path(path)
@@ -444,11 +464,16 @@ def read_trajectory(path: str | Path) -> np.ndarray:
     n_cols = min(len(r) for r in rows)
     data = np.array([r[:n_cols] for r in rows])
 
-    if n_cols >= 8:
-        return data[:, 1:4]  # time x y z qx qy qz qw
+    def _monotonic(col: np.ndarray) -> bool:
+        return len(col) > 2 and bool(np.all(np.diff(col) >= 0)) and col[-1] > col[0]
+
     if n_cols >= 4:
-        first = data[:, 0]
-        if np.all(np.diff(first) >= 0) and len(first) > 2:
-            return data[:, 1:4]  # monotonic first column = time
+        first, last = data[:, 0], data[:, n_cols - 1]
+        # Time LAST (e.g. SHARE S20: x y z r p y qx qy qz qw time). A large
+        # magnitude separates true timestamps from a monotonic coordinate.
+        if _monotonic(last) and (n_cols >= 5 or np.abs(last).max() > 1e5):
+            return np.column_stack([data[:, 0:3], last])
+        if _monotonic(first):
+            return np.column_stack([data[:, 1:4], first])
         return data[:, 0:3]
     return data[:, 0:3]
