@@ -14,7 +14,7 @@ _PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ScanToBIM — Punktwolke zu 3D-Modell</title>
+<title>ScanToBIM v__VERSION__ — Punktwolke zu 3D-Modell</title>
 <style>
 :root{
   --bg:#0e1116; --panel:#161b23; --panel2:#1b212b; --line:#28303d;

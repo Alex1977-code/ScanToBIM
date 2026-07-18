@@ -1161,6 +1161,8 @@ def _print_gpu_status(report_extra: dict | None = None) -> None:
     from scantobim.core.accel import gpu_error, gpu_name
 
     print(f"ScanToBIM {__version__}")
+    if report_extra is not None:
+        report_extra["programm"] = f"ScanToBIM {__version__}"
     name = gpu_name()
     error = gpu_error()
     if name:

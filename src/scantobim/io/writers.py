@@ -69,7 +69,7 @@ def write_point_cloud(cloud: PointCloud, path: str | Path) -> Path:
 
 def _write_obj(mesh: Mesh, path: Path) -> None:
     textured = mesh.texture is not None and mesh.uvs is not None
-    lines = ["# ScanToBIM reconstruction"]
+    lines = [f"# {_generator()} reconstruction"]
     if textured:
         mtl_path = path.with_suffix(".mtl")
         png_path = path.with_name(path.stem + "_texture.png")
@@ -193,6 +193,12 @@ def _write_stl(mesh: Mesh, path: Path) -> None:
 
 # --------------------------------------------------------------------------- glTF / GLB
 
+def _generator() -> str:
+    from scantobim import __version__
+
+    return f"ScanToBIM {__version__}"
+
+
 def _write_glb(mesh: Mesh, path: Path) -> None:
     positions = mesh.vertices.astype(np.float32)
     normals = mesh.vertex_normals().astype(np.float32)
@@ -265,7 +271,7 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
         "doubleSided": True,
     }
     gltf = {
-        "asset": {"version": "2.0", "generator": "ScanToBIM"},
+        "asset": {"version": "2.0", "generator": _generator()},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0, "name": "scan_model"}],

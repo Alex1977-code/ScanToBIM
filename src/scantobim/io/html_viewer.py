@@ -60,7 +60,7 @@ def extract_crease_edges(mesh: Mesh, dihedral_deg: float = 25.0) -> np.ndarray:
 def write_html_viewer(
     mesh: Mesh,
     path: str | Path,
-    title: str = "ScanToBIM Modell",
+    title: str | None = None,
     points=None,
     freeform: Mesh | None = None,
     freeform_label: str = "Freiform-Restgeometrie",
@@ -73,6 +73,10 @@ def write_html_viewer(
     skin of the residual) as a toggleable second mesh layer with vertex
     colors — so railings, steel members and other unmodelled structure stay
     visible next to the parametric surfaces."""
+    if title is None:
+        from scantobim import __version__
+
+        title = f"ScanToBIM {__version__} — Modell"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 

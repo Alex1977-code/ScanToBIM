@@ -4,6 +4,10 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.7.2 — Programmname mit Versionsnummer überall
+
+- **„ScanToBIM v3.7.2" steht jetzt überall**, wo das Programm sich meldet: Browser-Tab-Titel der Oberfläche, Kopfzeile des 3D-Viewers (`<name>.html`), `bericht.json` (Feld `programm`), GLB-Metadaten (`generator`), OBJ-Kopfzeile — zusätzlich zur ersten Protokollzeile und dem Versions-Badge im GUI-Kopf.
+
 ### Neu in 3.7.1 — eindeutige Diagnose
 
 - Das Protokoll beginnt jetzt mit **„ScanToBIM 3.7.1"** — damit ist sofort sichtbar, welche Version wirklich läuft (Verwechslung mit einem älteren entpackten Zip ausgeschlossen).
