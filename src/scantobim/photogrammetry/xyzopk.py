@@ -200,13 +200,16 @@ def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
 
     best = None  # (residual, label, scale, r, t)
     residuals_report: dict[str, float] = {}
+    scales_report: dict[str, float] = {}
     for label, src, dst in hypotheses:
         for with_scale, suffix in ((False, ""), (True, "+skalierung")):
             scale, r, t, residual = _fit_similarity(src, dst, with_scale)
-            if with_scale and not (0.001 <= scale <= 1000.0):
-                continue  # no plausible unit factor
+            if with_scale and not (1e-7 <= scale <= 1e7):
+                continue
             key = label + suffix
             residuals_report[key] = round(residual, 3)
+            if with_scale:
+                scales_report[key] = round(scale, 6)
             # Strict improvement only — hypotheses are ordered by prior
             # plausibility (time first), ties must not flip to reversed
             # pairings on symmetric paths.
@@ -221,6 +224,7 @@ def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
     # 0.6 m on a 2 m path is a coincidence.
     extent = float(np.linalg.norm(txyz.max(axis=0) - txyz.min(axis=0)))
     gate = min(1.0, max(0.15, 0.02 * extent))
+    ext_img = float(np.linalg.norm(xyz.max(axis=0) - xyz.min(axis=0)))
     if residual > gate:
         if stats_out is not None:
             stats_out["posen_ausrichtung"] = {
@@ -229,6 +233,15 @@ def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
                 "versatz_m": round(offset, 1),
                 "zuordnung": label,
                 "residuen_aller_hypothesen_m": residuals_report,
+                "skalierungen_der_hypothesen": scales_report,
+                "ausdehnung_imgpose": round(ext_img, 3),
+                "ausdehnung_trajektorie_m": round(extent, 2),
+                "imgpose_beispiel_xyz": [
+                    round(float(v), 4) for v in xyz[0]
+                ],
+                "trajektorie_beispiel_xyz": [
+                    round(float(v), 4) for v in txyz[0]
+                ],
             }
         return raw, None
     aligned = [
@@ -522,6 +535,30 @@ def cameras_from_imgpose(
         ) from exc
 
     raw = read_imgpose(path)
+    # Format transparency: the report carries the raw file head and how it
+    # was parsed — format surprises become visible in ONE run instead of
+    # surviving whole release cycles.
+    if stats_out is not None:
+        try:
+            head: list[str] = []
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        head.append(line[:220])
+                    if len(head) >= 2:
+                        break
+            stats_out["imgpose_kopf"] = head
+        except OSError:
+            pass
+        if raw:
+            n0, xyz0, q0, t0 = raw[0]
+            stats_out["imgpose_geparst"] = {
+                "name": n0,
+                "xyz": [round(float(v), 4) for v in np.asarray(xyz0)],
+                "quat": [round(float(v), 4) for v in np.asarray(q0)],
+                "zeit": None if t0 is None else float(t0),
+            }
     # ImgPose frames are not guaranteed to match the cloud frame — register
     # the photo path onto the scanner trajectory first (rigid, gated by
     # residual). Without this the observed S20 export put every camera

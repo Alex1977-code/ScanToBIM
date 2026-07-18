@@ -4,6 +4,16 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.20.1 — Format-Röntgenbild: der Bericht zeigt jetzt, WIE ImgPose gelesen wird
+
+Die Hypothesen-Tabelle aus 3.20 spricht eine klare Sprache: ALLE starren Zuordnungen landen bei ~130 m Residuum, alle Skalierungs-Fits bei ~12 m — die ImgPose-„Positionen" haben eine völlig andere Größenordnung/Gestalt als der Laufweg. Das ist kein Versatz mehr, sondern ein Format-Thema (andere Spaltenbelegung oder geographische Koordinaten). Statt weiter zu raten, legt diese Version das Format offen:
+
+- **`imgpose_kopf`**: die ersten Rohzeilen der ImgPose.txt (gekürzt) stehen jetzt im Bericht — die Spaltenstruktur ist damit direkt sichtbar.
+- **`imgpose_geparst`**: wie die erste Zeile interpretiert wurde (Name, xyz, Quaternion, Zeit) — Fehlgriffe der Format-Erkennung fallen sofort auf.
+- **`posen_ausrichtung`** nennt zusätzlich die **Pfad-Ausdehnung beider Systeme**, je ein Beispiel-Koordinatentripel und die **gefitteten Skalierungen aller Hypothesen** — Grad↔Meter, Millimeter↔Meter oder vertauschte Spalten sind daran auf einen Blick erkennbar.
+
+Ein Lauf mit 3.20.1 liefert damit alles, um die Posen-Registrierung exakt auf das echte Format zu setzen — ohne weitere Verdachts-Releases.
+
 ### Neu in 3.20.0 — Posen-Registrierung mit allen Hypothesen: der Bericht zeigte, warum 3.19 nicht griff
 
 Der 3.19-Lauf hat geliefert, was er sollte — die Diagnose: `posen_ausrichtung: angewendet=false, residuum 130,8 m, zuordnung "zeit"`. Die Registrierung LIEF, aber die Zeit-Zuordnung erzeugte falsche Punktpaare (Foto-Zeiten außerhalb des Trajektorien-Fensters werden von der Interpolation ans Ende geklemmt — viele-zu-eins-Paare vergiften den Fit), und der Bogenlängen-Fallback kam nie zum Zug, weil die Zeit-Zuordnung formal „funktionierte".
