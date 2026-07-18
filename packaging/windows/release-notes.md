@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.9.0 — EINE Version: GPU mit automatischem CPU-Fallback
+
+- **Nur noch ein Download**: `scantobim-windows-x64.zip` enthält jetzt immer die GPU-Unterstützung (CUDA-Laufzeit gebündelt) und fällt ohne NVIDIA-Karte automatisch auf die CPU zurück. Der bisherige Link `…-gpu.zip` bleibt gültig und liefert dieselbe Datei. Kein Rätselraten mehr, welche Version läuft.
+- **GPU-Nutzung schwarz auf weiß**: Am Ende jedes Laufs listet das Protokoll, was die Grafikkarte wirklich gerechnet hat — z. B. „GPU-Nutzung: Normalen für 15,6 Mio Punkte · 4 Voxel-Sortierungen (84 Mio Schlüssel) · 3 weitere GPU-Läufe" (auch im Bericht als `gpu_nutzung`).
+- **Task-Manager-Hinweis direkt im Protokoll**: CUDA-Last erscheint im Task-Manager unter dem Diagramm **„CUDA"/„Compute_0"** — nicht unter „3D". Deshalb wirkt die GPU dort scheinbar untätig, obwohl sie rechnet.
+- Die kosmetische CuPy-Warnung „CUDA path could not be detected" ist unterdrückt — mit der gebündelten Laufzeit ist sie bedeutungslos und hat nur verwirrt.
+- Die GPU-Tiefendiagnose läuft nur noch einmal pro Programmstart (Caching).
+
 ### Neu in 3.8.6 — GPU-Grundursache gefunden und behoben: fehlendes `graphlib`
 
 - **Das neue Release-Gate hat die eigentliche Ursache aller GPU-Fehlstarts seit 3.6.0 gefangen**: CuPy lädt das Python-Standardmodul `graphlib` dynamisch — PyInstallers Abhängigkeits-Scan übersah es, im Exe fehlte es, der CuPy-Import brach ab (`ModuleNotFoundError: No module named 'graphlib'`). Treiber, Karte und CUDA-DLLs waren die ganze Zeit in Ordnung. Das Modul wird jetzt explizit mitgebündelt; das Gate lässt nur noch Builds durch, in denen `import cupy` im fertigen Exe nachweislich gelingt.

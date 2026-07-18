@@ -22,8 +22,14 @@ def _section(lines: list[str], title: str) -> None:
     lines += ["", f"[{title}]", "-" * (len(title) + 4)]
 
 
-def build_gpu_diagnosis() -> str:
-    """Compose the full diagnosis text (never raises)."""
+_cached_text: str | None = None
+
+
+def build_gpu_diagnosis(refresh: bool = False) -> str:
+    """Compose the full diagnosis text (never raises; cached per process)."""
+    global _cached_text
+    if _cached_text is not None and not refresh:
+        return _cached_text
     from scantobim import __version__
     from scantobim.core import accel
 
@@ -182,7 +188,8 @@ def build_gpu_diagnosis() -> str:
         lines.append(f"nvidia-smi Fehler: {exc}")
 
     lines += ["", "Ende der Diagnose.", ""]
-    return "\n".join(lines)
+    _cached_text = "\n".join(lines)
+    return _cached_text
 
 
 def write_gpu_diagnosis(directory: Path | str | None = None) -> Path | None:

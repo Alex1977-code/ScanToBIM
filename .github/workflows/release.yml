@@ -16,13 +16,6 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        include:
-          - variant: cpu
-            suffix: ""
-          - variant: gpu
-            suffix: "-gpu"
     steps:
       - uses: actions/checkout@v4
 
@@ -34,14 +27,14 @@ jobs:
       - name: Install
         run: pip install .[laz,photos,e57] pyinstaller
 
-      - name: Install CUDA backend (GPU-Variante)
-        if: matrix.variant == 'gpu'
-        # Die nvidia-Wheels liefern cudart + NVRTC mit — auf dem Zielrechner
-        # genügt dann der normale NVIDIA-Treiber (kein CUDA-Toolkit nötig).
+      - name: Install CUDA backend (GPU mit CPU-Fallback)
+        # Eine einzige Version: CuPy + CUDA-Laufzeit sind immer dabei;
+        # ohne NVIDIA-Karte fällt jede GPU-Operation transparent auf die
+        # CPU zurück. Die nvidia-Wheels liefern cudart + NVRTC mit — auf
+        # dem Zielrechner genügt der normale Grafiktreiber.
         run: pip install cupy-cuda12x nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12
 
       - name: Run test suite
-        if: matrix.variant == 'cpu'
         run: |
           pip install pytest
           pytest -q
@@ -49,21 +42,18 @@ jobs:
       - name: Build exe
         shell: bash
         run: |
-          EXTRA=""
-          if [ "${{ matrix.variant }}" = "gpu" ]; then
-            NVDIR=$(python -c "import nvidia, pathlib; print(pathlib.Path(list(nvidia.__path__)[0]).as_posix())")
-            echo "CUDA-Runtime-Wheels: $NVDIR"
-            # --hidden-import graphlib: Stdlib-Modul, das CuPy dynamisch lädt —
-            # PyInstallers Scan übersieht es, ohne bricht der CuPy-Import im Exe.
-            EXTRA="--collect-all cupy --collect-all cupyx --collect-all cupy_backends --collect-all fastrlock --hidden-import graphlib --add-data $NVDIR;nvidia"
-            # Die CUDA-DLLs zusätzlich ins Paket-Stammverzeichnis legen:
-            # PyInstaller registriert _MEIPASS selbst per add_dll_directory,
-            # damit lösen CuPys pyd-Abhängigkeiten ohne jede Eigenlogik auf.
-            for dll in "$NVDIR"/*/bin/*.dll; do
-              echo "  bundle: $dll"
-              EXTRA="$EXTRA --add-binary $dll;."
-            done
-          fi
+          NVDIR=$(python -c "import nvidia, pathlib; print(pathlib.Path(list(nvidia.__path__)[0]).as_posix())")
+          echo "CUDA-Runtime-Wheels: $NVDIR"
+          # --hidden-import graphlib: Stdlib-Modul, das CuPy dynamisch lädt —
+          # PyInstallers Scan übersieht es, ohne bricht der CuPy-Import im Exe.
+          EXTRA="--collect-all cupy --collect-all cupyx --collect-all cupy_backends --collect-all fastrlock --hidden-import graphlib --add-data $NVDIR;nvidia"
+          # Die CUDA-DLLs zusätzlich ins Paket-Stammverzeichnis legen:
+          # PyInstaller registriert _MEIPASS selbst per add_dll_directory,
+          # damit lösen CuPys pyd-Abhängigkeiten ohne jede Eigenlogik auf.
+          for dll in "$NVDIR"/*/bin/*.dll; do
+            echo "  bundle: $dll"
+            EXTRA="$EXTRA --add-binary $dll;."
+          done
           pyinstaller --onefile --console --name scantobim \
             --collect-all laspy --collect-all lazrs --collect-all pye57 \
             $EXTRA \
@@ -107,12 +97,11 @@ jobs:
           print("smoke test OK:", report["planes"], "planes,", angles)
           EOF
 
-      - name: Verify CUDA chain inside the exe (GPU-Variante)
-        if: matrix.variant == 'gpu'
+      - name: Verify CUDA chain inside the exe
         shell: bash
         # Führt die GPU-Diagnose IM fertigen Exe aus. Der Runner hat keine
         # NVIDIA-Karte — aber 'import cupy: OK' muss gelingen, sonst ist
-        # das GPU-Paket kaputt und darf nicht veröffentlicht werden.
+        # das Paket kaputt und darf nicht veröffentlicht werden.
         run: |
           ./dist/scantobim.exe gpu -o .
           echo "================ gpu_diagnose.txt ================"
@@ -121,7 +110,6 @@ jobs:
           grep -q "import cupy: OK" gpu_diagnose.txt
 
       - uses: actions/upload-artifact@v4
-        if: matrix.variant == 'gpu'
         with:
           name: gpu-diagnose
           path: gpu_diagnose.txt
@@ -133,15 +121,19 @@ jobs:
           cp dist/scantobim.exe pkg/
           cp packaging/windows/LIESMICH.txt pkg/
           cp LICENSE pkg/LICENSE.txt
-          NAME="scantobim-windows-x64${{ matrix.suffix }}"
+          NAME="scantobim-windows-x64"
           cd pkg && 7z a "../$NAME.zip" . && cd ..
           sha256sum "$NAME.zip" > "$NAME.zip.sha256"
-          ls -la "$NAME.zip"*
+          # Link-Kompatibilität: dieselbe Datei auch unter dem alten
+          # GPU-Namen anbieten (beide latest-Links bleiben gültig).
+          cp "$NAME.zip" "$NAME-gpu.zip"
+          sha256sum "$NAME-gpu.zip" > "$NAME-gpu.zip.sha256"
+          ls -la "$NAME"*.zip*
 
       - uses: actions/upload-artifact@v4
         with:
-          name: scantobim-windows-x64${{ matrix.suffix }}
-          path: scantobim-windows-x64${{ matrix.suffix }}.zip*
+          name: scantobim-windows-x64
+          path: scantobim-windows-x64*.zip*
 
       - name: Create GitHub release
         shell: bash
@@ -149,11 +141,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          NAME="scantobim-windows-x64${{ matrix.suffix }}"
+          NAME="scantobim-windows-x64"
           gh release create "$TAG" \
             --target "$GITHUB_SHA" \
             --latest \
             --title "ScanToBIM $TAG (Windows)" \
             --notes-file packaging/windows/release-notes.md \
             "$NAME.zip" "$NAME.zip.sha256" \
-          || gh release upload "$TAG" "$NAME.zip" "$NAME.zip.sha256" --clobber
+            "$NAME-gpu.zip" "$NAME-gpu.zip.sha256" \
+          || gh release upload "$TAG" \
+            "$NAME.zip" "$NAME.zip.sha256" \
+            "$NAME-gpu.zip" "$NAME-gpu.zip.sha256" --clobber

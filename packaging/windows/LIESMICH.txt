@@ -5,6 +5,13 @@ Punktwolken & Fotos -> 3D-Modelle mit sauberen Kanten.
 Keine Installation noetig: scantobim.exe ist eigenstaendig
 (Python ist NICHT erforderlich).
 
+EINE Version fuer alle Rechner: Mit NVIDIA-Grafikkarte rechnet
+CUDA (Laufzeit ist gebuendelt, normaler Treiber genuegt), ohne
+laeuft alles automatisch auf der CPU. Der GPU-Status steht in der
+Kopfzeile der Oberflaeche und in der ersten Protokollzeile;
+Task-Manager zeigt CUDA-Last im Diagramm "CUDA"/"Compute_0"
+(NICHT unter "3D").
+
 Erster Start / Windows-Warnung "schaedlich"
 -------------------------------------------
 Windows SmartScreen warnt bei heruntergeladenen, nicht code-signierten

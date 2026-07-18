@@ -299,6 +299,9 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
         write_mesh(full_mesh, outdir / "komplett.glb")
         print("geschrieben: komplett.glb (Komplett-Mesh, volle Auflösung)")
         rep = {"input_points": len(cloud), **report_extra}
+        from scantobim.cli import _print_gpu_usage
+
+        _print_gpu_usage(rep)
         (outdir / "bericht.json").write_text(
             json.dumps(rep, indent=2, default=_json_default)
         )
@@ -385,6 +388,9 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             views_dir=(outdir / "ansichten") if opts.get("views") else None,
         )
         print("geschrieben: pruefbericht.html")
+    from scantobim.cli import _print_gpu_usage
+
+    _print_gpu_usage(rep)
     (outdir / "bericht.json").write_text(
         json.dumps(rep, indent=2, default=_json_default)
     )

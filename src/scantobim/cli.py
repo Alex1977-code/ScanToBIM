@@ -797,6 +797,7 @@ def _cmd_reconstruct(args) -> int:
         )
         print(f"wrote {out} (druckfertiger Prüfbericht)")
 
+    _print_gpu_usage(rep)
     if args.report is not None:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(rep, indent=2, default=_json_default))
@@ -1130,6 +1131,7 @@ def _cmd_project(args) -> int:
         )
         print(f"wrote {out} (druckfertiger Prüfbericht)")
 
+    _print_gpu_usage(rep)
     report_path = args.report or output.with_name(output.stem + "_bericht.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(rep, indent=2, default=_json_default))
@@ -1178,12 +1180,38 @@ def _cmd_gpu(args) -> int:
     """Print the deep GPU/CUDA diagnosis and write gpu_diagnose.txt."""
     from scantobim.core.gpudiag import build_gpu_diagnosis, write_gpu_diagnosis
 
-    text = build_gpu_diagnosis()
+    text = build_gpu_diagnosis(refresh=True)
     print(text)
     path = write_gpu_diagnosis(args.output)
     if path is not None:
         print(f"wrote {path}")
     return 0
+
+
+def _print_gpu_usage(rep: dict | None = None) -> None:
+    """End-of-run proof of what the GPU actually computed."""
+    from scantobim.core.accel import gpu_name, gpu_usage
+
+    if not gpu_name():
+        return
+    u = gpu_usage()
+    parts = []
+    if u.get("normalen_punkte"):
+        parts.append(f"Normalen für {u['normalen_punkte'] / 1e6:.1f} Mio Punkte")
+    if u.get("sortier_laeufe"):
+        parts.append(
+            f"{int(u['sortier_laeufe'])} Voxel-Sortierungen "
+            f"({u.get('sortier_schluessel', 0) / 1e6:.0f} Mio Schlüssel)"
+        )
+    if u.get("weitere_laeufe"):
+        parts.append(f"{int(u['weitere_laeufe'])} weitere GPU-Läufe")
+    if parts:
+        print("GPU-Nutzung: " + " · ".join(parts))
+    else:
+        print("GPU-Nutzung: keine GPU-tauglichen Schritte in diesem Lauf "
+              "(Wolke zu klein) — die CPU hat alles übernommen")
+    if rep is not None:
+        rep["gpu_nutzung"] = u
 
 
 def _copy_diagnosis(report_extra: dict, target_dir: Path) -> None:
@@ -1222,6 +1250,8 @@ def _print_gpu_status(
     error = gpu_error()
     if name:
         print(f"GPU: {name} — CUDA-Beschleunigung aktiv")
+        print("  (Task-Manager zeigt CUDA-Last im Diagramm 'CUDA' bzw. "
+              "'Compute_0' — NICHT unter '3D')")
     elif error:
         print(f"GPU: CUDA nicht nutzbar ({error}) — CPU-Modus")
         low = error.lower()
@@ -1420,6 +1450,7 @@ def _write_full_only(output, full_mesh, full_viewer, report, report_path) -> int
     glb = output.with_name(output.stem + "_komplett.glb")
     write_mesh(full_mesh, glb)
     print(f"wrote {glb} (Komplett-Mesh, volle Auflösung)")
+    _print_gpu_usage(report)
     if report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, default=_json_default))

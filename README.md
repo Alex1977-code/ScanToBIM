@@ -311,13 +311,13 @@ CAD-Geometrie an.
 
 ## Download (Windows)
 
-Direktlinks — zeigen immer auf die **neueste Version**:
+**Eine Version für alle**: GPU-beschleunigt (NVIDIA CUDA) mit automatischem
+CPU-Fallback — mit NVIDIA-Karte rechnet die Grafikkarte (CUDA-Laufzeit ist
+gebündelt, der normale Grafiktreiber genügt), ohne läuft alles auf der CPU.
+Direktlink — zeigt immer auf die **neueste Version**:
 
-- **GPU-Version** (NVIDIA-Grafikkarte, CUDA-beschleunigt — die CUDA-Laufzeit
-  ist gebündelt, es genügt der normale Grafiktreiber):
-  <https://github.com/Alex1977-code/ScanToBIM/releases/latest/download/scantobim-windows-x64-gpu.zip>
-- CPU-Version (läuft überall, ohne CUDA):
-  <https://github.com/Alex1977-code/ScanToBIM/releases/latest/download/scantobim-windows-x64.zip>
+- <https://github.com/Alex1977-code/ScanToBIM/releases/latest/download/scantobim-windows-x64.zip>
+  (der frühere Link `…-gpu.zip` liefert dieselbe Datei)
 
 Zip entpacken und `scantobim.exe` nutzen – keine Installation, kein Python
 nötig. Alle Versionen mit Änderungsnotizen auf der

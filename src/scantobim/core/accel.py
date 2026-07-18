@@ -181,7 +181,15 @@ def _import_cupy():
 
     os.add_dll_directory = _forgiving
     try:
-        import cupy
+        import warnings
+
+        with warnings.catch_warnings():
+            # Cosmetic with the bundled runtime: CuPy warns when it cannot
+            # find a CUDA *Toolkit* installation — ours comes from wheels.
+            warnings.filterwarnings(
+                "ignore", message="CUDA path could not be detected"
+            )
+            import cupy
 
         return cupy
     finally:
@@ -234,10 +242,24 @@ def gpu_name() -> str | None:
     return _name
 
 
+_usage: dict[str, float] = {}
+
+
+def _note(kind: str, n: float = 1) -> None:
+    _usage[kind] = _usage.get(kind, 0) + n
+
+
+def gpu_usage() -> dict:
+    """What actually ran on the GPU this process (for the protokoll)."""
+    return dict(_usage)
+
+
 def xp_for(n_elements: int, min_gpu: int = 1_000_000):
     """Array module for a workload of ``n_elements``: cupy or numpy."""
     cp = gpu()
     if cp is not None and n_elements >= min_gpu:
+        _note("weitere_laeufe")
+        _note("weitere_elemente", n_elements)
         return cp
     return np
 
@@ -260,6 +282,8 @@ def unique_i64(
     cp = gpu()
     if cp is not None and len(keys) >= min_gpu:
         try:
+            _note("sortier_laeufe")
+            _note("sortier_schluessel", len(keys))
             res = cp.unique(
                 cp.asarray(keys),
                 return_index=return_index,
@@ -401,6 +425,7 @@ def pca_normals(points: np.ndarray, idx: np.ndarray, min_gpu: int = 1_000_000):
                 (z * z).sum(axis=1),
             )
             out[s:s + chunk] = cp.asnumpy(normals).astype(np.float64)
+        _note("normalen_punkte", n)
         return out
     except Exception:
         return None

@@ -32,6 +32,16 @@ def test_xp_for_and_asnumpy_cpu():
     assert accel.asnumpy(a) is a
 
 
+def test_gpu_usage_counters():
+    before = accel.gpu_usage()
+    accel._note("normalen_punkte", 1000)
+    accel._note("sortier_laeufe")
+    after = accel.gpu_usage()
+    assert after["normalen_punkte"] == before.get("normalen_punkte", 0) + 1000
+    assert after["sortier_laeufe"] == before.get("sortier_laeufe", 0) + 1
+    assert isinstance(after, dict) and after is not accel._usage  # copy
+
+
 def test_is_cupy_missing_only_for_whole_package():
     assert accel._is_cupy_missing("No module named 'cupy'")
     assert accel._is_cupy_missing("No module named cupy")
