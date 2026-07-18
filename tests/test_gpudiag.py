@@ -35,6 +35,26 @@ def test_cli_gpu_command(tmp_path, capsys):
     assert (tmp_path / "gpu_diagnose.txt").exists()
 
 
+def test_copy_diagnosis_into_user_folder(tmp_path):
+    """The GUI temp-dir diagnosis is mirrored next to the user's data."""
+    from scantobim.cli import _copy_diagnosis
+
+    src_dir = tmp_path / "job"
+    src_dir.mkdir()
+    (src_dir / "gpu_diagnose.txt").write_text("Diagnose", encoding="utf-8")
+    user_dir = tmp_path / "projekt"
+    user_dir.mkdir()
+
+    rep = {"gpu_diagnose": str(src_dir / "gpu_diagnose.txt")}
+    _copy_diagnosis(rep, user_dir)
+    assert (user_dir / "gpu_diagnose.txt").read_text(encoding="utf-8") == "Diagnose"
+    assert rep["gpu_diagnose"] == str(user_dir / "gpu_diagnose.txt")
+
+    # Same location → no-op; missing key → no-op.
+    _copy_diagnosis(rep, user_dir)
+    _copy_diagnosis({}, user_dir)
+
+
 def test_gpu_failure_writes_diagnosis_next_to_output(tmp_path, monkeypatch):
     """A failing GPU build drops gpu_diagnose.txt beside the results."""
     from scantobim import cli

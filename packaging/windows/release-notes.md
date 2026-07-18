@@ -4,6 +4,10 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.8.3 — GPU-Diagnose direkt im eigenen Ordner
+
+- Die `gpu_diagnose.txt` wird jetzt **zusätzlich in den Projekt- bzw. Scan-Ordner kopiert** — also dorthin, wo man sie sucht. (Die Oberfläche rechnet in einem versteckten Temp-Ordner; dort lag die Datei bisher nur im Download-Bereich.) Zur Erinnerung: Die Datei entsteht **nur bei einem GPU-Fehlstart** — läuft CUDA, gibt es sie absichtlich nicht.
+
 ### Neu in 3.8.2 — automatische GPU-Tiefendiagnose
 
 - **`gpu_diagnose.txt` wird bei jedem GPU-Fehlstart automatisch geschrieben** (neben die Ergebnisdateien; in der Oberfläche erscheint sie bei den Downloads). Sie testet jede Stufe der CUDA-Kette einzeln: Umgebungsvariablen (inkl. `CUDA_PATH`-Altlasten), die gebündelten Laufzeit-Dateien mit Fundort und Größe, jeden einzelnen DLL-Ladevorgang mit Windows-Fehlercode — **auch `nvcuda.dll`, also den NVIDIA-Treiber selbst, samt unterstützter CUDA-Version** —, den CuPy-Import mit vollständigem Traceback und die `nvidia-smi`-Ausgabe. Eine Datei, eine eindeutige Ursache.

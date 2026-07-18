@@ -623,6 +623,8 @@ def _cmd_reconstruct(args) -> int:
     # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
     report_extra: dict = {}
     _print_gpu_status(report_extra, diag_dir=args.output.parent)
+    if args.input:
+        _copy_diagnosis(report_extra, Path(args.input[0]).parent)
     full_mesh = full_viewer = None
     if (
         getattr(args, "freeform", True)
@@ -870,6 +872,7 @@ def _cmd_project(args) -> int:
     output = args.output or (args.directory / "scantobim_modell.html")
     report_extra: dict = {}
     _print_gpu_status(report_extra, diag_dir=output.parent)
+    _copy_diagnosis(report_extra, args.directory)
     full_mesh = full_viewer = None
     if getattr(args, "freeform", True):
         full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
@@ -1174,6 +1177,29 @@ def _cmd_gpu(args) -> int:
     if path is not None:
         print(f"wrote {path}")
     return 0
+
+
+def _copy_diagnosis(report_extra: dict, target_dir: Path) -> None:
+    """Mirror gpu_diagnose.txt into the user's own folder.
+
+    GUI jobs run in a hidden temp directory — the user looks next to their
+    scan data, so the diagnosis must land there too.
+    """
+    import shutil
+
+    diag = report_extra.get("gpu_diagnose")
+    if not diag:
+        return
+    src = Path(diag)
+    try:
+        target = Path(target_dir) / "gpu_diagnose.txt"
+        if src.resolve() == target.resolve():
+            return
+        shutil.copyfile(src, target)
+        print(f"  GPU-Diagnose auch hier: {target}")
+        report_extra["gpu_diagnose"] = str(target)
+    except OSError:
+        pass
 
 
 def _print_gpu_status(
