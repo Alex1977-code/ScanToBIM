@@ -4,6 +4,18 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.17.0 — Atlas-Packer neu gebaut: mm-Texel aus der Foto-GSD, mehrere Atlas-Seiten, plane Wände
+
+Umsetzung der Diagnose zum 3.16-Lauf (Atlas 12288×256, Texel weiter 6,2 cm, Foto-Anteil 49 %):
+
+- **Texelgröße kommt jetzt AUS DEN FOTOS**: Ziel-Texel = Foto-GSD der jeweils nächsten Kamera (Abstand ÷ Brennweite), geklemmt auf 3–25 mm. Vorher diktierten Flächensummen und Packdruck die Auflösung — beobachtet 6 cm Texel auf 4-mm-Fotos. Die Packung entscheidet nur noch über die Platzierung, nie über die Auflösung.
+- **Mehrere Atlas-Seiten pro Modell**: Reicht eine 8192²-Seite nicht, verteilt der neue Packer die Charts auf bis zu **4 quadratische Seiten** (glTF: ein Material + eine Textur je Seite; `_detail.glb`, HTML-Viewer und die „Speichern als"-Exporte tragen alle Seiten). Jede Seite wird auf ihren Inhalt beschnitten — keine 98 % leeren Riesen-Atlanten mehr (der 12288×256-Streifen von 3.16 war ein Packer-Defekt).
+- **Spiegelglatte Wände und Dächer**: Vor dem Detail-Meshing werden Punkte, die eindeutig zu EINER Strukturebene gehören, exakt auf diese Ebene projiziert (die Ebenen sind auf Bruchteile von Millimetern gefittet). Punkte an Kanten/Ecken (zwei Ebenen) bleiben unangetastet — nichts rundet ab. Protokoll: „Ebenen-Glättung: X Punkte exakt auf ihre Strukturebene projiziert".
+- **Störer abgetrennt**: Kleinst-Komponenten (Geländer-Fragmente, Masten-Reste, Sprenkel) fliegen aus dem Detail-Mesh — Protokoll nennt Anzahl und verbleibende Komponenten; im Komplett-Mesh bleibt alles erhalten. Das beseitigt die „Fransen" strukturell.
+- **Viewer: reduzierte Geometrie, volle Textur-Schärfe**: Die eingebettete Detail-Ansicht rechnet mit demselben GSD-Texel wie die große `_detail.glb` — weniger Dreiecke, aber gleiche Foto-Auflösung (der 3.16-Doppelverlust „913k Dreiecke + Mini-Atlas" ist behoben).
+- Oberfläche: Standard-Hinweise aus den Gruppen-Beschriftungen in Tooltips verschoben („Berechnung", „Zusatzauswertungen").
+- Nächster Schritt (angekündigt): Kanten-Fotoabgleich — Strukturkanten in die Fotos projizieren, an Subpixel-Gradienten ausrichten und die Mesh-Kanten darauf ziehen. Die Basis (scharfe, korrekt platzierte Texturen) liefert dieses Release.
+
 ### Neu in 3.16.0 — Textur-Auflösung ×10, Gebäude freigestellt, Detail-Mesh als Standard-Ansicht
 
 Umsetzung der verifizierten Fixliste zum 3.15-Lauf (6,2 cm/Texel, 3,6 statt 2 cm Raster, 18 % Foto-Anteil, Viewer zeigte das reduzierte Komplett-Mesh):

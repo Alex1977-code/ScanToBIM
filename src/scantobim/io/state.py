@@ -32,10 +32,19 @@ def _pack_mesh(mesh: Mesh | None) -> dict | None:
         "face_groups": mesh.face_groups,
         "group_names": mesh.group_names,
         "uvs": mesh.uvs,
+        "face_page": mesh.face_page,
         "texture": None,
         "texture_raw": None,
+        "texture_pages": None,
     }
-    if mesh.texture is not None:
+    if mesh.textures is not None and len(mesh.textures) > 1:
+        try:
+            from scantobim.io.teximg import encode_texture
+
+            d["texture_pages"] = [encode_texture(t) for t in mesh.textures]
+        except Exception:  # noqa: BLE001 — fall back to page 0 below
+            pass
+    if d["texture_pages"] is None and mesh.texture is not None:
         try:
             from scantobim.io.teximg import encode_texture
 
@@ -45,20 +54,30 @@ def _pack_mesh(mesh: Mesh | None) -> dict | None:
     return d
 
 
+def _decode_img(pair):
+    try:
+        import io as _io
+
+        from PIL import Image
+
+        data, _mime = pair
+        return np.asarray(Image.open(_io.BytesIO(data)).convert("RGB"))
+    except Exception:  # noqa: BLE001 — texture is optional for exports
+        return None
+
+
 def _unpack_mesh(d: dict | None) -> Mesh | None:
     if d is None:
         return None
+    textures = None
     texture = d.get("texture_raw")
+    if d.get("texture_pages") is not None:
+        pages = [_decode_img(p) for p in d["texture_pages"]]
+        if all(p is not None for p in pages):
+            textures = pages
+            texture = pages[0]
     if texture is None and d.get("texture") is not None:
-        try:
-            import io as _io
-
-            from PIL import Image
-
-            data, _mime = d["texture"]
-            texture = np.asarray(Image.open(_io.BytesIO(data)).convert("RGB"))
-        except Exception:  # noqa: BLE001 — texture is optional for exports
-            texture = None
+        texture = _decode_img(d["texture"])
     return Mesh(
         vertices=d["vertices"],
         faces=d["faces"],
@@ -67,6 +86,8 @@ def _unpack_mesh(d: dict | None) -> Mesh | None:
         group_names=d.get("group_names"),
         uvs=d.get("uvs"),
         texture=texture,
+        textures=textures,
+        face_page=d.get("face_page"),
     )
 
 

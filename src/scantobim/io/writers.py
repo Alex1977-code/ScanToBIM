@@ -208,6 +208,17 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
     indices = mesh.faces.astype(np.uint32).ravel()
 
     textured = mesh.texture is not None and mesh.uvs is not None
+    # Multi-page photo atlas → one primitive + material per page.
+    pages = (
+        mesh.textures
+        if (
+            textured
+            and mesh.textures is not None
+            and len(mesh.textures) > 1
+            and mesh.face_page is not None
+        )
+        else None
+    )
     colors = None
     if mesh.vertex_colors is not None and not textured:
         colors = (mesh.vertex_colors.astype(np.float32) / 255.0).astype(np.float32)
@@ -259,38 +270,56 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
         )
         attributes["TEXCOORD_0"] = len(accessors) - 1
 
-    idx_view = _add_view(indices.tobytes(), 34963)
-    accessors.append(
-        {"bufferView": idx_view, "componentType": 5125, "count": len(indices), "type": "SCALAR"}
-    )
+    def _material(idx: int) -> dict:
+        return {
+            "name": f"scan_surface_{idx}",
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+                "metallicFactor": 0.0,
+                "roughnessFactor": 0.9,
+            },
+            "doubleSided": True,
+        }
 
-    material = {
-        "name": "scan_surface",
-        "pbrMetallicRoughness": {
-            "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
-            "metallicFactor": 0.0,
-            "roughnessFactor": 0.9,
-        },
-        "doubleSided": True,
-    }
+    primitives = []
+    materials = []
+    prim_pages = []
+    if pages is not None:
+        # One index accessor + material per atlas page.
+        for p in range(len(pages)):
+            sel = mesh.faces[mesh.face_page == p].astype(np.uint32).ravel()
+            if not len(sel):
+                continue
+            iv = _add_view(sel.tobytes(), 34963)
+            accessors.append(
+                {"bufferView": iv, "componentType": 5125,
+                 "count": len(sel), "type": "SCALAR"}
+            )
+            primitives.append(
+                {"attributes": attributes, "indices": len(accessors) - 1,
+                 "material": len(materials), "mode": 4}
+            )
+            materials.append(_material(p))
+            prim_pages.append(p)
+    else:
+        idx_view = _add_view(indices.tobytes(), 34963)
+        accessors.append(
+            {"bufferView": idx_view, "componentType": 5125, "count": len(indices), "type": "SCALAR"}
+        )
+        primitives.append(
+            {"attributes": attributes, "indices": len(accessors) - 1,
+             "material": 0, "mode": 4}
+        )
+        materials.append(_material(0))
+        prim_pages.append(0)
+
     gltf = {
         "asset": {"version": "2.0", "generator": _generator()},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0, "name": "scan_model"}],
-        "meshes": [
-            {
-                "primitives": [
-                    {
-                        "attributes": attributes,
-                        "indices": len(accessors) - 1,
-                        "material": 0,
-                        "mode": 4,
-                    }
-                ]
-            }
-        ],
-        "materials": [material],
+        "meshes": [{"primitives": primitives}],
+        "materials": materials,
         "bufferViews": buffer_views,
         "accessors": accessors,
         "buffers": [{"byteLength": offset}],
@@ -298,17 +327,28 @@ def _write_glb(mesh: Mesh, path: Path) -> None:
     if textured:
         from scantobim.io.teximg import encode_texture
 
-        img_bytes, mime = encode_texture(mesh.texture)
-        img_view = len(buffer_views)
-        data = _pad(img_bytes)
-        buffer_views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(data)})
-        buffers.append(data)
-        offset += len(data)
+        images = pages if pages is not None else [mesh.texture]
+        gltf["images"] = []
+        gltf["textures"] = []
+        gltf["samplers"] = [
+            {"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}
+        ]
+        for ti, image in enumerate(images):
+            img_bytes, mime = encode_texture(image)
+            img_view = len(buffer_views)
+            data = _pad(img_bytes)
+            buffer_views.append(
+                {"buffer": 0, "byteOffset": offset, "byteLength": len(data)}
+            )
+            buffers.append(data)
+            offset += len(data)
+            gltf["images"].append({"bufferView": img_view, "mimeType": mime})
+            gltf["textures"].append({"sampler": 0, "source": ti})
+        for mi, page in enumerate(prim_pages):
+            materials[mi]["pbrMetallicRoughness"]["baseColorTexture"] = {
+                "index": page
+            }
         gltf["buffers"][0]["byteLength"] = offset
-        gltf["images"] = [{"bufferView": img_view, "mimeType": mime}]
-        gltf["samplers"] = [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}]
-        gltf["textures"] = [{"sampler": 0, "source": 0}]
-        material["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
 
     bin_chunk = b"".join(buffers)
     json_chunk = _pad(json.dumps(gltf, separators=(",", ":")).encode("utf-8"), b" ")

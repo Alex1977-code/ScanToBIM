@@ -265,13 +265,13 @@ button.ghost:hover{border-color:var(--accent)}
           überschreiben beides. Leere erweiterte Felder = Automatik.
         </div>
         <div style="margin-top:.6rem">
-          <div class="sel-label">Berechnung <span style="color:var(--ok)">(Standard: alle drei an — einfach so lassen)</span></div>
+          <div class="sel-label" title="Standard: alle drei an — für das beste Ergebnis einfach so lassen.">Berechnung</div>
           <label class="opt" title="Stufe 1: Der GESAMTE Scan wird als farbiges Dreiecksnetz rekonstruiert (komplett.glb) plus Detail-Mesh der Gebäuderegion (_detail.glb, 2 cm) — beide mit Foto-Atlas, wenn Fotos vorliegen."><input type="checkbox" id="freeform" checked> Komplett-Mesh + Detail-Mesh (fotorealistisch)</label>
           <label class="opt" title="Stufe 2: Ebenen, Kanten und Linien werden gesucht — liefert das Strukturmodell mit Maßen, Öffnungen, Bauteilklassen. Nur mit dieser Stufe sind die CAD/BIM-Exporte (STEP, IFC, DXF) möglich."><input type="checkbox" id="structure" checked> Strukturmodell: Ebenen &amp; Kanten, Maße, Öffnungen</label>
           <label class="opt" title="Textur des Strukturmodells: Fotos, sonst Punktfarben. Der Foto-Atlas von Komplett- und Detail-Mesh läuft davon unabhängig immer."><input type="checkbox" id="texture" checked> Strukturmodell texturieren</label>
         </div>
         <details style="margin-top:.4rem">
-          <summary class="sel-label" style="cursor:pointer">Zusatzauswertungen <span style="color:var(--muted)">(Standard: alle aus)</span></summary>
+          <summary class="sel-label" style="cursor:pointer" title="Optionale Auswertungen — standardmäßig alle aus.">Zusatzauswertungen</summary>
           <label class="opt" title="Schließt Scanschatten zu einem geschlossenen Volumenkörper — für Volumenermittlung."><input type="checkbox" id="watertight"> Wasserdichtes Volumenmodell (schließt Scanschatten)</label>
           <label class="opt"><input type="checkbox" id="align"> Achsen ausrichten, Boden auf Z=0</label>
           <label class="opt"><input type="checkbox" id="register"> Mehrere Scans automatisch registrieren (ICP)</label>

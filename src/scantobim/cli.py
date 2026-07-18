@@ -1674,6 +1674,42 @@ def _build_detail_mesh(cloud, result, raster: float):
             f"{len(cloud):,} Punkten (Abstand ≤ {band:.1f} m zu "
             f"Gebäudeflächen), Raster {raster * 100:.1f} cm …"
         )
+
+        # The plane fits know these surfaces to fractions of a millimeter —
+        # snapping their supporting points onto the plane BEFORE meshing
+        # removes the voxel/noise ripple on walls and roofs at the root.
+        # Points near TWO planes (edges, corners) stay untouched, so no
+        # corner gets rounded off.
+        pts = sub.points
+        claims = np.zeros(len(pts), dtype=np.int8)
+        offset = np.zeros(len(pts), dtype=np.float64)
+        normal_of = np.zeros((len(pts), 3), dtype=np.float64)
+        flat_tol = 0.035
+        for s in result.surfaces:
+            if getattr(s, "surface_class", "") == "terrain":
+                continue
+            n = np.asarray(s.normal, dtype=np.float64)
+            p0 = np.asarray(s.outer[0], dtype=np.float64)
+            lo_s = s.outer.min(axis=0) - 0.3
+            hi_s = s.outer.max(axis=0) + 0.3
+            box = np.all((pts >= lo_s) & (pts <= hi_s), axis=1)
+            if not box.any():
+                continue
+            d = (pts[box] - p0) @ n
+            near = np.abs(d) < flat_tol
+            idx = np.flatnonzero(box)[near]
+            claims[idx] += 1
+            offset[idx] = d[near]
+            normal_of[idx] = n
+        single = claims == 1
+        if single.any():
+            pts[single] -= offset[single, None] * normal_of[single]
+            print(
+                f"  Ebenen-Glättung: {int(single.sum()):,} Punkte "
+                f"({single.mean() * 100:.0f}%) exakt auf ihre "
+                "Strukturebene projiziert (Wände/Dächer plan)"
+            )
+
         detail = freeform_mesh_from_points(
             sub, voxel=float(raster), max_faces=12_000_000
         )
@@ -1692,10 +1728,70 @@ def _build_detail_mesh(cloud, result, raster: float):
         sharpen_mesh_with_planes(
             detail, result.surfaces, detail.freeform_stats["voxel"]
         )
+        detail = _strip_detail_clutter(detail)
         return detail, sub
     except Exception as exc:  # noqa: BLE001 — detail is a bonus layer
         print(f"  Detail-Mesh übersprungen ({exc})")
         return None
+
+
+def _strip_detail_clutter(detail):
+    """Drop tiny disconnected components (rail['s'], mast fragments, noise
+    speckles) from the detail mesh — the fringe-makers. They stay part of
+    the complete mesh; the detail mesh keeps the building plus every
+    component of meaningful size."""
+    try:
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+
+        faces = detail.faces
+        n_v = len(detail.vertices)
+        rows = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+        cols = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
+        graph = sparse.coo_matrix(
+            (np.ones(len(rows), dtype=np.int8), (rows, cols)),
+            shape=(n_v, n_v),
+        )
+        n_comp, labels = connected_components(graph, directed=False)
+        if n_comp <= 1:
+            return detail
+        face_label = labels[faces[:, 0]]
+        counts = np.bincount(face_label, minlength=n_comp)
+        min_faces = max(1_500, int(0.003 * len(faces)))
+        keep_comp = counts >= min_faces
+        if keep_comp.all():
+            return detail
+        keep_faces = keep_comp[face_label]
+        dropped = int((~keep_faces).sum())
+        n_dropped_comp = int((~keep_comp).sum())
+        new_faces = faces[keep_faces]
+        used = np.zeros(n_v, dtype=bool)
+        used[new_faces] = True
+        remap = np.cumsum(used) - 1
+        stripped_stats = dict(detail.freeform_stats)
+        from scantobim.core.mesh import Mesh as _M
+
+        stripped = _M(
+            vertices=detail.vertices[used],
+            faces=remap[new_faces],
+            vertex_colors=(
+                detail.vertex_colors[used]
+                if detail.vertex_colors is not None else None
+            ),
+        )
+        stripped_stats["triangles"] = int(len(stripped.faces))
+        stripped_stats["vertices"] = int(len(stripped.vertices))
+        stripped_stats["components"] = int(keep_comp.sum())
+        stripped.freeform_stats = stripped_stats
+        print(
+            f"  Störer abgetrennt: {n_dropped_comp:,} Kleinst-Komponenten "
+            f"({dropped:,} Dreiecke) aus dem Detail-Mesh entfernt — "
+            f"{int(keep_comp.sum())} Komponenten bleiben "
+            "(im Komplett-Mesh weiterhin enthalten)"
+        )
+        return stripped
+    except Exception:  # noqa: BLE001 — clutter strip is best-effort
+        return detail
 
 
 def _write_detail_mesh(
@@ -1718,7 +1814,7 @@ def _write_detail_mesh(
                 textured = bake_photo_atlas(
                     detail, photo_cams, images_dir,
                     transform=transform, stats_out=dx_stats,
-                    max_atlas=12288,
+                    max_atlas=8192, max_pages=4,
                 )
                 if (
                     textured is not None
@@ -1727,8 +1823,9 @@ def _write_detail_mesh(
                     out_mesh = textured
                     aw, ah = dx_stats["atlas"]
                     print(
-                        f"  → Atlas {aw}×{ah} px, "
-                        f"{dx_stats['texel_cm']:.1f} cm/Texel, "
+                        f"  → {dx_stats.get('pages', 1)} Atlas-Seite(n) à "
+                        f"{aw}×{ah} px, "
+                        f"{dx_stats['texel_cm'] * 10:.0f} mm/Texel, "
                         f"{dx_stats['photo_fraction'] * 100:.0f}% Foto-Anteil "
                         f"({dx_stats['cameras_used']} Kameras)"
                     )
@@ -1768,10 +1865,13 @@ def _write_detail_mesh(
                             light.freeform_stats["voxel"],
                         )
                     if photo_cams is not None and images_dir is not None:
+                        # Same GSD texel as the full detail atlas — reduced
+                        # GEOMETRY, full TEXTURE sharpness in the viewer.
                         lv_stats: dict = {}
                         lt = bake_photo_atlas(
                             light, photo_cams, images_dir,
                             transform=transform, stats_out=lv_stats,
+                            max_atlas=8192, max_pages=3,
                         )
                         if (
                             lt is not None

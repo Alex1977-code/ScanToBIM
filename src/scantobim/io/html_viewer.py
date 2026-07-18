@@ -152,8 +152,11 @@ def write_html_viewer(
 
     # Optional DETAIL layer: the photorealistic building mesh — shown by
     # default; structure model and complete mesh become opt-in overlays.
+    # Multi-page atlases become one (index-buffer, texture) pair per page.
     dt_textured = False
-    dt_texture_uri = ""
+    dt_page_faces: list[np.ndarray] = []
+    dt_texture_uris: list[str] = []
+    dt_triangles = 0
     if detail is not None and len(detail.faces):
         dt_positions = detail.vertices.astype(np.float32)
         dt_normals = detail.vertex_normals().astype(np.float32)
@@ -162,18 +165,33 @@ def write_html_viewer(
             if detail.vertex_colors is not None
             else np.full((len(dt_positions), 3), 150, dtype=np.uint8)
         )
-        dt_indices = detail.faces.astype(np.uint32)
+        dt_triangles = int(len(detail.faces))
         if detail.texture is not None and detail.uvs is not None:
             dt_textured = True
             dt_uvs = detail.uvs.astype(np.float32)
-            dt_texture_uri = _texture_uri(detail.texture)
+            pages = (
+                detail.textures
+                if detail.textures is not None and len(detail.textures)
+                else [detail.texture]
+            )
+            fp = (
+                detail.face_page
+                if detail.face_page is not None
+                else np.zeros(len(detail.faces), dtype=np.int64)
+            )
+            for p in range(len(pages)):
+                sel = detail.faces[fp == p].astype(np.uint32)
+                if len(sel):
+                    dt_page_faces.append(sel)
+                    dt_texture_uris.append(_texture_uri(pages[p]))
         else:
             dt_uvs = np.zeros((len(dt_positions), 2), dtype=np.float32)
+            dt_page_faces.append(detail.faces.astype(np.uint32))
+            dt_texture_uris.append("")
     else:
         dt_positions = np.zeros((0, 3), dtype=np.float32)
         dt_normals = np.zeros((0, 3), dtype=np.float32)
         dt_colors = np.zeros((0, 3), dtype=np.uint8)
-        dt_indices = np.zeros((0, 3), dtype=np.uint32)
         dt_uvs = np.zeros((0, 2), dtype=np.float32)
 
     stack = [p for p in (positions, ff_positions, dt_positions) if len(p)]
@@ -194,8 +212,8 @@ def write_html_viewer(
         "points": int(len(pt_positions)),
         "ff_indices": int(ff_indices.size),
         "ff_triangles": int(len(ff_indices)),
-        "dt_indices": int(dt_indices.size),
-        "dt_triangles": int(len(dt_indices)),
+        "dt_indices": int(dt_triangles * 3),
+        "dt_triangles": int(dt_triangles),
     }
 
     meta["textured"] = bool(textured)
@@ -225,8 +243,8 @@ def write_html_viewer(
         .replace("__DT_NORMALS__", b64(dt_normals))
         .replace("__DT_COLORS__", b64(dt_colors))
         .replace("__DT_UVS__", b64(dt_uvs))
-        .replace("__DT_TEXTURE_URI__", dt_texture_uri)
-        .replace("__DT_INDICES__", b64(dt_indices))
+        .replace("__DT_TEXTURES__", json.dumps(dt_texture_uris))
+        .replace("__DT_PAGES__", json.dumps([b64(a) for a in dt_page_faces]))
     )
     path.write_text(html, encoding="utf-8")
     return path
@@ -297,10 +315,10 @@ const dtPositions = decode("__DT_POSITIONS__", Float32Array);
 const dtNormals   = decode("__DT_NORMALS__", Float32Array);
 const dtColors    = decode("__DT_COLORS__", Uint8Array);
 const dtUvs       = decode("__DT_UVS__", Float32Array);
-const dtIndices   = decode("__DT_INDICES__", Uint32Array);
+const dtPages     = __DT_PAGES__.map(b => decode(b, Uint32Array));
 const TEXTURE_URI = "__TEXTURE_URI__";
 const FF_TEXTURE_URI = "__FF_TEXTURE_URI__";
-const DT_TEXTURE_URI = "__DT_TEXTURE_URI__";
+const DT_TEXTURES = __DT_TEXTURES__;
 
 document.getElementById("stats").textContent =
   META.vertices + " Vertices · " + META.triangles + " Dreiecke · " + META.surfaces + " Flächen";
@@ -406,18 +424,25 @@ const dtPosBuf = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtPositions) : null;
 const dtNrmBuf = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtNormals) : null;
 const dtColBuf = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtColors) : null;
 const dtUvBuf  = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtUvs) : null;
-const dtIdxBuf = META.dt_indices ? buffer(gl.ELEMENT_ARRAY_BUFFER, dtIndices) : null;
-/* LOD while interacting: every 3rd triangle of the detail layer. Full
-   resolution comes back the moment the pointer is released. */
-let dtLodBuf = null, dtLodCount = 0;
+/* One index buffer (+ optional interaction LOD: every 3rd triangle) and
+   one texture per atlas page. Full resolution returns on pointer-up. */
+const dtPageBufs = dtPages.map(p => ({
+  full: buffer(gl.ELEMENT_ARRAY_BUFFER, p),
+  count: p.length,
+  lod: null, lodCount: 0,
+}));
 if (META.dt_triangles > 900000) {
-  const lod = new Uint32Array(Math.floor(META.dt_triangles / 3) * 3);
-  let o = 0;
-  for (let f = 0; f < META.dt_triangles; f += 3) {
-    lod[o++] = dtIndices[f*3]; lod[o++] = dtIndices[f*3+1]; lod[o++] = dtIndices[f*3+2];
-  }
-  dtLodBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, lod);
-  dtLodCount = o;
+  dtPageBufs.forEach((pb, pi) => {
+    const src = dtPages[pi];
+    const nTri = src.length / 3;
+    const lod = new Uint32Array(Math.floor(nTri / 3) * 3);
+    let o = 0;
+    for (let f = 0; f < nTri; f += 3) {
+      lod[o++] = src[f*3]; lod[o++] = src[f*3+1]; lod[o++] = src[f*3+2];
+    }
+    pb.lod = buffer(gl.ELEMENT_ARRAY_BUFFER, lod);
+    pb.lodCount = o;
+  });
 }
 let interacting = false;
 const pAPos = gl.getAttribLocation(pprog, "aPos");
@@ -454,10 +479,12 @@ function loadTexture(uri, unit, done) {
 }
 let texReady = false;
 let ffTexReady = false;
-let dtTexReady = false;
+const dtTexReady = DT_TEXTURES.map(() => false);
 if (META.textured && TEXTURE_URI) loadTexture(TEXTURE_URI, 0, () => { texReady = true; });
 if (META.ff_textured && FF_TEXTURE_URI) loadTexture(FF_TEXTURE_URI, 1, () => { ffTexReady = true; });
-if (META.dt_textured && DT_TEXTURE_URI) loadTexture(DT_TEXTURE_URI, 2, () => { dtTexReady = true; });
+if (META.dt_textured) DT_TEXTURES.forEach((uri, i) => {
+  if (uri) loadTexture(uri, 2 + i, () => { dtTexReady[i] = true; });
+});
 
 let theta = -1.0, phi = 1.1, dist = META.radius * 2.6;
 const target = META.center.slice();
@@ -558,8 +585,9 @@ function draw() {
   }
 
   if (META.dt_indices && showDT) {
-    // Detail layer (default view): full photo texture; while the user is
-    // dragging, a 1/3-triangle LOD keeps the interaction fluid.
+    // Detail layer (default view): one draw per atlas page with its own
+    // full-resolution texture; while the user is dragging, a 1/3-triangle
+    // LOD keeps the interaction fluid.
     gl.uniform1f(uFlat, 0.0); gl.uniform1f(uBias, 0.0);
     gl.bindBuffer(gl.ARRAY_BUFFER, dtPosBuf);
     gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
@@ -567,20 +595,23 @@ function draw() {
     gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, dtColBuf);
     gl.vertexAttribPointer(aCol, 3, gl.UNSIGNED_BYTE, true, 0, 0);
-    if (dtTexReady && aUV >= 0) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, dtUvBuf);
-      gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
-      gl.uniform1f(uTextured, 1.0); gl.uniform1i(uTex, 2);
-    } else {
-      gl.uniform1f(uTextured, 0.0);
-      if (aUV >= 0) gl.disableVertexAttribArray(aUV);
-    }
-    if (interacting && dtLodBuf) {
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, dtLodBuf);
-      gl.drawElements(gl.TRIANGLES, dtLodCount, gl.UNSIGNED_INT, 0);
-    } else {
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, dtIdxBuf);
-      gl.drawElements(gl.TRIANGLES, META.dt_indices, gl.UNSIGNED_INT, 0);
+    for (let pi = 0; pi < dtPageBufs.length; pi++) {
+      const pb = dtPageBufs[pi];
+      if (dtTexReady[pi] && aUV >= 0) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, dtUvBuf);
+        gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
+        gl.uniform1f(uTextured, 1.0); gl.uniform1i(uTex, 2 + pi);
+      } else {
+        gl.uniform1f(uTextured, 0.0);
+        if (aUV >= 0) gl.disableVertexAttribArray(aUV);
+      }
+      if (interacting && pb.lod) {
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, pb.lod);
+        gl.drawElements(gl.TRIANGLES, pb.lodCount, gl.UNSIGNED_INT, 0);
+      } else {
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, pb.full);
+        gl.drawElements(gl.TRIANGLES, pb.count, gl.UNSIGNED_INT, 0);
+      }
     }
     gl.uniform1i(uTex, 0);
   }

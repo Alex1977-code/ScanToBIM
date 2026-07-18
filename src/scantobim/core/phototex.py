@@ -116,45 +116,64 @@ def _chart_uv(points: np.ndarray, bin_id: int) -> np.ndarray:
     return np.column_stack([u, points[:, va]])
 
 
-def _pack_charts(extents: np.ndarray, max_atlas: int, min_texel: float = 5e-4):
-    """Choose a texel size and shelf-pack all charts into one atlas.
+def _pack_charts_pages(
+    extents: np.ndarray, texel: float, page_size: int, max_pages: int
+):
+    """Shelf-pack padded charts into SQUARE pages at a FIXED texel size.
 
-    ``extents``: (C, 2) chart sizes in meters. ``min_texel`` floors the
-    resolution (finer than the photos can resolve is wasted atlas). Returns
-    ``(texel, positions (C,2), atlas_w, atlas_h)``.
+    ``extents``: (C, 2) chart sizes in meters. Returns
+    ``(positions (C,2), page_of_chart (C,), n_pages)`` or ``None`` when more
+    than ``max_pages`` pages would be needed at this texel size. The texel
+    is chosen by the CALLER from the photo ground-sample distance — packing
+    only decides placement, never resolution.
     """
-    total_area = float(np.prod(extents + 1e-6, axis=1).sum())
-    texel = max(
-        np.sqrt(total_area / (0.70 * max_atlas * max_atlas)), min_texel, 5e-4
-    )
+    w = np.ceil(extents[:, 0] / texel).astype(np.int64) + 1
+    h = np.ceil(extents[:, 1] / texel).astype(np.int64) + 1
+    w = np.clip(w, 1, page_size - 2 * _GUTTER)
+    h = np.clip(h, 1, page_size - 2 * _GUTTER)
+    order = np.argsort(-h)
+    pos = np.zeros((len(extents), 2), dtype=np.int64)
+    page_of = np.zeros(len(extents), dtype=np.int64)
+    page = 0
+    x = y = shelf = 0
+    for i in order:
+        cw, ch = int(w[i]) + 2 * _GUTTER, int(h[i]) + 2 * _GUTTER
+        if x + cw > page_size:
+            y += shelf
+            x = 0
+            shelf = 0
+        if y + ch > page_size:
+            page += 1
+            x = y = shelf = 0
+            if page >= max_pages:
+                return None
+        pos[i] = (x + _GUTTER, y + _GUTTER)
+        page_of[i] = page
+        x += cw
+        shelf = max(shelf, ch)
+    return pos, page_of, page + 1
 
-    for _ in range(10):
-        w = np.ceil(extents[:, 0] / texel).astype(np.int64) + 1
-        h = np.ceil(extents[:, 1] / texel).astype(np.int64) + 1
-        w = np.clip(w, 1, max_atlas - 2 * _GUTTER)
-        h = np.clip(h, 1, max_atlas - 2 * _GUTTER)
-        order = np.argsort(-h)
-        atlas_w = max_atlas
-        x = y = shelf = 0
-        pos = np.zeros((len(extents), 2), dtype=np.int64)
-        for i in order:
-            cw, ch = int(w[i]) + 2 * _GUTTER, int(h[i]) + 2 * _GUTTER
-            if x + cw > atlas_w:
-                y += shelf
-                x = 0
-                shelf = 0
-            pos[i] = (x + _GUTTER, y + _GUTTER)
-            x += cw
-            shelf = max(shelf, ch)
-        height = y + shelf
-        if height <= max_atlas:
-            atlas_h = 1
-            while atlas_h < height:
-                atlas_h *= 2
-            atlas_h = min(atlas_h, max_atlas)
-            return texel, pos, atlas_w, atlas_h
-        texel *= 1.18
-    raise ValueError("Textur-Atlas passt nicht — max_atlas erhöhen")
+
+def _target_texel(v_scan: np.ndarray, cam_centers: np.ndarray, med_fx: float):
+    """Photo ground-sample distance → texel target.
+
+    GSD is what the NEAREST camera resolves on the surface: median over a
+    vertex sample of (distance to closest camera) / fx. The former
+    area-based heuristic let mesh resolution and packing pressure dictate
+    the texel (observed: 6 cm texels on 4 mm photos) — the texel now comes
+    from the photos alone, clamped to [3 mm, 25 mm].
+    """
+    from scipy.spatial import cKDTree
+
+    if not len(cam_centers):
+        return 0.01
+    vs = v_scan
+    if len(vs) > 20_000:
+        rng = np.random.default_rng(0)
+        vs = vs[rng.choice(len(vs), 20_000, replace=False)]
+    d, _ = cKDTree(np.asarray(cam_centers)).query(vs, k=1, workers=-1)
+    gsd = float(np.median(d)) / max(med_fx, 1.0)
+    return float(min(max(0.75 * gsd, 0.003), 0.025))
 
 
 # ----------------------------------------------------------- camera choice
@@ -375,6 +394,7 @@ def bake_photo_atlas(
     max_used_cameras: int = 600,
     stats_out: dict | None = None,
     depth_points: np.ndarray | None = None,
+    max_pages: int = 1,
 ) -> Mesh | None:
     """Bake a full-resolution photo texture atlas onto ``mesh``.
 
@@ -443,8 +463,10 @@ def bake_photo_atlas(
         uv_m.append(uv - lo)
         base += len(vids)
 
-    # Resolution floor from the photos' ground sample distance: half a
-    # photo pixel at the median shooting distance.
+    # Texel size from the photo ground-sample distance (what the nearest
+    # camera can actually resolve) — packing then spreads the charts over
+    # as many square pages as allowed; only when even that is not enough
+    # does the texel grow.
     from pathlib import Path as _Path
 
     cam_centers = np.array([
@@ -452,13 +474,36 @@ def bake_photo_atlas(
         for cam in cameras
         if cam.name in image_index or _Path(cam.name).name in image_index
     ])
-    scene_center = v_scan.mean(axis=0)
-    med_dist = float(np.median(np.linalg.norm(cam_centers - scene_center, axis=1)))
     med_fx = float(np.median([cam.fx for cam in cameras]))
-    gsd = med_dist / max(med_fx, 1.0)
-    texel, pos, atlas_w, atlas_h = _pack_charts(
-        extents, max_atlas, min_texel=0.5 * gsd
-    )
+    texel = _target_texel(v_scan, cam_centers, med_fx)
+    packed = None
+    for _ in range(8):
+        packed = _pack_charts_pages(extents, texel, max_atlas, max_pages)
+        if packed is not None:
+            break
+        texel *= 1.3
+    if packed is None:
+        return None
+    pos, page_of_chart, n_pages = packed
+    # Crop every page to its content extent (next power of two) — a small
+    # scene or the last page must not ship as a mostly-empty full square.
+    chart_w_tex = np.ceil(extents[:, 0] / texel).astype(np.int64) + 1
+    chart_h_tex = np.ceil(extents[:, 1] / texel).astype(np.int64) + 1
+    page_w = np.zeros(n_pages, dtype=np.int64)
+    page_h = np.zeros(n_pages, dtype=np.int64)
+    for c in range(len(extents)):
+        p = page_of_chart[c]
+        page_w[p] = max(page_w[p], pos[c, 0] + chart_w_tex[c] + _GUTTER)
+        page_h[p] = max(page_h[p], pos[c, 1] + chart_h_tex[c] + _GUTTER)
+    for p in range(n_pages):
+        for arr in (page_w, page_h):
+            v2 = 1
+            while v2 < arr[p]:
+                v2 *= 2
+            arr[p] = min(v2, max_atlas)
+    atlas_w = int(page_w.max())
+    atlas_h = int(page_h.max())
+
     vertices = np.vstack(verts_out)
     colors = np.vstack(colors_out)
     uv_texel = np.vstack(uv_m) / texel
@@ -466,7 +511,13 @@ def bake_photo_atlas(
         np.arange(n_charts), [len(v) for v in verts_out]
     )
     uv_texel += pos[chart_of_vertex]
-    uvs = uv_texel / np.array([atlas_w, atlas_h])
+    # Per-vertex normalization by the OWN page's cropped extent.
+    vert_page = page_of_chart[chart_of_vertex]
+    uvs = np.column_stack([
+        uv_texel[:, 0] / page_w[vert_page].astype(np.float64),
+        uv_texel[:, 1] / page_h[vert_page].astype(np.float64),
+    ])
+    face_page_arr = page_of_chart[chart_of_face]
 
     textured = Mesh(
         vertices=vertices,
@@ -476,6 +527,7 @@ def bake_photo_atlas(
         group_names=mesh.group_names,
         uvs=uvs.astype(np.float64),
         texture=None,
+        face_page=face_page_arr if n_pages > 1 else None,
     )
 
     # --- best camera per face --------------------------------------------
@@ -492,9 +544,18 @@ def bake_photo_atlas(
     )
 
     # --- rasterize + sample ----------------------------------------------
-    atlas = np.full((atlas_h, atlas_w, 3), 190, dtype=np.uint8)
-    filled = np.zeros((atlas_h, atlas_w), dtype=bool)
-    photo_mask = np.zeros((atlas_h, atlas_w), dtype=bool)
+    atlas_pages = [
+        np.full((int(page_h[p]), int(page_w[p]), 3), 190, dtype=np.uint8)
+        for p in range(n_pages)
+    ]
+    filled_pages = [
+        np.zeros((int(page_h[p]), int(page_w[p])), dtype=bool)
+        for p in range(n_pages)
+    ]
+    photo_pages = [
+        np.zeros((int(page_h[p]), int(page_w[p])), dtype=bool)
+        for p in range(n_pages)
+    ]
 
     uvf = uv_texel[new_faces]  # (F, 3, 2) texel coordinates per face corner
     tu, tv = uvf[:, :, 0], uvf[:, :, 1]
@@ -550,6 +611,7 @@ def bake_photo_atlas(
                 g = fs[fidx]
                 bar = np.stack([b0, b1, b2], axis=1)[:, :, None]
                 color = (col_f[g] * bar).sum(axis=1)
+                ok = np.zeros(len(g), dtype=bool)
                 if photo is not None:
                     p3 = (tri_scan[g] * bar).sum(axis=1)
                     pc = p3 @ cam.rotation.T + cam.translation
@@ -561,30 +623,49 @@ def bake_photo_atlas(
                     )
                     if ok.any():
                         color[ok] = _bilinear(photo, px[ok], py[ok])
-                        photo_mask[iy[ok], ix[ok]] = True
-                atlas[iy, ix] = np.clip(color, 0, 255).astype(np.uint8)
-                filled[iy, ix] = True
+                color8 = np.clip(color, 0, 255).astype(np.uint8)
+                pg = face_page_arr[g]
+                for p in np.unique(pg):
+                    m = pg == p
+                    iy_p = np.minimum(iy[m], atlas_pages[p].shape[0] - 1)
+                    ix_p = np.minimum(ix[m], atlas_pages[p].shape[1] - 1)
+                    atlas_pages[p][iy_p, ix_p] = color8[m]
+                    filled_pages[p][iy_p, ix_p] = True
+                    mo = m & ok
+                    if mo.any():
+                        iy_o = np.minimum(
+                            iy[mo], atlas_pages[p].shape[0] - 1
+                        )
+                        ix_o = np.minimum(
+                            ix[mo], atlas_pages[p].shape[1] - 1
+                        )
+                        photo_pages[p][iy_o, ix_o] = True
 
     # --- gutter: dilate filled colors so bilinear lookups never bleed grey
-    for _ in range(_GUTTER):
-        empty = ~filled
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            shifted = np.roll(filled, (dy, dx), axis=(0, 1))
-            src_img = np.roll(atlas, (dy, dx), axis=(0, 1))
-            take = empty & shifted
-            atlas[take] = src_img[take]
-            filled |= take
+    for atlas, filled in zip(atlas_pages, filled_pages):
+        for _ in range(_GUTTER):
             empty = ~filled
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                shifted = np.roll(filled, (dy, dx), axis=(0, 1))
+                src_img = np.roll(atlas, (dy, dx), axis=(0, 1))
+                take = empty & shifted
+                atlas[take] = src_img[take]
+                filled |= take
+                empty = ~filled
 
-    textured.texture = atlas
+    textured.textures = atlas_pages
+    textured.texture = atlas_pages[0]
+    n_filled = sum(int(f.sum()) for f in filled_pages)
+    n_photo = sum(int(p.sum()) for p in photo_pages)
     if stats_out is not None:
         stats_out["atlas"] = [int(atlas_w), int(atlas_h)]
+        stats_out["pages"] = int(n_pages)
         stats_out["texel_cm"] = round(texel * 100.0, 2)
         stats_out["charts"] = int(n_charts)
-        stats_out["coverage"] = round(float(filled.mean()), 3)
-        stats_out["photo_fraction"] = round(
-            int(photo_mask.sum()) / max(int(filled.sum()), 1), 3
+        stats_out["coverage"] = round(
+            n_filled / max(sum(f.size for f in filled_pages), 1), 3
         )
+        stats_out["photo_fraction"] = round(n_photo / max(n_filled, 1), 3)
         stats_out["cameras_used"] = int(len([c for c, _ in cam_groups if c >= 0]))
         stats_out["faces_with_photo"] = round(
             float((best_cam >= 0).mean()), 3

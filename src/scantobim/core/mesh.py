@@ -30,6 +30,12 @@ class Mesh:
         origin top-left), set by the texture baking stage.
     texture:
         Optional ``(H, W, 3)`` uint8 texture atlas belonging to ``uvs``.
+    textures:
+        Optional list of atlas PAGES (each ``(H, W, 3)`` uint8). Large
+        photo atlases spread over several square pages; ``face_page`` maps
+        each face to its page. ``texture`` then aliases page 0.
+    face_page:
+        Optional ``(F,)`` int — atlas page id per face (multi-page atlases).
     """
 
     vertices: np.ndarray
@@ -39,6 +45,8 @@ class Mesh:
     group_names: dict[int, str] | None = None
     uvs: np.ndarray | None = None
     texture: np.ndarray | None = None
+    textures: list | None = None
+    face_page: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.vertices = np.ascontiguousarray(self.vertices, dtype=np.float64).reshape(-1, 3)
