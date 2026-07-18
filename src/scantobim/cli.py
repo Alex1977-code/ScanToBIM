@@ -1262,6 +1262,14 @@ def _cmd_project(args) -> int:
             detail_mesh, photo_cams, project.images_dir,
             transform, rep, output,
         )
+    state_out = getattr(args, "state_out", None)
+    if state_out is not None:
+        from scantobim.io.state import save_export_state
+
+        save_export_state(
+            state_out, result.surfaces, rep.get("storeys"),
+            result.mesh, output_mesh,
+        )
     _prog(0.92, "Dateien schreiben")
 
     ext = output.suffix.lower()

@@ -29,8 +29,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from scantobim import __version__
+from scantobim.io.state import STATE_NAME as _STATE_NAME
 
 _CLOUD_EXTS = {".las", ".laz", ".ply", ".pcd", ".e57", ".xyz", ".pts", ".txt", ".csv", ".asc"}
+
+# On-demand export formats ("Speichern als …" after the run) — label shown
+# in the GUI, generated from the persisted export state.
+_EXPORT_FORMATS = {
+    "step": ("strukturmodell.stp", "STEP AP214 (CAD)"),
+    "ifc": ("strukturmodell.ifc", "IFC4 (BIM)"),
+    "dxf": ("grundriss.dxf", "DXF-Grundriss"),
+    "glb": ("strukturmodell.glb", "GLB"),
+    "obj": ("strukturmodell.obj", "OBJ"),
+    "stl": ("strukturmodell.stl", "STL"),
+    "ply": ("strukturmodell.ply", "PLY"),
+}
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -235,6 +248,7 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             freeform=opts.get("freeform", True),
             structure=opts.get("structure", True),
             seed=None,
+            state_out=outdir / _STATE_NAME,
         )
         code = _cmd_project(ns)
         if code != 0:
@@ -402,28 +416,14 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     if full_mesh is not None:
         write_mesh(full_mesh, outdir / "komplett.glb")
         print("geschrieben: komplett.glb (Komplett-Mesh, volle Auflösung)")
-    for fmt in opts.get("formats", []):
-        if fmt == "step":
-            from scantobim.io.step import write_step
+    # Export formats are generated ON DEMAND ("Speichern als …" in the GUI)
+    # from this persisted state — no format pre-selection, no re-run.
+    from scantobim.io.state import save_export_state
 
-            write_step(result.surfaces, outdir / "modell.stp")
-            print("geschrieben: modell.stp (STEP AP214)")
-        elif fmt == "ifc":
-            from scantobim.io.ifc import write_ifc
-
-            write_ifc(result.surfaces, outdir / "modell.ifc", storeys=rep.get("storeys"))
-            print("geschrieben: modell.ifc (IFC4)")
-        elif fmt == "glb":
-            write_mesh(output_mesh, outdir / "modell.glb")
-            print("geschrieben: modell.glb")
-        elif fmt == "obj":
-            write_mesh(output_mesh, outdir / "modell.obj")
-            print("geschrieben: modell.obj")
-        elif fmt == "dxf":
-            from scantobim.io.dxf import write_floorplan_dxf
-
-            write_floorplan_dxf(result.mesh, outdir / "grundriss.dxf")
-            print("geschrieben: grundriss.dxf")
+    save_export_state(
+        outdir / _STATE_NAME, result.surfaces, rep.get("storeys"),
+        result.mesh, output_mesh,
+    )
     if opts.get("deviation"):
         from scantobim.cli import _write_deviation
 
@@ -766,7 +766,7 @@ def _make_handler(state: GuiState):
             base = Path(job["dir"])
             out = []
             for f in sorted(base.rglob("*")):
-                if f.is_file():
+                if f.is_file() and f.name != _STATE_NAME:
                     out.append(
                         {"name": str(f.relative_to(base)), "size": f.stat().st_size}
                     )
@@ -819,6 +819,9 @@ def _make_handler(state: GuiState):
                         "outputs": self._job_outputs(job),
                         "has_viewer": (Path(job["dir"]) / "modell.html").exists(),
                         "auto_winner": auto_winner,
+                        "can_export": (
+                            Path(job["dir"]) / _STATE_NAME
+                        ).exists(),
                     }
                 )
             elif route == "/api/view":
@@ -943,6 +946,9 @@ def _make_handler(state: GuiState):
                             "name": f"📂 {p.name} ({', '.join(detail)})",
                             "size": project.cloud.stat().st_size,
                             "kind": "project",
+                            # SLAM export (trajectory present) → the GUI
+                            # pre-selects the matching source profile.
+                            "slam": project.trajectory is not None,
                         }
                     )
                     return
@@ -1015,6 +1021,73 @@ def _make_handler(state: GuiState):
                     return
                 job["cancel"] = True
                 self._json({"ok": True})
+            elif route == "/api/export":
+                # On-demand format export from the persisted job state —
+                # the model was computed once, formats are generated when
+                # the user clicks "Speichern als …".
+                try:
+                    req = json.loads(body.decode())
+                except Exception:  # noqa: BLE001
+                    req = {}
+                job = state.jobs.get(req.get("job", ""))
+                fmt = str(req.get("fmt", ""))
+                if job is None:
+                    self._json({"error": "unbekannter Job"}, 404)
+                    return
+                if fmt not in _EXPORT_FORMATS:
+                    self._json({"error": f"unbekanntes Format: {fmt}"}, 400)
+                    return
+                outdir = Path(job["dir"])
+                state_file = outdir / _STATE_NAME
+                if not state_file.exists():
+                    self._json(
+                        {"error": "kein Strukturmodell in diesem Lauf — "
+                         "Exportformate benötigen Stufe 2 (Ebenen & Linien)"},
+                        404,
+                    )
+                    return
+                from scantobim.io.state import load_export_state
+
+                data = job.get("_export_state")
+                if data is None:
+                    data = load_export_state(state_file)
+                    job["_export_state"] = data
+                if data is None:
+                    self._json({"error": "Export-Zustand nicht lesbar"}, 500)
+                    return
+                name, _label = _EXPORT_FORMATS[fmt]
+                target = outdir / name
+                try:
+                    if fmt == "step":
+                        from scantobim.io.step import write_step
+
+                        write_step(data["surfaces"], target)
+                    elif fmt == "ifc":
+                        from scantobim.io.ifc import write_ifc
+
+                        write_ifc(
+                            data["surfaces"], target,
+                            storeys=data.get("storeys"),
+                        )
+                    elif fmt == "dxf":
+                        from scantobim.io.dxf import write_floorplan_dxf
+
+                        write_floorplan_dxf(data["structure_mesh"], target)
+                    else:  # mesh formats: glb / obj / stl / ply
+                        from scantobim.io.writers import write_mesh
+
+                        mesh = data.get("display_mesh") or data.get(
+                            "structure_mesh"
+                        )
+                        write_mesh(mesh, target)
+                except Exception as exc:  # noqa: BLE001 — report, don't crash
+                    self._json({"error": f"Export fehlgeschlagen: {exc}"}, 500)
+                    return
+                self._json({
+                    "name": target.name,
+                    "size": target.stat().st_size,
+                    "outputs": self._job_outputs(job),
+                })
             else:
                 self._send(404, b"not found", "text/plain")
 

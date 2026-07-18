@@ -112,6 +112,7 @@ label.sel-label{font-size:.78rem; color:var(--muted); display:block; margin:.4re
   padding:.25rem .7rem; font-size:.78rem; cursor:pointer; user-select:none;
 }
 .fmt label.on{border-color:var(--accent); color:var(--accent); background:#17233a}
+.fmt label.busy{opacity:.55; cursor:progress}
 .fmt input{display:none}
 
 button.primary{
@@ -237,10 +238,10 @@ button.ghost:hover{border-color:var(--accent)}
     </div>
 
     <div class="card" id="optcard">
-      <h2>3 · Optionen</h2>
+      <h2>3 · Einstellungen</h2>
       <div id="opts-reconstruct">
         <label class="sel-label">Quelle / Scanner
-          <span class="qinfo" title="Sensor-Profil: passt Toleranzen an das Rausch- und Driftverhalten des Aufnahmegeräts an. Wird über die Szene gelegt.">ⓘ</span>
+          <span class="qinfo" title="Sensor-Profil: passt Toleranzen an das Rausch- und Driftverhalten des Aufnahmegeräts an. Bei SLAM-Projektordnern wird automatisch „SLAM-Handscanner“ gewählt.">ⓘ</span>
         </label>
         <select id="source">
           <option value="standard" title="Neutrale Standardwerte — wenn die Quelle unbekannt ist.">Standard / unbekannt</option>
@@ -258,41 +259,51 @@ button.ghost:hover{border-color:var(--accent)}
           <option value="detail">Detailgetreu (mehr Flächen + Stützen/Rohre)</option>
           <option value="fast">Schnell (Vorschau)</option>
         </select>
+        <div class="hint" style="margin-top:.45rem" title="Beispiel: Szene „Gebäude außen“ setzt die Grundwerte, Quelle „SLAM“ ändert davon Toleranz und Geister-Versatz, und ein ausgefülltes erweitertes Feld ersetzt beides.">
+          <b>Was gilt wann?</b> Szene setzt die Grundwerte → das Quelle-Profil
+          passt sie an den Scanner an → <b>ausgefüllte</b> erweiterte Felder
+          überschreiben beides. Leere erweiterte Felder = Automatik.
+        </div>
         <div style="margin-top:.6rem">
-          <label class="opt"><input type="checkbox" id="watertight"> Wasserdichtes Volumenmodell (schließt Scanschatten)</label>
-          <label class="opt" title="Textur des STRUKTURMODELLS (Flächen &amp; Kanten): Fotos, sonst Punktfarben. Der fotorealistische Foto-Atlas von Komplett- und Detail-Mesh läuft davon unabhängig immer."><input type="checkbox" id="texture" checked> Textur fürs Strukturmodell (Fotos, sonst Punktfarben)</label>
-          <label class="opt" title="Stufe 1: Der GESAMTE Scan wird zuerst als farbiges Dreiecksnetz rekonstruiert (bis 4 Mio Dreiecke, komplett.glb) — maximale Fülle, nichts geht verloren. Im Viewer als Ebene schaltbar."><input type="checkbox" id="freeform" checked> Komplett-Mesh: ganzer Scan als Dreiecksnetz (Stufe 1)</label>
-          <label class="opt" title="Stufe 2 (Option): Ebenen, Kanten und Linien werden algorithmisch gesucht — liefert das Strukturmodell mit Maßen, Öffnungen, Bauteilklassen und die BIM/CAD-Exporte (IFC, STEP, DXF). Abschaltbar, wenn nur das Netz gebraucht wird."><input type="checkbox" id="structure" checked> Ebenen &amp; Linien suchen (Strukturmodell, Stufe 2)</label>
+          <div class="sel-label">Berechnung <span style="color:var(--ok)">(Standard: alle drei an — einfach so lassen)</span></div>
+          <label class="opt" title="Stufe 1: Der GESAMTE Scan wird als farbiges Dreiecksnetz rekonstruiert (komplett.glb) plus Detail-Mesh der Gebäuderegion (_detail.glb, 2 cm) — beide mit Foto-Atlas, wenn Fotos vorliegen."><input type="checkbox" id="freeform" checked> Komplett-Mesh + Detail-Mesh (fotorealistisch)</label>
+          <label class="opt" title="Stufe 2: Ebenen, Kanten und Linien werden gesucht — liefert das Strukturmodell mit Maßen, Öffnungen, Bauteilklassen. Nur mit dieser Stufe sind die CAD/BIM-Exporte (STEP, IFC, DXF) möglich."><input type="checkbox" id="structure" checked> Strukturmodell: Ebenen &amp; Kanten, Maße, Öffnungen</label>
+          <label class="opt" title="Textur des Strukturmodells: Fotos, sonst Punktfarben. Der Foto-Atlas von Komplett- und Detail-Mesh läuft davon unabhängig immer."><input type="checkbox" id="texture" checked> Strukturmodell texturieren</label>
+        </div>
+        <details style="margin-top:.4rem">
+          <summary class="sel-label" style="cursor:pointer">Zusatzauswertungen <span style="color:var(--muted)">(Standard: alle aus)</span></summary>
+          <label class="opt" title="Schließt Scanschatten zu einem geschlossenen Volumenkörper — für Volumenermittlung."><input type="checkbox" id="watertight"> Wasserdichtes Volumenmodell (schließt Scanschatten)</label>
           <label class="opt"><input type="checkbox" id="align"> Achsen ausrichten, Boden auf Z=0</label>
           <label class="opt"><input type="checkbox" id="register"> Mehrere Scans automatisch registrieren (ICP)</label>
           <label class="opt"><input type="checkbox" id="deviation"> Soll-Ist-Abweichungsanalyse (QS-Heatmap + Statistik)</label>
           <label class="opt"><input type="checkbox" id="views"> Orthofoto-Ansichten N/O/S/W + Draufsicht (maßstabsgetreu)</label>
           <label class="opt"><input type="checkbox" id="reporthtml"> Druckfertiger Prüfbericht (HTML → PDF)</label>
-        </div>
+        </details>
         <details id="advdetails">
           <summary class="sel-label" style="cursor:pointer">Erweiterte Einstellungen
-            <span class="qinfo" title="Feinjustierung der Rekonstruktion. Leere Felder = Automatik. Erklärung: Maus über die Bezeichnung halten.">ⓘ</span>
+            <span class="qinfo" title="Nur für Feinjustierung. Ausgefüllte Felder überschreiben Szene UND Quelle-Profil. Leere Felder = Automatik. Erklärung: Maus über die Bezeichnung halten.">ⓘ</span>
           </summary>
+          <div class="hint" style="margin:.3rem 0">Ausgefüllte Felder überschreiben
+          Szene <b>und</b> Quelle-Profil — leer lassen heißt: die Automatik
+          entscheidet.</div>
           <div class="adv">
             <label title="Ausdünnungsraster der Vorverarbeitung in Metern. Leer = automatisch (2× Punktabstand). 0 = keine Ausdünnung (langsamer, maximales Detail).">Voxelgröße [m] <input id="adv_voxel_size" placeholder="auto"></label>
-            <label title="Wie weit ein Messpunkt von einer Ebene entfernt sein darf, um noch dazuzugehören — als Vielfaches des Punktabstands. Größer = robuster gegen Rauschen/Drift, kleiner = mehr Detailtreue. Standard 3 (SLAM 3,5 / Stativ 2,5 / iPhone 5).">Ebenen-Toleranz [×&nbsp;Punktabstand] <input id="adv_distance_factor" placeholder="3.0"></label>
-            <label title="Kleinste erkannte Fläche als Anteil der Punktwolke in Prozent. Kleiner = auch kleine Flächen (Laibungen, Möbel), aber mehr Rechenzeit. Standard 1 %.">Mindest-Flächengröße [%] <input id="adv_min_inlier" placeholder="1.0"></label>
-            <label title="Obergrenze der erkannten Flächen. Mehr Flächen = mehr Details, längere Rechenzeit. Standard 64.">Max. Flächen <input id="adv_max_planes" placeholder="64"></label>
-            <label title="Bis zu diesem Winkel werden fast-parallele bzw. fast-rechtwinklige Flächen auf exakt 0°/90° gerastet. Standard 8°. Bei bewusst schiefen Bauwerken kleiner wählen.">Winkel-Raster-Toleranz [°] <input id="adv_angle_tol" placeholder="8"></label>
-            <label title="SLAM-Registrierung erzeugt manchmal doppelte Wände mit kleinem Versatz (Geisterflächen). Koplanare Flächen bis zu diesem Versatz in Metern werden verschmolzen. 0 = aus. SLAM-Profil: 0,03.">Geister-Versatz [m] <input id="adv_ghost" placeholder="0"></label>
-            <label title="Mindestgröße erkannter Öffnungen (Fenster/Türen) als Vielfaches des Punktabstands. Größer = weniger falsche Öffnungen durch Abschattungen. Standard 8.">Öffnungs-Mindestgröße [×&nbsp;Punktabstand] <input id="adv_min_opening" placeholder="8"></label>
-            <label title="Toleranz der Soll-Ist-Abweichungsanalyse in Millimetern — bestimmt die Quote 'innerhalb Toleranz'. Standard 5 mm.">QS-Toleranz [mm] <input id="adv_tolerance" placeholder="5"></label>
-            <label title="Speicherschutz: riesige Scans werden beim Einlesen blockweise auf diese Punktzahl (in Millionen) ausgedünnt. Standard 40.">Max. Punkte [Mio.] <input id="adv_max_points" placeholder="40"></label>
-            <label title="Raster des hochaufgelösten Detail-Mesh der Gebäuderegion in Zentimetern (wird zusätzlich als _detail.glb geschrieben). Standard 2 cm. 0 = aus.">Detail-Raster [cm] <input id="adv_detail" placeholder="2"></label>
+            <label title="Wie weit ein Messpunkt von einer Ebene entfernt sein darf, um noch dazuzugehören — als Vielfaches des Punktabstands. Größer = robuster gegen Rauschen/Drift, kleiner = mehr Detailtreue. Standard 3 (SLAM 3,5 / Stativ 2,5 / iPhone 5).">Ebenen-Toleranz [×&nbsp;Punktabstand] <input id="adv_distance_factor" placeholder="auto"></label>
+            <label title="Kleinste erkannte Fläche als Anteil der Punktwolke in Prozent. Kleiner = auch kleine Flächen (Laibungen, Möbel), aber mehr Rechenzeit. Standard 1 %.">Mindest-Flächengröße [%] <input id="adv_min_inlier" placeholder="auto"></label>
+            <label title="Obergrenze der erkannten Flächen. Mehr Flächen = mehr Details, längere Rechenzeit. Standard 64.">Max. Flächen <input id="adv_max_planes" placeholder="auto"></label>
+            <label title="Bis zu diesem Winkel werden fast-parallele bzw. fast-rechtwinklige Flächen auf exakt 0°/90° gerastet. Standard 8°. Bei bewusst schiefen Bauwerken kleiner wählen.">Winkel-Raster-Toleranz [°] <input id="adv_angle_tol" placeholder="auto"></label>
+            <label title="SLAM-Registrierung erzeugt manchmal doppelte Wände mit kleinem Versatz (Geisterflächen). Koplanare Flächen bis zu diesem Versatz in Metern werden verschmolzen. 0 = aus. SLAM-Profil: 0,03.">Geister-Versatz [m] <input id="adv_ghost" placeholder="auto"></label>
+            <label title="Mindestgröße erkannter Öffnungen (Fenster/Türen) als Vielfaches des Punktabstands. Größer = weniger falsche Öffnungen durch Abschattungen. Standard 8.">Öffnungs-Mindestgröße [×&nbsp;Punktabstand] <input id="adv_min_opening" placeholder="auto"></label>
+            <label title="Toleranz der Soll-Ist-Abweichungsanalyse in Millimetern — bestimmt die Quote 'innerhalb Toleranz'. Standard 5 mm.">QS-Toleranz [mm] <input id="adv_tolerance" placeholder="auto"></label>
+            <label title="Speicherschutz: riesige Scans werden beim Einlesen blockweise auf diese Punktzahl (in Millionen) ausgedünnt. Standard 40.">Max. Punkte [Mio.] <input id="adv_max_points" placeholder="auto"></label>
+            <label title="Raster des hochaufgelösten Detail-Mesh der Gebäuderegion in Zentimetern (wird zusätzlich als _detail.glb geschrieben). Standard 2 cm. 0 = aus.">Detail-Raster [cm] <input id="adv_detail" placeholder="auto"></label>
           </div>
         </details>
-        <label class="sel-label">Zusätzliche Exportformate</label>
-        <div class="fmt" id="formats">
-          <label data-f="step">STEP (CAD)</label>
-          <label data-f="ifc">IFC (BIM)</label>
-          <label data-f="glb">GLB</label>
-          <label data-f="obj">OBJ</label>
-          <label data-f="dxf">DXF-Grundriss</label>
+        <button class="ghost" id="resetopts" style="margin-top:.55rem;width:100%"
+          title="Setzt Quelle, Szene, alle Haken und alle erweiterten Felder auf die Standardwerte zurück.">↺ Alles auf Standard zurücksetzen</button>
+        <div class="hint" style="margin-top:.5rem">
+          <b>Exportformate?</b> Erst rechnen — danach unter „Ergebnisdateien“
+          per Klick speichern: STEP, IFC, DXF, GLB, OBJ, STL, PLY.
         </div>
       </div>
       <div id="opts-sheetmetal" style="display:none">
@@ -347,6 +358,19 @@ button.ghost:hover{border-color:var(--accent)}
     <div class="card" id="dlcard" style="display:none">
       <h2>Ergebnisdateien</h2>
       <div id="downloads"></div>
+      <div id="exportrow" style="display:none;margin-top:.7rem">
+        <div class="sel-label" title="Das Modell ist bereits berechnet — jedes Format wird beim Klick aus dem Ergebnis erzeugt und heruntergeladen. Kein neuer Rechenlauf nötig.">Speichern als … (Strukturmodell)</div>
+        <div class="fmt" id="exports">
+          <label data-f="step" title="CAD-B-Rep für HiCAD, SolidWorks, Inventor … (Datei &gt; Import &gt; STEP)">STEP (CAD)</label>
+          <label data-f="ifc" title="BIM-Austausch für Revit, ArchiCAD, BIMcollab …">IFC (BIM)</label>
+          <label data-f="dxf" title="Bemaßter 2D-Grundriss für AutoCAD &amp; Co.">DXF-Grundriss</label>
+          <label data-f="glb" title="3D-Netz mit Textur für Blender, Viewer, Präsentationen">GLB</label>
+          <label data-f="obj" title="3D-Netz mit Textur (klassisches Austauschformat)">OBJ</label>
+          <label data-f="stl" title="Reines Dreiecksnetz, z. B. für 3D-Druck">STL</label>
+          <label data-f="ply" title="Dreiecksnetz mit Farben (Punktwolken-Software)">PLY</label>
+        </div>
+        <div class="hint" id="exporthint" style="margin-top:.35rem"></div>
+      </div>
     </div>
     <div class="duo">
       <div class="card">
@@ -415,6 +439,12 @@ $("#addpath").onclick = async () => {
   const data = await res.json();
   if (data.error) { alert(data.error); return; }
   state.files.push(data); $("#pathinput").value = ""; renderFiles();
+  /* SLAM project folder → pre-select the matching source profile */
+  if (data.slam && $("#source").value === "standard") {
+    $("#source").value = "slam";
+    syncSourceTitle();
+    setStatus("SLAM-Projekt erkannt — Quelle auf „SLAM-Handscanner“ gestellt", "ok");
+  }
 };
 
 /* modes */
@@ -430,10 +460,51 @@ document.querySelectorAll(".mode").forEach(el => {
        || state.mode === "compare") ? "" : "none";
   };
 });
-/* format chips */
-document.querySelectorAll("#formats label").forEach(el => {
-  el.onclick = () => el.classList.toggle("on");
+
+/* "Speichern als …" — formats are generated on demand AFTER the run */
+document.querySelectorAll("#exports label").forEach(el => {
+  el.onclick = async () => {
+    if (!state.job || el.classList.contains("busy")) return;
+    el.classList.add("busy");
+    const orig = el.textContent;
+    el.textContent = orig + " …";
+    $("#exporthint").textContent = "";
+    try {
+      const res = await fetch("/api/export", {
+        method: "POST",
+        body: JSON.stringify({job: state.job, fmt: el.dataset.f}),
+      });
+      const data = await res.json();
+      if (data.error) { $("#exporthint").textContent = "⚠ " + data.error; return; }
+      renderDownloads(data.outputs);
+      /* trigger the download right away */
+      const a = document.createElement("a");
+      a.href = "/api/output?job=" + state.job + "&name=" + encodeURIComponent(data.name);
+      a.download = data.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      $("#exporthint").textContent = "✓ " + data.name + " erzeugt (" + fmtSize(data.size) + ") — Download gestartet, liegt auch unter Ergebnisdateien.";
+    } finally {
+      el.classList.remove("busy");
+      el.textContent = orig;
+    }
+  };
 });
+
+/* reset all options to their defaults */
+const DEFAULTS = {
+  preset: "building", source: "standard",
+  freeform: true, structure: true, texture: true,
+  watertight: false, align: false, register: false,
+  deviation: false, views: false, report_html: false,
+  advanced: {},
+};
+$("#resetopts").onclick = () => {
+  applySettings(DEFAULTS);
+  $("#adv_angle_tol").value = ""; $("#adv_tolerance").value = "";
+  $("#adv_max_points").value = ""; $("#adv_detail").value = "";
+  $("#profsel").value = ""; $("#profname").value = "";
+  setStatus("Standardwerte wiederhergestellt", "ok");
+};
 
 /* ---- settings gathering / applying (also used by profiles) ---- */
 const ADV_MAP = {  /* input id → backend key + scale */
@@ -457,8 +528,6 @@ function gatherOptions(){
   options.deviation = $("#deviation").checked;
   options.views = $("#views").checked;
   options.report_html = $("#reporthtml").checked;
-  options.formats = [...document.querySelectorAll("#formats label.on")]
-    .map(el => el.dataset.f);
   options.advanced = {};
   for (const [id, [key, scale]] of Object.entries(ADV_MAP)) {
     const v = parseFloat($("#" + id).value.replace(",", "."));
@@ -486,8 +555,6 @@ function applySettings(s){
     const key = id === "reporthtml" ? "report_html" : id;
     if (key in s) $("#" + id).checked = !!s[key];
   }
-  document.querySelectorAll("#formats label").forEach(el =>
-    el.classList.toggle("on", (s.formats || []).includes(el.dataset.f)));
   for (const [id, [key, scale]] of Object.entries(ADV_MAP)) {
     $("#" + id).value = (s.advanced && key in s.advanced)
       ? String(s.advanced[key] / scale) : "";
@@ -570,6 +637,8 @@ $("#run").onclick = async () => {
   $("#cancel").disabled = false;
   $("#log").textContent = "";
   $("#dlcard").style.display = "none";
+  $("#exportrow").style.display = "none";
+  $("#exporthint").textContent = "";
   $("#progwrap").style.display = "";
   $("#progbar").style.width = "0%";
   $("#progtext").textContent = "";
@@ -625,17 +694,11 @@ async function poll(){
       $("#placeholder").style.display = "none";
     }
   }
-  /* downloads */
+  /* downloads + on-demand exports */
   if (s.outputs && s.outputs.length) {
-    const dl = $("#downloads"); dl.innerHTML = "";
-    s.outputs.forEach(o => {
-      const a = document.createElement("a");
-      a.className = "dl";
-      a.href = "/api/output?job=" + state.job + "&name=" + encodeURIComponent(o.name);
-      a.innerHTML = `⬇ ${o.name} <span class="sz">${fmtSize(o.size)}</span>`;
-      dl.appendChild(a);
-    });
-    $("#dlcard").style.display = "";
+    renderDownloads(s.outputs);
+    $("#exportrow").style.display = s.can_export ? "" : "none";
+    if (!s.can_export) $("#exporthint").textContent = "";
   }
   /* report table */
   if (s.summary) {
@@ -688,6 +751,18 @@ function syncSourceTitle(){
 }
 srcSel.onchange = syncSourceTitle;
 syncSourceTitle();
+
+function renderDownloads(outputs){
+  const dl = $("#downloads"); dl.innerHTML = "";
+  (outputs || []).forEach(o => {
+    const a = document.createElement("a");
+    a.className = "dl";
+    a.href = "/api/output?job=" + state.job + "&name=" + encodeURIComponent(o.name);
+    a.innerHTML = `⬇ ${o.name} <span class="sz">${fmtSize(o.size)}</span>`;
+    dl.appendChild(a);
+  });
+  $("#dlcard").style.display = "";
+}
 
 function fmtDur(sec){
   sec = Math.max(0, Math.round(sec));

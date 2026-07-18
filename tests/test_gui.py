@@ -64,14 +64,14 @@ def test_upload_run_and_download(gui_server, tmp_path):
     uploaded = json.loads(body)
     assert uploaded["name"] == "scan.ply" and uploaded["size"] > 0
 
-    # Run a reconstruction (fast preset, extra GLB export).
+    # Run a reconstruction (fast preset) — formats come AFTERWARDS on demand.
     status, body = _post(
         url + "/api/run",
         json.dumps(
             {
                 "mode": "reconstruct",
                 "files": [uploaded["path"]],
-                "options": {"preset": "fast", "texture": False, "formats": ["glb"]},
+                "options": {"preset": "fast", "texture": False},
             }
         ).encode(),
     )
@@ -91,9 +91,37 @@ def test_upload_run_and_download(gui_server, tmp_path):
     assert s["state"] == "done", s.get("error")
     assert s["has_viewer"]
     names = {o["name"] for o in s["outputs"]}
-    assert {"modell.html", "modell.glb", "bericht.json"} <= names
+    assert {"modell.html", "bericht.json"} <= names
+    assert "_export_state.pkl" not in names  # internal state stays hidden
     assert s["summary"]["Flächen"] == 6
     assert any("Volumen" in k for k in s["summary"])
+
+    # "Speichern als …": formats are generated on demand AFTER the run.
+    assert s["can_export"] is True
+    for fmt, expected in (
+        ("glb", "strukturmodell.glb"),
+        ("step", "strukturmodell.stp"),
+        ("ifc", "strukturmodell.ifc"),
+        ("dxf", "grundriss.dxf"),
+        ("stl", "strukturmodell.stl"),
+    ):
+        status, body = _post(
+            url + "/api/export",
+            json.dumps({"job": job, "fmt": fmt}).encode(),
+        )
+        assert status == 200, (fmt, body)
+        exp = json.loads(body)
+        assert exp["name"] == expected and exp["size"] > 0
+        assert expected in {o["name"] for o in exp["outputs"]}
+        status, body = _get(
+            url + f"/api/output?job={job}&name={expected}"
+        )
+        assert status == 200 and len(body) == exp["size"]
+    # Unknown format → clean error.
+    status, body = _post(
+        url + "/api/export", json.dumps({"job": job, "fmt": "xyz"}).encode()
+    )
+    assert status == 400
 
     # Viewer served inline, report downloadable.
     status, body = _get(url + f"/api/view?job={job}")

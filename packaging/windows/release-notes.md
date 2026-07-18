@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.15.0 — aufgeräumte Oberfläche: klare Standards, „Speichern als …" statt Format-Vorauswahl
+
+- **Exportformate kommen jetzt NACH der Berechnung**: Das Modell wird einmal gerechnet — danach erscheint unter „Ergebnisdateien" die Leiste **„Speichern als …"**: STEP (CAD), IFC (BIM), DXF-Grundriss, GLB, OBJ, STL, PLY werden **per Klick aus dem fertigen Ergebnis erzeugt** und sofort heruntergeladen. Keine Format-Vorauswahl mehr, kein neuer Rechenlauf.
+- **Einstellungen in drei klaren Gruppen**: **Berechnung** (Komplett-/Detail-Mesh, Strukturmodell, Textur — Standard: alle an, einfach so lassen), **Zusatzauswertungen** (eingeklappt, Standard: alle aus) und **Erweiterte Einstellungen** (eingeklappt, nur Feinjustierung). Die Standards stehen sichtbar dabei.
+- **„Was gilt wann?" steht jetzt in der Oberfläche**: Szene setzt die Grundwerte → das Quelle-Profil (z. B. SLAM) passt sie an den Scanner an → **ausgefüllte** erweiterte Felder überschreiben beides. Leere erweiterte Felder = Automatik. Genau in dieser Reihenfolge rechnet auch das Programm.
+- **SLAM wird automatisch erkannt**: Beim Hinzufügen eines Projektordners mit Trajektorie stellt die Oberfläche die Quelle selbst auf „SLAM-Handscanner" — die bisher leicht zu übersehende Handauswahl entfällt.
+- **„↺ Alles auf Standard zurücksetzen"**: ein Klick, und alle Haken, Auswahlfelder und erweiterten Werte stehen wieder auf den empfohlenen Standardwerten.
+
 ### Neu in 3.14.0 — Foto-Textur garantiert, Detail-Mesh wirklich 2 cm, Strukturanalyse mehrkernig
 
 Analyse des Steuerhaus-Laufs von 3.13.0 (Bericht: `"texture": "keine"`, Detail-Raster 4,9 statt 2 cm): Drei Ursachen gefunden und behoben.
