@@ -1253,14 +1253,16 @@ def _cmd_project(args) -> int:
             full_viewer, photo_cams, project.images_dir,
             transform, rep, output,
         )
-    detail_mesh = None
+    detail_result = None
     if _detail_future is not None:
-        detail_mesh = _detail_future.result()
+        detail_result = _detail_future.result()
         _detail_pool.shutdown(wait=False)
-    if detail_mesh is not None:
-        _write_detail_mesh(
-            detail_mesh, photo_cams, project.images_dir,
-            transform, rep, output,
+    detail_viewer = None
+    if detail_result is not None:
+        detail_mesh, detail_sub = detail_result
+        detail_viewer = _write_detail_mesh(
+            detail_mesh, detail_sub, photo_cams, project.images_dir,
+            transform, rep, output, result=result,
         )
     state_out = getattr(args, "state_out", None)
     if state_out is not None:
@@ -1286,7 +1288,9 @@ def _cmd_project(args) -> int:
             output_mesh, output,
             residual=None if full_viewer is not None else result.residual,
             freeform=full_viewer,
-            freeform_label="Komplett-Mesh (Scan)",
+            freeform_label="Komplett-Mesh (ganze Szene, reduziert)",
+            detail=detail_viewer,
+            detail_label="Detail-Mesh Gebäude (fotorealistisch)",
         )
         if full_mesh is not None:
             glb = output.with_name(output.stem + "_komplett.glb")
@@ -1614,60 +1618,107 @@ def _build_detail_mesh(cloud, result, raster: float):
     if raster is None or raster <= 0 or result is None or not result.surfaces:
         return None
     try:
+        from scipy.spatial import cKDTree
+
         from scantobim.core.freeform import (
             freeform_mesh_from_points,
             sharpen_mesh_with_planes,
         )
 
-        building = [
-            s for s in result.surfaces
+        # FREISTELLUNG: keep only points close to the BUILDING surfaces
+        # (walls, roofs, slabs, ceilings). A bounding box kept ~95% of the
+        # scene (walls at opposite scene ends span everything) — the
+        # distance band actually cuts terrain, vegetation and street
+        # clutter away, which is what makes the detail mesh clean.
+        building = {
+            s.plane_index for s in result.surfaces
             if getattr(s, "surface_class", "") != "terrain"
-        ]
-        if not building:
-            building = result.surfaces
-        pts = np.vstack([s.outer for s in building])
-        lo = pts.min(axis=0) - 1.0
-        hi = pts.max(axis=0) + 1.0
-        mask = np.all((cloud.points >= lo) & (cloud.points <= hi), axis=1)
-        if int(mask.sum()) < 5_000:
+        }
+        mesh = result.mesh
+        sel = (
+            np.isin(mesh.face_groups, list(building))
+            if building and mesh.face_groups is not None
+            else np.ones(len(mesh.faces), dtype=bool)
+        )
+        tris = mesh.vertices[mesh.faces[sel]]
+        if not len(tris):
+            return None
+        # Sample each surface triangle at ~0.3 m so the KD-tree represents
+        # the faces themselves, not just their corners.
+        a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
+        areas = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
+        n_per = np.clip(np.ceil(areas / 0.09).astype(np.int64), 1, 400)
+        total = int(n_per.sum())
+        if total > 400_000:
+            n_per = np.maximum(1, (n_per * (400_000 / total)).astype(np.int64))
+        rng = np.random.default_rng(0)
+        rep = np.repeat(np.arange(len(tris)), n_per)
+        r1 = np.sqrt(rng.random(len(rep)))
+        r2 = rng.random(len(rep))
+        samples = (
+            a[rep] * (1 - r1)[:, None]
+            + b[rep] * (r1 * (1 - r2))[:, None]
+            + c[rep] * (r1 * r2)[:, None]
+        )
+        band = 0.8  # meters around the building surfaces
+        dist, _ = cKDTree(samples).query(
+            cloud.points, k=1, workers=-1, distance_upper_bound=band
+        )
+        mask = np.isfinite(dist)
+        n_kept = int(mask.sum())
+        if n_kept < 5_000:
             return None
         sub = cloud.select(mask)
         print(
-            f"Detail-Mesh: Gebäuderegion ohne Gelände "
-            f"({int(mask.sum()):,} Punkte) wird mit Raster "
-            f"{raster * 100:.1f} cm vernetzt …"
+            f"Detail-Mesh: Gebäude freigestellt — {n_kept:,} von "
+            f"{len(cloud):,} Punkten (Abstand ≤ {band:.1f} m zu "
+            f"Gebäudeflächen), Raster {raster * 100:.1f} cm …"
         )
         detail = freeform_mesh_from_points(
-            sub, voxel=float(raster), max_faces=8_000_000
+            sub, voxel=float(raster), max_faces=12_000_000
         )
         if detail is None:
             print("  Detail-Mesh übersprungen (zu wenig zusammenhängende Geometrie)")
             return None
+        got = float(detail.freeform_stats["voxel"])
+        if got > float(raster) * 1.05:
+            print(
+                f"  ACHTUNG: Detail-Raster auf {got * 100:.1f} cm vergröbert "
+                f"(Flächen-Budget 12 Mio erreicht) — kleinere Region oder "
+                f"größeres Raster wählen"
+            )
+        else:
+            print(f"  Detail-Raster gehalten: {got * 100:.1f} cm")
         sharpen_mesh_with_planes(
             detail, result.surfaces, detail.freeform_stats["voxel"]
         )
-        return detail
+        return detail, sub
     except Exception as exc:  # noqa: BLE001 — detail is a bonus layer
         print(f"  Detail-Mesh übersprungen ({exc})")
         return None
 
 
 def _write_detail_mesh(
-    detail, photo_cams, images_dir, transform, rep: dict, output: Path
-) -> None:
-    """Photo-texture (when cameras exist) and write ``<name>_detail.glb``."""
+    detail, sub_cloud, photo_cams, images_dir, transform, rep: dict,
+    output: Path, result=None,
+):
+    """Photo-texture and write ``<name>_detail.glb``; returns the VIEWER
+    layer (a lighter, equally photo-textured variant of the detail mesh —
+    the default view of the HTML viewer) or ``None``."""
+    viewer_layer = None
     try:
+        from scantobim.core.phototex import bake_photo_atlas
+
         st = detail.freeform_stats
         out_mesh = detail
         if photo_cams is not None and images_dir is not None:
             try:
-                from scantobim.core.phototex import bake_photo_atlas
-
                 print("Foto-Textur: Atlas wird auf das Detail-Mesh projiziert …")
                 dx_stats: dict = {}
                 textured = bake_photo_atlas(
                     detail, photo_cams, images_dir,
                     transform=transform, stats_out=dx_stats,
+                    max_atlas=12288,
                 )
                 if (
                     textured is not None
@@ -1694,8 +1745,50 @@ def _write_detail_mesh(
             f"(Raster {st['voxel'] * 100:.1f} cm) → {detail_glb.name}"
         )
         rep["detail_mesh"] = st
+
+        # Viewer layer: the browser cannot hold 5-10M embedded triangles —
+        # a lighter re-mesh of the SAME region carries the full-resolution
+        # photo atlas, so the default view stays photorealistic.
+        if len(detail.faces) <= 1_500_000:
+            viewer_layer = out_mesh if out_mesh.texture is not None else detail
+        elif sub_cloud is not None:
+            try:
+                from scantobim.core.freeform import (
+                    freeform_mesh_from_points,
+                    sharpen_mesh_with_planes,
+                )
+
+                light = freeform_mesh_from_points(
+                    sub_cloud, max_faces=1_200_000
+                )
+                if light is not None:
+                    if result is not None and result.surfaces:
+                        sharpen_mesh_with_planes(
+                            light, result.surfaces,
+                            light.freeform_stats["voxel"],
+                        )
+                    if photo_cams is not None and images_dir is not None:
+                        lv_stats: dict = {}
+                        lt = bake_photo_atlas(
+                            light, photo_cams, images_dir,
+                            transform=transform, stats_out=lv_stats,
+                        )
+                        if (
+                            lt is not None
+                            and lv_stats.get("photo_fraction", 0.0) >= 0.15
+                        ):
+                            light = lt
+                    viewer_layer = light
+                    print(
+                        f"  Viewer-Ansicht: Detail-Mesh mit "
+                        f"{len(light.faces):,} Dreiecken eingebettet "
+                        f"(Datei {detail_glb.name} trägt die volle Auflösung)"
+                    )
+            except Exception as exc:  # noqa: BLE001 — viewer layer optional
+                print(f"  Viewer-Detailansicht übersprungen ({exc})")
     except Exception as exc:  # noqa: BLE001 — detail is a bonus layer
         print(f"  Detail-Mesh übersprungen ({exc})")
+    return viewer_layer
 
 
 def _bake_full_photo_atlas(
@@ -1728,7 +1821,9 @@ def _bake_full_photo_atlas(
                 rep["komplett_mesh"]["foto_textur"] = px_stats
             foto_glb = output.with_name(output.stem + "_foto.glb")
             write_mesh(textured, foto_glb)
-            print(f"wrote {foto_glb} (fotorealistisches Komplett-Mesh)")
+            print(f"wrote {foto_glb} (Komplett-Mesh der ganzen Szene mit "
+                  "Foto-Atlas, reduzierte Vorschau-Auflösung — das "
+                  "hochaufgelöste Gebäudemodell ist _detail.glb)")
             return textured
         if textured is not None:
             print("  Foto-Anteil zu gering — Vertex-Farben bleiben aktiv")

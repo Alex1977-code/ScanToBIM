@@ -166,3 +166,51 @@ def test_encode_texture_jpeg_for_large_png_for_small():
     data, mime = encode_texture(big)
     assert mime == "image/jpeg"
     assert len(data) > 0
+
+
+def test_charts_stay_coarse_on_bumpy_mesh():
+    """Normal smoothing + mini-chart merge: no chart explosion on noise."""
+    from scantobim.core.cloud import PointCloud
+    from scantobim.core.freeform import freeform_mesh_from_points
+    from scantobim.core.phototex import _build_charts
+
+    rng = np.random.default_rng(0)
+    u = rng.random(120_000)[:, None] * 4.0
+    v = rng.random(120_000)[:, None] * 3.0
+    pts = (
+        np.hstack([u, v, np.zeros_like(u)])
+        + rng.normal(0, 0.015, (120_000, 3))  # bumpy like a real scan
+    )
+    mesh = freeform_mesh_from_points(PointCloud(points=pts), voxel=0.03)
+    assert mesh is not None
+    chart_of_face, chart_axes = _build_charts(mesh)
+    # Old behavior fragmented this into thousands of charts; the fix keeps
+    # a handful of large ones.
+    assert len(chart_axes) < max(20, len(mesh.faces) // 500)
+    sizes = np.bincount(chart_of_face)
+    assert sizes.max() > len(mesh.faces) * 0.5  # one dominant chart
+
+
+def test_viewer_detail_layer_default(tmp_path):
+    """The photorealistic detail layer is embedded and is the default view."""
+    from scantobim.core.mesh import Mesh
+    from scantobim.io.html_viewer import write_html_viewer
+
+    base = Mesh(
+        vertices=np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0]]),
+        faces=np.array([[0, 1, 2]]),
+    )
+    detail = Mesh(
+        vertices=np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]),
+        faces=np.array([[0, 1, 2], [0, 2, 3]]),
+        uvs=np.array([[0.0, 0], [1, 0], [1, 1], [0, 1]]),
+        texture=np.full((8, 8, 3), 90, dtype=np.uint8),
+    )
+    out = write_html_viewer(
+        base, tmp_path / "v.html", detail=detail,
+        detail_label="Detail-Mesh Gebäude (fotorealistisch)",
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "Detail-Mesh Gebäude (fotorealistisch)" in text
+    assert '"dt_indices": 6' in text and '"dt_textured": true' in text
+    assert "data:image/" in text  # embedded detail texture

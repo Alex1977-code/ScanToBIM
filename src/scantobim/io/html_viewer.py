@@ -64,6 +64,8 @@ def write_html_viewer(
     points=None,
     freeform: Mesh | None = None,
     freeform_label: str = "Freiform-Restgeometrie",
+    detail: Mesh | None = None,
+    detail_label: str = "Detail-Mesh (fotorealistisch)",
     max_layer_points: int = 800_000,
 ) -> Path:
     """Write the standalone viewer.
@@ -148,7 +150,34 @@ def write_html_viewer(
         ff_indices = np.zeros((0, 3), dtype=np.uint32)
         ff_uvs = np.zeros((0, 2), dtype=np.float32)
 
-    all_pos = positions if not len(ff_positions) else np.vstack([positions, ff_positions])
+    # Optional DETAIL layer: the photorealistic building mesh — shown by
+    # default; structure model and complete mesh become opt-in overlays.
+    dt_textured = False
+    dt_texture_uri = ""
+    if detail is not None and len(detail.faces):
+        dt_positions = detail.vertices.astype(np.float32)
+        dt_normals = detail.vertex_normals().astype(np.float32)
+        dt_colors = (
+            detail.vertex_colors.astype(np.uint8)
+            if detail.vertex_colors is not None
+            else np.full((len(dt_positions), 3), 150, dtype=np.uint8)
+        )
+        dt_indices = detail.faces.astype(np.uint32)
+        if detail.texture is not None and detail.uvs is not None:
+            dt_textured = True
+            dt_uvs = detail.uvs.astype(np.float32)
+            dt_texture_uri = _texture_uri(detail.texture)
+        else:
+            dt_uvs = np.zeros((len(dt_positions), 2), dtype=np.float32)
+    else:
+        dt_positions = np.zeros((0, 3), dtype=np.float32)
+        dt_normals = np.zeros((0, 3), dtype=np.float32)
+        dt_colors = np.zeros((0, 3), dtype=np.uint8)
+        dt_indices = np.zeros((0, 3), dtype=np.uint32)
+        dt_uvs = np.zeros((0, 2), dtype=np.float32)
+
+    stack = [p for p in (positions, ff_positions, dt_positions) if len(p)]
+    all_pos = np.vstack(stack) if stack else positions
     center = (all_pos.min(axis=0) + all_pos.max(axis=0)) / 2.0 if len(all_pos) else np.zeros(3)
     radius = float(np.linalg.norm(all_pos - center, axis=1).max()) if len(all_pos) else 1.0
 
@@ -165,13 +194,17 @@ def write_html_viewer(
         "points": int(len(pt_positions)),
         "ff_indices": int(ff_indices.size),
         "ff_triangles": int(len(ff_indices)),
+        "dt_indices": int(dt_indices.size),
+        "dt_triangles": int(len(dt_indices)),
     }
 
     meta["textured"] = bool(textured)
     meta["ff_textured"] = bool(ff_textured)
+    meta["dt_textured"] = bool(dt_textured)
     html = (
         _TEMPLATE.replace("__TITLE__", title)
         .replace("__FF_LABEL__", freeform_label)
+        .replace("__DT_LABEL__", detail_label)
         .replace("__META__", json.dumps(meta))
         .replace("__POSITIONS__", b64(positions))
         .replace("__NORMALS__", b64(normals))
@@ -188,6 +221,12 @@ def write_html_viewer(
         .replace("__FF_UVS__", b64(ff_uvs))
         .replace("__FF_TEXTURE_URI__", ff_texture_uri)
         .replace("__FF_INDICES__", b64(ff_indices))
+        .replace("__DT_POSITIONS__", b64(dt_positions))
+        .replace("__DT_NORMALS__", b64(dt_normals))
+        .replace("__DT_COLORS__", b64(dt_colors))
+        .replace("__DT_UVS__", b64(dt_uvs))
+        .replace("__DT_TEXTURE_URI__", dt_texture_uri)
+        .replace("__DT_INDICES__", b64(dt_indices))
     )
     path.write_text(html, encoding="utf-8")
     return path
@@ -223,6 +262,8 @@ _TEMPLATE = """<!DOCTYPE html>
 <div id="hud"><h1>__TITLE__</h1><div id="stats"></div></div>
 <div id="layers" hidden>
   <div class="lt">EBENEN EIN/AUS</div>
+  <label id="dtRow" hidden><input type="checkbox" id="dtToggle" checked>
+    __DT_LABEL__ (<span id="dtCount"></span> Dreiecke)</label>
   <label id="baseRow" hidden><input type="checkbox" id="baseToggle" checked>
     Strukturmodell (Fl&auml;chen &amp; Kanten)</label>
   <label id="ffRow" hidden><input type="checkbox" id="ffToggle" checked>
@@ -252,26 +293,49 @@ const ffNormals   = decode("__FF_NORMALS__", Float32Array);
 const ffColors    = decode("__FF_COLORS__", Uint8Array);
 const ffUvs       = decode("__FF_UVS__", Float32Array);
 const ffIndices   = decode("__FF_INDICES__", Uint32Array);
+const dtPositions = decode("__DT_POSITIONS__", Float32Array);
+const dtNormals   = decode("__DT_NORMALS__", Float32Array);
+const dtColors    = decode("__DT_COLORS__", Uint8Array);
+const dtUvs       = decode("__DT_UVS__", Float32Array);
+const dtIndices   = decode("__DT_INDICES__", Uint32Array);
 const TEXTURE_URI = "__TEXTURE_URI__";
 const FF_TEXTURE_URI = "__FF_TEXTURE_URI__";
+const DT_TEXTURE_URI = "__DT_TEXTURE_URI__";
 
 document.getElementById("stats").textContent =
   META.vertices + " Vertices · " + META.triangles + " Dreiecke · " + META.surfaces + " Flächen";
 let showPoints = META.points > 0;
 let showFF = META.ff_indices > 0;
 let showBase = true;
-if (META.points > 0 || META.ff_indices > 0) {
+let showDT = META.dt_indices > 0;
+if (showDT) {
+  /* The photorealistic detail mesh IS the default view — the structure
+     model and the complete mesh become opt-in overlays. */
+  showBase = false;
+  showFF = false;
+  showPoints = false;
+}
+if (META.points > 0 || META.ff_indices > 0 || META.dt_indices > 0) {
   document.getElementById("layers").hidden = false;
   if (META.triangles > 0) {
     document.getElementById("baseRow").hidden = false;
+    document.getElementById("baseToggle").checked = showBase;
     document.getElementById("baseToggle").addEventListener("change", e => {
       showBase = e.target.checked;
     });
   }
 }
+if (META.dt_indices > 0) {
+  document.getElementById("dtRow").hidden = false;
+  document.getElementById("dtCount").textContent = META.dt_triangles.toLocaleString("de-DE");
+  document.getElementById("dtToggle").addEventListener("change", e => {
+    showDT = e.target.checked;
+  });
+}
 if (META.points > 0) {
   document.getElementById("ptsRow").hidden = false;
   document.getElementById("ptsCount").textContent = META.points.toLocaleString("de-DE");
+  document.getElementById("ptsToggle").checked = showPoints;
   document.getElementById("ptsToggle").addEventListener("change", e => {
     showPoints = e.target.checked;
   });
@@ -279,6 +343,7 @@ if (META.points > 0) {
 if (META.ff_indices > 0) {
   document.getElementById("ffRow").hidden = false;
   document.getElementById("ffCount").textContent = META.ff_triangles.toLocaleString("de-DE");
+  document.getElementById("ffToggle").checked = showFF;
   document.getElementById("ffToggle").addEventListener("change", e => {
     showFF = e.target.checked;
   });
@@ -337,6 +402,24 @@ const ffNrmBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffNormals) : null;
 const ffColBuf = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffColors) : null;
 const ffUvBuf  = META.ff_indices ? buffer(gl.ARRAY_BUFFER, ffUvs) : null;
 const ffIdxBuf = META.ff_indices ? buffer(gl.ELEMENT_ARRAY_BUFFER, ffIndices) : null;
+const dtPosBuf = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtPositions) : null;
+const dtNrmBuf = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtNormals) : null;
+const dtColBuf = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtColors) : null;
+const dtUvBuf  = META.dt_indices ? buffer(gl.ARRAY_BUFFER, dtUvs) : null;
+const dtIdxBuf = META.dt_indices ? buffer(gl.ELEMENT_ARRAY_BUFFER, dtIndices) : null;
+/* LOD while interacting: every 3rd triangle of the detail layer. Full
+   resolution comes back the moment the pointer is released. */
+let dtLodBuf = null, dtLodCount = 0;
+if (META.dt_triangles > 900000) {
+  const lod = new Uint32Array(Math.floor(META.dt_triangles / 3) * 3);
+  let o = 0;
+  for (let f = 0; f < META.dt_triangles; f += 3) {
+    lod[o++] = dtIndices[f*3]; lod[o++] = dtIndices[f*3+1]; lod[o++] = dtIndices[f*3+2];
+  }
+  dtLodBuf = buffer(gl.ELEMENT_ARRAY_BUFFER, lod);
+  dtLodCount = o;
+}
+let interacting = false;
 const pAPos = gl.getAttribLocation(pprog, "aPos");
 const pACol = gl.getAttribLocation(pprog, "aCol");
 const pUMVP = gl.getUniformLocation(pprog, "uMVP");
@@ -371,8 +454,10 @@ function loadTexture(uri, unit, done) {
 }
 let texReady = false;
 let ffTexReady = false;
+let dtTexReady = false;
 if (META.textured && TEXTURE_URI) loadTexture(TEXTURE_URI, 0, () => { texReady = true; });
 if (META.ff_textured && FF_TEXTURE_URI) loadTexture(FF_TEXTURE_URI, 1, () => { ffTexReady = true; });
+if (META.dt_textured && DT_TEXTURE_URI) loadTexture(DT_TEXTURE_URI, 2, () => { dtTexReady = true; });
 
 let theta = -1.0, phi = 1.1, dist = META.radius * 2.6;
 const target = META.center.slice();
@@ -472,6 +557,34 @@ function draw() {
     gl.uniform1i(uTex, 0);
   }
 
+  if (META.dt_indices && showDT) {
+    // Detail layer (default view): full photo texture; while the user is
+    // dragging, a 1/3-triangle LOD keeps the interaction fluid.
+    gl.uniform1f(uFlat, 0.0); gl.uniform1f(uBias, 0.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, dtPosBuf);
+    gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, dtNrmBuf);
+    gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, dtColBuf);
+    gl.vertexAttribPointer(aCol, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+    if (dtTexReady && aUV >= 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, dtUvBuf);
+      gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
+      gl.uniform1f(uTextured, 1.0); gl.uniform1i(uTex, 2);
+    } else {
+      gl.uniform1f(uTextured, 0.0);
+      if (aUV >= 0) gl.disableVertexAttribArray(aUV);
+    }
+    if (interacting && dtLodBuf) {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, dtLodBuf);
+      gl.drawElements(gl.TRIANGLES, dtLodCount, gl.UNSIGNED_INT, 0);
+    } else {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, dtIdxBuf);
+      gl.drawElements(gl.TRIANGLES, META.dt_indices, gl.UNSIGNED_INT, 0);
+    }
+    gl.uniform1i(uTex, 0);
+  }
+
   if (META.points && showPoints) {
     gl.useProgram(pprog);
     gl.uniformMatrix4fv(pUMVP, false, mvp);
@@ -497,6 +610,7 @@ let pinchDist = 0;
 canvas.addEventListener("pointerdown", e => {
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 });
   canvas.setPointerCapture(e.pointerId);
+  interacting = true;
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
     pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -529,8 +643,8 @@ function panBy(dx, dy) {
   const s = dist * 0.0016;
   for (let i = 0; i < 3; i++) target[i] += (-dx*x[i] + dy*y[i]) * s;
 }
-canvas.addEventListener("pointerup", e => { pointers.delete(e.pointerId); pinchDist = 0; });
-canvas.addEventListener("pointercancel", e => { pointers.delete(e.pointerId); pinchDist = 0; });
+canvas.addEventListener("pointerup", e => { pointers.delete(e.pointerId); pinchDist = 0; if (!pointers.size) interacting = false; });
+canvas.addEventListener("pointercancel", e => { pointers.delete(e.pointerId); pinchDist = 0; if (!pointers.size) interacting = false; });
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
   dist *= Math.exp(e.deltaY * 0.0012);

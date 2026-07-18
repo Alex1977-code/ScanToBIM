@@ -18,6 +18,8 @@ def write_mesh(
     residual: PointCloud | None = None,
     freeform: Mesh | None = None,
     freeform_label: str = "Freiform-Restgeometrie",
+    detail: Mesh | None = None,
+    detail_label: str = "Detail-Mesh (fotorealistisch)",
 ) -> Path:
     """Write ``mesh`` to ``path``; format is chosen by extension
     (``.obj``, ``.ply``, ``.stl``, ``.glb``, ``.gltf``, ``.html``).
@@ -43,6 +45,7 @@ def write_mesh(
         write_html_viewer(
             mesh, path, points=residual, freeform=freeform,
             freeform_label=freeform_label,
+            detail=detail, detail_label=detail_label,
         )
     else:
         raise ValueError(

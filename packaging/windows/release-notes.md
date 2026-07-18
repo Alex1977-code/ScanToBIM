@@ -4,6 +4,16 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.16.0 — Textur-Auflösung ×10, Gebäude freigestellt, Detail-Mesh als Standard-Ansicht
+
+Umsetzung der verifizierten Fixliste zum 3.15-Lauf (6,2 cm/Texel, 3,6 statt 2 cm Raster, 18 % Foto-Anteil, Viewer zeigte das reduzierte Komplett-Mesh):
+
+- **Ursache der groben Textur gefunden — Chart-Explosion**: Das bucklige Voxel-Netz zerfiel beim Atlas-Entfalten in **461.337 Mini-Charts** (12 Dreiecke pro Chart!); deren Rand-Polster fraßen das Atlas-Budget, das Raster wurde auf 6,2 cm/Texel gezwungen und die winzigen Charts sampelten kaum Foto-Pixel (18 % Foto-Anteil). Jetzt werden die Flächennormalen vor der Chart-Bildung **geglättet** und Mini-Charts in ihre großen Nachbarn **verschmolzen** — im Regressionstest sinkt dieselbe Szene von 165.572 auf **153 Charts**. Ergebnis: das Budget geht in Auflösung statt Polster, der Foto-Anteil steigt entsprechend.
+- **Gebäude wirklich freigestellt**: Die „Gebäuderegion" behielt 19 von 20 Mio Punkten — die Hüllbox der Wandflächen spannte fast die ganze Szene auf. Jetzt zählen nur Punkte im **Abstand ≤ 0,8 m zu den Gebäudeflächen selbst** (Wände, Dächer, Decken — abgetastet und per Nachbarschaftssuche geprüft). Gelände, Bewuchs, Autos und Straßenmöbel fliegen raus — das beseitigt den Großteil der Fransen und macht das 2-cm-Ziel erreichbar.
+- **2-cm-Raster wird gehalten statt still vergröbert**: Flächen-Budget des Detail-Mesh auf 12 Mio erhöht; wird das Raster dennoch vergröbert, steht jetzt eine **deutliche ACHTUNG-Zeile** im Protokoll („Detail-Raster gehalten: 2,0 cm" bzw. „auf X cm vergröbert"). Der Detail-Atlas darf zusätzlich auf **12288 px Kantenlänge** wachsen.
+- **Der Viewer zeigt jetzt standardmäßig das fotorealistische Detail-Mesh**: neue Ebene „Detail-Mesh Gebäude (fotorealistisch)" — beim Öffnen aktiv; Strukturmodell und Komplett-Mesh sind zuschaltbare Overlays mit ehrlichen Namen („Komplett-Mesh (ganze Szene, reduziert)"). Beim Drehen/Zoomen schaltet der Viewer auf eine ⅓-LOD und beim Loslassen sofort zurück auf volle Auflösung. Die Datei `_detail.glb` trägt weiterhin die volle Dreiecks- und Textur-Auflösung.
+- Hinweis zur Einordnung: >95 % Foto-Abdeckung am Gebäude und normalen-gewichtetes Überblenden mehrerer Ansichten stehen als nächster Schritt an — die Projektion selbst rechnet bereits mit dem vollen POLYFISHEYE-Modell (kein Pinhole).
+
 ### Neu in 3.15.0 — aufgeräumte Oberfläche: klare Standards, „Speichern als …" statt Format-Vorauswahl
 
 - **Exportformate kommen jetzt NACH der Berechnung**: Das Modell wird einmal gerechnet — danach erscheint unter „Ergebnisdateien" die Leiste **„Speichern als …"**: STEP (CAD), IFC (BIM), DXF-Grundriss, GLB, OBJ, STL, PLY werden **per Klick aus dem fertigen Ergebnis erzeugt** und sofort heruntergeladen. Keine Format-Vorauswahl mehr, kein neuer Rechenlauf.

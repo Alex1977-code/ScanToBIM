@@ -35,19 +35,22 @@ _ZBUF_W = 200  # per-camera depth-buffer width (visibility test)
 
 # ------------------------------------------------------------------ charts
 
-def _build_charts(mesh: Mesh):
+def _build_charts(mesh: Mesh, smooth_iters: int = 3, min_chart_faces: int = 24):
     """Split faces into orthographic charts (dominant axis + connectivity).
 
     Returns ``(chart_of_face, chart_axes)`` where ``chart_axes[c]`` is the
     dominant-axis bin (0..5: ±x ±y ±z) of chart ``c``.
+
+    Voxel meshes of real scans are bumpy — raw face normals flip bins every
+    few faces and shatter the surface into hundreds of thousands of tiny
+    charts whose per-chart padding then eats the whole atlas (observed:
+    461k charts → forced 6 cm texels). Two counter-measures: the normals
+    are SMOOTHED over the face adjacency before binning, and remaining
+    mini-charts are MERGED into their largest neighbour until every chart
+    carries a sensible face count.
     """
     from scipy import sparse
     from scipy.sparse.csgraph import connected_components
-
-    fn = mesh.face_normals()
-    axis = np.argmax(np.abs(fn), axis=1)
-    sign = np.take_along_axis(fn, axis[:, None], axis=1)[:, 0] < 0
-    bins = axis * 2 + sign.astype(int)
 
     faces = mesh.faces
     n_f = len(faces)
@@ -57,14 +60,45 @@ def _build_charts(mesh: Mesh):
     order = np.lexsort((edges[:, 1], edges[:, 0]))
     es, ef = edges[order], edge_face[order]
     same = np.all(es[1:] == es[:-1], axis=1)
-    f1, f2 = ef[:-1][same], ef[1:][same]
-    ok = bins[f1] == bins[f2]
-    f1, f2 = f1[ok], f2[ok]
+    af1, af2 = ef[:-1][same], ef[1:][same]  # all adjacent face pairs
 
-    graph = sparse.coo_matrix(
-        (np.ones(len(f1), dtype=np.int8), (f1, f2)), shape=(n_f, n_f)
-    )
-    n_charts, chart_of_face = connected_components(graph, directed=False)
+    fn = mesh.face_normals().copy()
+    for _ in range(max(0, smooth_iters)):
+        acc = fn.copy()
+        np.add.at(acc, af1, fn[af2])
+        np.add.at(acc, af2, fn[af1])
+        norm = np.linalg.norm(acc, axis=1, keepdims=True)
+        fn = np.divide(acc, norm, out=fn, where=norm > 1e-12)
+    axis = np.argmax(np.abs(fn), axis=1)
+    sign = np.take_along_axis(fn, axis[:, None], axis=1)[:, 0] < 0
+    bins = axis * 2 + sign.astype(int)
+
+    def _components(bins_arr):
+        ok = bins_arr[af1] == bins_arr[af2]
+        graph = sparse.coo_matrix(
+            (np.ones(int(ok.sum()), dtype=np.int8), (af1[ok], af2[ok])),
+            shape=(n_f, n_f),
+        )
+        return connected_components(graph, directed=False)
+
+    n_charts, chart_of_face = _components(bins)
+    for _ in range(4):
+        sizes = np.bincount(chart_of_face, minlength=n_charts)
+        tiny = sizes[chart_of_face] < min_chart_faces
+        if not tiny.any() or tiny.all():
+            break
+        # Every face in a tiny chart adopts the bin of an adjacent face
+        # that lives in a big chart (if any) — then recompute components.
+        new_bins = bins.copy()
+        for a, b in ((af1, af2), (af2, af1)):
+            src_big = ~tiny[b]
+            take = tiny[a] & src_big
+            new_bins[a[take]] = bins[b[take]]
+        if np.array_equal(new_bins, bins):
+            break
+        bins = new_bins
+        n_charts, chart_of_face = _components(bins)
+
     chart_axes = np.zeros(n_charts, dtype=np.int64)
     chart_axes[chart_of_face] = bins  # any member face defines the bin
     return chart_of_face, chart_axes

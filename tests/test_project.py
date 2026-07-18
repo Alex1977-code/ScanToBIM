@@ -1201,6 +1201,8 @@ def test_detail_mesh_region_excludes_terrain(tmp_path):
     ]) + rng.normal(0, 0.003, (m, 3))
     cloud = PointCloud(points=np.vstack([wall, ground]))
 
+    from scantobim.core.mesh import Mesh
+
     z = np.array([0.0, 0.0, 1.0])
     terrain_geo = SurfaceGeometry(
         plane_index=0, normal=z.copy(),
@@ -1212,19 +1214,32 @@ def test_detail_mesh_region_excludes_terrain(tmp_path):
         outer=np.array([[0.0, 0, 0], [2, 0, 0], [2, 0, 2], [0, 0, 2]]),
         holes=[], surface_class="wall",
     )
-    result = SimpleNamespace(surfaces=[terrain_geo, wall_geo])
+    verts = np.array([
+        [0.0, 0, 0], [2, 0, 0], [2, 0, 2], [0, 0, 2],           # wall
+        [-30.0, -20, 0], [30, -20, 0], [30, 20, 0], [-30, 20, 0],  # terrain
+    ])
+    faces = np.array([[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]])
+    struct_mesh = Mesh(
+        vertices=verts, faces=faces,
+        face_groups=np.array([1, 1, 0, 0]),
+    )
+    result = SimpleNamespace(
+        surfaces=[terrain_geo, wall_geo], mesh=struct_mesh
+    )
 
-    detail = _build_detail_mesh(cloud, result, raster=0.05)
-    assert detail is not None
+    res = _build_detail_mesh(cloud, result, raster=0.05)
+    assert res is not None
+    detail, sub = res
     lo = detail.vertices.min(axis=0)
     hi = detail.vertices.max(axis=0)
-    # Region = wall bbox + 1 m buffer (+ raster slack) — nowhere near ±30 m.
+    # Freistellung: nur Punkte nahe der WAND — nirgendwo ±30 m Gelände.
     assert lo[0] > -1.5 and hi[0] < 3.5
     assert lo[1] > -1.5 and hi[1] < 1.5
 
-    # Plain write path (no cameras): file + report entry.
+    # Plain write path (no cameras): file + report entry + viewer layer.
     rep: dict = {}
     out = tmp_path / "modell.html"
-    _write_detail_mesh(detail, None, None, None, rep, out)
+    viewer_layer = _write_detail_mesh(detail, sub, None, None, None, rep, out)
     assert (tmp_path / "modell_detail.glb").exists()
     assert rep["detail_mesh"]["triangles"] > 0
+    assert viewer_layer is not None  # small mesh → embedded directly
