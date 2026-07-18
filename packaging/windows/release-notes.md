@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.20.0 — Posen-Registrierung mit allen Hypothesen: der Bericht zeigte, warum 3.19 nicht griff
+
+Der 3.19-Lauf hat geliefert, was er sollte — die Diagnose: `posen_ausrichtung: angewendet=false, residuum 130,8 m, zuordnung "zeit"`. Die Registrierung LIEF, aber die Zeit-Zuordnung erzeugte falsche Punktpaare (Foto-Zeiten außerhalb des Trajektorien-Fensters werden von der Interpolation ans Ende geklemmt — viele-zu-eins-Paare vergiften den Fit), und der Bogenlängen-Fallback kam nie zum Zug, weil die Zeit-Zuordnung formal „funktionierte".
+
+- **Alle Zuordnungs-Hypothesen werden jetzt gerechnet, die beste gewinnt**: Zeit (nur Fotos IM Trajektorien-Fenster, keine geklemmten Paare mehr), Zeit mit konstantem Uhren-Versatz, Bogenlänge vorwärts und rückwärts — jede als starrer Fit (Kabsch) UND als Ähnlichkeits-Fit (Umeyama, fängt Einheiten-Fehler wie cm↔m). Angenommen wird nur ein Residuum unter der pfadgrößen-relativen Schwelle.
+- **Der Bericht zeigt die Residuen ALLER Hypothesen** (`residuen_aller_hypothesen_m`) — auch im Fehlerfall. Damit ist beim nächsten Lauf ohne Rätselraten ablesbar, welche Zuordnung passt und welche nicht: das Ende der schleppenden Fehlersuche bei den Posen.
+- Getestet gegen die drei realistischen Störfälle: fremde Foto-Uhr (Bogenlänge gewinnt), Zentimeter-Koordinaten (Skalierung 0,01 erkannt), Zufalls-Posen (alle Hypothesen abgelehnt, vollständiger Residuen-Bericht).
+
 ### Neu in 3.19.0 — Grundursache gefunden: die ImgPose-Posen lagen 150 m neben der Wolke
 
 Die Kamera-Selbstprüfung aus 3.18 hat geliefert: `kamera_abstand_p25_m: 151 m` — die ImgPose-Kamerapositionen liegen in einem EIGENEN Koordinatensystem, ~150 m neben der Punktwolke. Deshalb sampelten die Wände Himmel und Wasser, die Texel-Ableitung lief gegen ihren Sicherheitsdeckel, nur 103 von 746 Kameras bestanden die Prüfung und der Kanten-Fotoabgleich fand (korrekt!) keine verwertbaren Gradienten. Der weiche Posen-Score von 92 % hatte das jahrelang kaschiert.

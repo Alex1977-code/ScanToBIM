@@ -103,20 +103,47 @@ def read_imgpose(path: str | Path):
     return entries
 
 
+def _fit_similarity(src, dst, with_scale: bool):
+    """Umeyama fit ``s·R·src + t ≈ dst``; returns (s, R, t, median residual)."""
+    mu_s = src.mean(axis=0)
+    mu_d = dst.mean(axis=0)
+    src_c = src - mu_s
+    dst_c = dst - mu_d
+    h = src_c.T @ dst_c / len(src)
+    u, sv, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    s_diag = np.diag([1.0, 1.0, d])
+    r = vt.T @ s_diag @ u.T
+    if with_scale:
+        var_s = (src_c**2).sum() / len(src)
+        scale = float((sv * np.diag(s_diag)).sum() / max(var_s, 1e-12))
+        scale = scale if np.isfinite(scale) and scale > 1e-6 else 1.0
+    else:
+        scale = 1.0
+    t = mu_d - scale * (r @ mu_s)
+    resid = np.linalg.norm(src @ (scale * r).T + t - dst, axis=1)
+    return scale, r, t, float(np.median(resid))
+
+
 def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
-    """Rigid-align ImgPose positions onto the scanner trajectory.
+    """Register ImgPose positions onto the scanner trajectory.
 
     ImgPose files can live in their OWN coordinate frame (observed on the
-    S20: a ~150 m offset) while ``trajectory.txt`` is in the cloud frame —
-    the pose colors then sample sky and water although the soft pose score
-    looks fine. Both paths describe the SAME walk: match photo poses to
-    trajectory positions by timestamp (falling back to arc-length when the
-    clocks do not overlap), fit a rigid transform (Kabsch) and apply it
-    when the residual confirms the match.
+    S20: cameras ~150 m beside the cloud). Both paths describe the SAME
+    walk — but WHICH correspondence links them is not knowable up front
+    (clock offsets, partial overlaps, reversed ordering, unit scales). So
+    EVERY pairing hypothesis is fitted and the best residual wins:
+
+    * time-matched (clamp-free: only photos inside the trajectory window)
+    * time-matched with constant clock offset (start-aligned)
+    * arc-length (same walked fraction), forward and reversed
+
+    each as rigid (Kabsch) AND as similarity (Umeyama, catches unit
+    mismatches). All residuals go into the report — the next run shows
+    exactly which hypothesis fits instead of leaving us guessing.
 
     Returns ``(aligned_raw, align_rot)`` — ``align_rot`` is ``None`` when
-    no alignment was applied, else the rotation every camera rotation must
-    be composed with (``rot_cloud = rot_imgframe @ align_rot.T``).
+    no hypothesis passes the residual gate.
     """
     if trajectory is None:
         return raw, None
@@ -128,8 +155,20 @@ def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
         return raw, None
     txyz = traj[:, :3]
 
-    targets = None
-    matched_by = None
+    hypotheses: list[tuple[str, np.ndarray, np.ndarray]] = []  # (label, src, dst)
+
+    def _add_time_hypothesis(label, pt, ok_t, tt_s, txyz_s):
+        # Only photos strictly INSIDE the trajectory window — np.interp
+        # clamps at the ends, and clamped many-to-one pairs poison the fit
+        # (that was the 130 m residual of the first attempt).
+        inside = ok_t & (pt >= tt_s[0]) & (pt <= tt_s[-1])
+        if inside.sum() < 8:
+            return
+        dst = np.column_stack([
+            np.interp(pt[inside], tt_s, txyz_s[:, i]) for i in range(3)
+        ])
+        hypotheses.append((label, xyz[inside], dst))
+
     if traj.shape[1] >= 4:
         times = np.array(
             [t if t is not None else np.nan for (_n, _x, _q, t) in raw],
@@ -140,61 +179,60 @@ def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
         order = np.argsort(tt)
         tt_s, txyz_s = tt[order], txyz[order]
         if ok_t.sum() >= 8 and tt_s[-1] > tt_s[0]:
-            pt = times.copy()
-            dur_p = np.nanmax(pt) - np.nanmin(pt)
-            dur_t = tt_s[-1] - tt_s[0]
-            overlap = min(np.nanmax(pt), tt_s[-1]) - max(np.nanmin(pt), tt_s[0])
-            if overlap < 0.5 * min(dur_p, dur_t) and dur_t > 0 and (
-                abs(dur_p - dur_t) < 0.35 * max(dur_p, dur_t)
-            ):
-                pt = pt + (tt_s[0] - np.nanmin(pt))  # constant clock offset
-                overlap = min(np.nanmax(pt), tt_s[-1]) - max(
-                    np.nanmin(pt), tt_s[0]
-                )
-            if overlap > 0.5 * min(dur_p, dur_t):
-                targets = np.column_stack([
-                    np.interp(pt[ok_t], tt_s, txyz_s[:, i]) for i in range(3)
-                ])
-                src_mask = ok_t
-                matched_by = "zeit"
-    if targets is None:
-        # Arc-length fallback: photo i sits at the same walked fraction of
-        # the path as its trajectory counterpart.
-        def _arc(p):
-            seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
-            a = np.concatenate([[0.0], np.cumsum(seg)])
-            return a / max(a[-1], 1e-9)
-        a_p = _arc(xyz)
-        a_t = _arc(txyz)
-        targets = np.column_stack([
-            np.interp(a_p, a_t, txyz[:, i]) for i in range(3)
-        ])
-        src_mask = np.ones(len(xyz), dtype=bool)
-        matched_by = "bogenlaenge"
+            _add_time_hypothesis("zeit", times, ok_t, tt_s, txyz_s)
+            shift = tt_s[0] - np.nanmin(times)
+            _add_time_hypothesis(
+                "zeit+offset", times + shift, ok_t, tt_s, txyz_s
+            )
 
-    src = xyz[src_mask]
-    if len(src) < 8:
+    def _arc(p):
+        seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
+        a = np.concatenate([[0.0], np.cumsum(seg)])
+        return a / max(a[-1], 1e-9)
+
+    a_p = _arc(xyz)
+    a_t = _arc(txyz)
+    for label, ap in (("bogenlaenge", a_p), ("bogenlaenge-rueckwaerts", 1.0 - a_p)):
+        dst = np.column_stack([
+            np.interp(ap, a_t, txyz[:, i]) for i in range(3)
+        ])
+        hypotheses.append((label, xyz, dst))
+
+    best = None  # (residual, label, scale, r, t)
+    residuals_report: dict[str, float] = {}
+    for label, src, dst in hypotheses:
+        for with_scale, suffix in ((False, ""), (True, "+skalierung")):
+            scale, r, t, residual = _fit_similarity(src, dst, with_scale)
+            if with_scale and not (0.001 <= scale <= 1000.0):
+                continue  # no plausible unit factor
+            key = label + suffix
+            residuals_report[key] = round(residual, 3)
+            # Strict improvement only — hypotheses are ordered by prior
+            # plausibility (time first), ties must not flip to reversed
+            # pairings on symmetric paths.
+            if best is None or residual < best[0] - 1e-6:
+                best = (residual, key, scale, r, t)
+
+    if best is None:
         return raw, None
-    # Kabsch: R, t minimizing |R src + t - targets|².
-    mu_s = src.mean(axis=0)
-    mu_d = targets.mean(axis=0)
-    h = (src - mu_s).T @ (targets - mu_d)
-    u, _s, vt = np.linalg.svd(h)
-    d = np.sign(np.linalg.det(vt.T @ u.T))
-    r_a = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
-    t_a = mu_d - r_a @ mu_s
-    resid = np.linalg.norm(src @ r_a.T + t_a - targets, axis=1)
-    residual = float(np.median(resid))
-    offset = float(np.linalg.norm(mu_d - mu_s))
-    if residual > 1.0:
+    residual, label, scale, r_a, t_a = best
+    offset = float(np.linalg.norm(txyz.mean(axis=0) - xyz.mean(axis=0)))
+    # Gate RELATIVE to the path extent: 1 m on a 100 m walk is a match,
+    # 0.6 m on a 2 m path is a coincidence.
+    extent = float(np.linalg.norm(txyz.max(axis=0) - txyz.min(axis=0)))
+    gate = min(1.0, max(0.15, 0.02 * extent))
+    if residual > gate:
         if stats_out is not None:
             stats_out["posen_ausrichtung"] = {
-                "angewendet": False, "residuum_m": round(residual, 2),
-                "versatz_m": round(offset, 1), "zuordnung": matched_by,
+                "angewendet": False,
+                "residuum_m": round(residual, 2),
+                "versatz_m": round(offset, 1),
+                "zuordnung": label,
+                "residuen_aller_hypothesen_m": residuals_report,
             }
         return raw, None
     aligned = [
-        (n, r_a @ np.asarray(x, dtype=np.float64) + t_a, q, t)
+        (n, scale * (r_a @ np.asarray(x, dtype=np.float64)) + t_a, q, t)
         for (n, x, q, t) in raw
     ]
     if stats_out is not None:
@@ -204,7 +242,9 @@ def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
             "versatz_m": round(offset, 1),
             "residuum_cm": round(residual * 100.0, 1),
             "rotation_deg": round(float(ang), 2),
-            "zuordnung": matched_by,
+            "skalierung": round(scale, 4),
+            "zuordnung": label,
+            "residuen_aller_hypothesen_m": residuals_report,
         }
     return aligned, r_a
 

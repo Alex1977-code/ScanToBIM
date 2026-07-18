@@ -1273,7 +1273,10 @@ def test_imgpose_frame_offset_aligned_via_trajectory(tmp_path):
     img_dir = tmp_path / "bilder"
     img_dir.mkdir()
     px, py = np.meshgrid(np.arange(W), np.arange(H))
-    centers = [np.array([-0.9 + 0.2 * i, 0.05 * i, -5.0]) for i in range(10)]
+    centers = [
+        np.array([-0.9 + 0.2 * i, 0.4 * np.sin(0.6 * i), -5.0])
+        for i in range(10)
+    ]
     for i, c in enumerate(centers):
         photo = field(
             (px - W / 2) * 5.0 / fx_true + c[0],
@@ -1319,3 +1322,115 @@ def test_imgpose_frame_offset_aligned_via_trajectory(tmp_path):
     for cam, c in zip(cams, centers):
         center = -cam.rotation.T @ cam.translation
         assert np.linalg.norm(center - c) < 0.05
+
+
+def _alignment_fixture(tmp_path, centers, times, traj_rows, mangle):
+    """Shared scaffolding: photo field, cloud, ImgPose file, trajectory."""
+    import PIL.Image as PILImage
+
+    fx_true, W, H = 350.0, 400, 300
+
+    def field(x, y):
+        r = 50 + 100 * (x + 1) / 2
+        b = 120 + 100 * (y + 1) / 2
+        return np.stack([r, np.full_like(r, 80.0), b], axis=-1)
+
+    from scantobim.core.cloud import PointCloud
+
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([
+        rng.uniform(-1, 1, 20000), rng.uniform(-0.7, 0.7, 20000),
+        np.zeros(20000),
+    ])
+    cloud = PointCloud(
+        points=pts, colors=field(pts[:, 0], pts[:, 1]).astype(np.uint8)
+    )
+    img_dir = tmp_path / "bilder"
+    img_dir.mkdir()
+    px, py = np.meshgrid(np.arange(W), np.arange(H))
+    for i, c in enumerate(centers):
+        photo = field(
+            (px - W / 2) * 5.0 / fx_true + c[0],
+            (py - H / 2) * 5.0 / fx_true + c[1],
+        )
+        PILImage.fromarray(photo.astype(np.uint8)).save(img_dir / f"f{i}.png")
+    lines = []
+    for i, c in enumerate(centers):
+        p_img = mangle(np.asarray(c, dtype=float))
+        lines.append(
+            f"f{i}.png {p_img[0]:.6f} {p_img[1]:.6f} {p_img[2]:.6f} "
+            f"0.0 0.0 0.0 1.0 {times[i]:.1f}\n"
+        )
+    ip = tmp_path / "ImgPose.txt"
+    ip.write_text("".join(lines))
+    return cloud, img_dir, ip, np.array(traj_rows)
+
+
+def test_imgpose_alignment_garbage_clock_uses_arclength(tmp_path):
+    """Photo clocks unrelated to trajectory time → arc-length wins."""
+    pytest.importorskip("PIL.Image")
+    from scantobim.photogrammetry.xyzopk import cameras_from_imgpose
+
+    centers = [np.array([-0.9 + 0.2 * i, 0.05 * i, -5.0]) for i in range(10)]
+    t_f = np.array([120.0, -60.0, 2.0])
+    # Photo "timestamps" overlap the trajectory clock numerically but run
+    # 40x faster — pairing by time is garbage, shape matching is not.
+    times = [1000.0 + 40.0 * i for i in range(10)]
+    traj = [[c[0], c[1], c[2], 1000.0 + i] for i, c in enumerate(centers)]
+    cloud, img_dir, ip, trajectory = _alignment_fixture(
+        tmp_path, centers, times, traj, mangle=lambda c: c - t_f
+    )
+    stats = {}
+    cams = cameras_from_imgpose(
+        ip, img_dir, cloud, stats_out=stats, trajectory=trajectory
+    )
+    pa = stats["posen_ausrichtung"]
+    assert pa["angewendet"] is True
+    assert pa["zuordnung"].startswith("bogenlaenge")
+    for cam, c in zip(cams, centers):
+        center = -cam.rotation.T @ cam.translation
+        assert np.linalg.norm(center - c) < 0.05
+
+
+def test_imgpose_alignment_unit_scale_mismatch(tmp_path):
+    """ImgPose in centimeters → the similarity fit recovers scale 100."""
+    pytest.importorskip("PIL.Image")
+    from scantobim.photogrammetry.xyzopk import cameras_from_imgpose
+
+    centers = [np.array([-0.9 + 0.2 * i, 0.05 * i, -5.0]) for i in range(10)]
+    times = [2000.0 + i for i in range(10)]
+    traj = [[c[0], c[1], c[2], 2000.0 + i] for i, c in enumerate(centers)]
+    cloud, img_dir, ip, trajectory = _alignment_fixture(
+        tmp_path, centers, times, traj, mangle=lambda c: c * 100.0
+    )
+    stats = {}
+    cams = cameras_from_imgpose(
+        ip, img_dir, cloud, stats_out=stats, trajectory=trajectory
+    )
+    pa = stats["posen_ausrichtung"]
+    assert pa["angewendet"] is True
+    assert abs(pa["skalierung"] - 0.01) < 0.002
+    for cam, c in zip(cams, centers):
+        center = -cam.rotation.T @ cam.translation
+        assert np.linalg.norm(center - c) < 0.05
+
+
+def test_imgpose_alignment_reports_all_hypotheses(tmp_path):
+    """Even a failed registration reports every hypothesis residual."""
+    pytest.importorskip("PIL.Image")
+    from scantobim.photogrammetry.xyzopk import _align_raw_to_trajectory
+
+    rng = np.random.default_rng(1)
+    raw = [
+        (f"f{i}.png", rng.uniform(-50, 50, 3), (0, 0, 0, 1), 3000.0 + i)
+        for i in range(12)
+    ]
+    traj = np.array([
+        [np.cos(a), np.sin(a), 0.0, 3000.0 + i]
+        for i, a in enumerate(np.linspace(0, 3, 12))
+    ])
+    stats = {}
+    out, rot = _align_raw_to_trajectory(raw, traj, stats)
+    pa = stats["posen_ausrichtung"]
+    assert pa["angewendet"] is False
+    assert len(pa["residuen_aller_hypothesen_m"]) >= 4
