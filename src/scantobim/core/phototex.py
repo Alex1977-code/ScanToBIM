@@ -323,6 +323,63 @@ def _assign_cameras_xp(
     return best_cam
 
 
+def _smooth_camera_assignment(faces, best_cam, rounds: int = 2) -> int:
+    """Majority-vote smoothing of the per-face camera choice (in place).
+
+    A face is reassigned when at least 2 of its (up to 3) edge neighbors
+    agree on a DIFFERENT camera. Only faces that already have a camera
+    are touched — coverage never shrinks. Returns reassigned-face count.
+    """
+    n_f = len(faces)
+    if n_f == 0:
+        return 0
+    f = np.asarray(faces, dtype=np.int64)
+    n_v = int(f.max()) + 1
+    # Edge codes (min*n_v+max) → adjacent face pairs via sort.
+    ea = np.concatenate([f[:, 0], f[:, 1], f[:, 2]])
+    eb = np.concatenate([f[:, 1], f[:, 2], f[:, 0]])
+    codes = np.minimum(ea, eb) * n_v + np.maximum(ea, eb)
+    face_of = np.tile(np.arange(n_f, dtype=np.int64), 3)
+    order = np.argsort(codes, kind="stable")
+    codes_s, face_s = codes[order], face_of[order]
+    same = codes_s[1:] == codes_s[:-1]
+    fa, fb = face_s[:-1][same], face_s[1:][same]
+    if not len(fa):
+        return 0
+    # Neighbor table (F, 3), −1 = none — vectorized grouped fill.
+    pf = np.concatenate([fa, fb])
+    pn = np.concatenate([fb, fa])
+    po = np.argsort(pf, kind="stable")
+    pf, pn = pf[po], pn[po]
+    starts = np.zeros(len(pf), dtype=np.int64)
+    new_grp = np.flatnonzero(pf[1:] != pf[:-1]) + 1
+    starts[new_grp] = new_grp
+    np.maximum.accumulate(starts, out=starts)
+    rank = np.arange(len(pf), dtype=np.int64) - starts
+    ok3 = rank < 3
+    nbr = np.full((n_f, 3), -1, dtype=np.int64)
+    nbr[pf[ok3], rank[ok3]] = pn[ok3]
+    total = 0
+    for _ in range(max(0, int(rounds))):
+        has = nbr >= 0
+        ncam = np.where(has, best_cam[np.maximum(nbr, 0)], -1)
+        n0, n1, n2 = ncam[:, 0], ncam[:, 1], ncam[:, 2]
+        maj = np.full(n_f, -1, dtype=np.int32)
+        m12 = (n1 == n2) & (n1 >= 0)
+        maj[m12] = n1[m12]
+        m02 = (n0 == n2) & (n0 >= 0)
+        maj[m02] = n0[m02]
+        m01 = (n0 == n1) & (n0 >= 0)
+        maj[m01] = n0[m01]
+        flip = (best_cam >= 0) & (maj >= 0) & (maj != best_cam)
+        n_flip = int(flip.sum())
+        if n_flip == 0:
+            break
+        best_cam[flip] = maj[flip]
+        total += n_flip
+    return total
+
+
 # ------------------------------------------------------------- rasterizing
 
 def _raster_batch(tu, tv, atlas_w, atlas_h):
@@ -555,6 +612,12 @@ def bake_photo_atlas(
         f_centers, f_normals, depth_verts, cameras, image_index,
         min_facing, max_used_cameras,
     )
+    # Anti-Schraffur: faces flickering between two near-equal cameras
+    # sample the photos at slightly different exposure/parallax — that is
+    # the per-face stripe pattern ("Schraffur") on walls and windows.
+    # Majority smoothing snaps a face to the camera its neighbors agree
+    # on, so seams collapse into few long borders instead of stripes.
+    n_smoothed = _smooth_camera_assignment(faces, best_cam, rounds=2)
 
     # --- rasterize + sample ----------------------------------------------
     atlas_pages = [
@@ -683,5 +746,6 @@ def bake_photo_atlas(
         stats_out["faces_with_photo"] = round(
             float((best_cam >= 0).mean()), 3
         )
+        stats_out["kamera_glaettung"] = int(n_smoothed)
         stats_out.update(gsd_diag)
     return textured

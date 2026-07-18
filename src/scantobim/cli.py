@@ -1773,7 +1773,30 @@ def _build_detail_mesh(cloud, result, raster: float):
         sharpen_mesh_with_planes(
             detail, result.surfaces, detail.freeform_stats["voxel"]
         )
-        detail = _strip_detail_clutter(detail)
+        detail, boxes = _strip_detail_clutter(detail)
+        # Bauteil-Nachbau: every stripped region is re-meshed ON ITS OWN
+        # with a finer raster (thin members like railings connect at 1 cm
+        # where they fragment at 2 cm), then everything merges back into
+        # ONE model that shares a single photo atlas.
+        extra = _rebuild_elements(sub, boxes, float(raster))
+        panes = _build_window_panes(result)
+        if extra or panes:
+            n_el = sum(len(m.faces) for m in extra)
+            n_pn = sum(len(m.faces) for m in panes)
+            detail = _merge_plain([detail] + extra + panes)
+            detail.freeform_stats["bauteil_nachbau"] = {
+                "regionen": len(boxes),
+                "elemente": len(extra),
+                "element_dreiecke": int(n_el),
+                "fensterscheiben": len(panes),
+                "scheiben_dreiecke": int(n_pn),
+            }
+            print(
+                f"  Bauteil-Nachbau: {len(extra)} Elemente aus "
+                f"{len(boxes)} Regionen fein nachvernetzt "
+                f"({n_el:,} Dreiecke) + {len(panes)} Fensterscheiben "
+                f"({n_pn:,} Dreiecke) — zu EINEM Modell verschmolzen"
+            )
         return detail, sub
     except Exception as exc:  # noqa: BLE001 — detail is a bonus layer
         print(f"  Detail-Mesh übersprungen ({exc})")
@@ -1784,7 +1807,12 @@ def _strip_detail_clutter(detail):
     """Drop tiny disconnected components (rail['s'], mast fragments, noise
     speckles) from the detail mesh — the fringe-makers. They stay part of
     the complete mesh; the detail mesh keeps the building plus every
-    component of meaningful size."""
+    component of meaningful size.
+
+    Returns ``(stripped_mesh, boxes)`` where ``boxes`` is a list of
+    ``(lo, hi)`` world-space regions covering the DROPPED components —
+    the input for the per-element rebuild that re-meshes each region
+    on its own at a finer raster."""
     try:
         from scipy import sparse
         from scipy.sparse.csgraph import connected_components
@@ -1799,13 +1827,23 @@ def _strip_detail_clutter(detail):
         )
         n_comp, labels = connected_components(graph, directed=False)
         if n_comp <= 1:
-            return detail
+            return detail, []
         face_label = labels[faces[:, 0]]
         counts = np.bincount(face_label, minlength=n_comp)
         min_faces = max(1_500, int(0.003 * len(faces)))
         keep_comp = counts >= min_faces
         if keep_comp.all():
-            return detail
+            return detail, []
+        # Regions of the dropped components: only components with real
+        # substance spawn a rebuild region (a 3-triangle noise speckle
+        # does not deserve its own fine re-mesh).
+        boxes = []
+        rebuild_comp = np.flatnonzero(~keep_comp & (counts >= 50))
+        for ci in rebuild_comp:
+            v = detail.vertices[labels == ci]
+            if len(v):
+                boxes.append((v.min(axis=0), v.max(axis=0), int(counts[ci])))
+        boxes = _merge_regions(boxes, dilate=0.25, cap=40)
         keep_faces = keep_comp[face_label]
         dropped = int((~keep_faces).sum())
         n_dropped_comp = int((~keep_comp).sum())
@@ -1831,12 +1869,220 @@ def _strip_detail_clutter(detail):
         print(
             f"  Störer abgetrennt: {n_dropped_comp:,} Kleinst-Komponenten "
             f"({dropped:,} Dreiecke) aus dem Detail-Mesh entfernt — "
-            f"{int(keep_comp.sum())} Komponenten bleiben "
-            "(im Komplett-Mesh weiterhin enthalten)"
+            f"{int(keep_comp.sum())} Komponenten bleiben, "
+            f"{len(boxes)} Regionen für den Bauteil-Nachbau vorgemerkt"
         )
-        return stripped
+        return stripped, boxes
     except Exception:  # noqa: BLE001 — clutter strip is best-effort
-        return detail
+        return detail, []
+
+
+def _merge_regions(boxes, dilate: float = 0.25, cap: int = 40):
+    """Union-find merge of overlapping (after dilation) bounding boxes.
+
+    ``boxes`` is a list of ``(lo, hi, weight)``; returns at most ``cap``
+    merged ``(lo, hi)`` regions, largest weight first. Merging matters:
+    a railing shatters into dozens of fragments at the coarse raster, but
+    it is ONE element and should be re-meshed as one region."""
+    if not boxes:
+        return []
+    lo = np.array([b[0] for b in boxes]) - dilate
+    hi = np.array([b[1] for b in boxes]) + dilate
+    w = np.array([b[2] for b in boxes], dtype=np.int64)
+    n = len(boxes)
+    parent = np.arange(n)
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        overlap = np.all((lo[i] <= hi) & (hi[i] >= lo), axis=1)
+        for j in np.flatnonzero(overlap):
+            ri, rj = find(i), find(int(j))
+            if ri != rj:
+                parent[rj] = ri
+    merged = {}
+    for i in range(n):
+        r = find(i)
+        if r in merged:
+            mlo, mhi, mw = merged[r]
+            merged[r] = (np.minimum(mlo, lo[i]), np.maximum(mhi, hi[i]),
+                         mw + int(w[i]))
+        else:
+            merged[r] = (lo[i].copy(), hi[i].copy(), int(w[i]))
+    out = sorted(merged.values(), key=lambda m: -m[2])[:cap]
+    return [(m[0], m[1]) for m in out]
+
+
+def _rebuild_elements(sub_cloud, boxes, raster: float):
+    """Re-mesh every stripped region ON ITS OWN at a finer raster.
+
+    Thin members (railings, masts, gutters) fall apart at 2 cm but stay
+    connected at ~1 cm; meshing each region separately keeps the face
+    budget local instead of competing with the building. Returns a list
+    of plain meshes ready to be merged into the detail model."""
+    if not boxes:
+        return []
+    from scantobim.core.freeform import freeform_mesh_from_points
+
+    fine = max(0.006, 0.5 * float(raster))
+    pts = sub_cloud.points
+    out = []
+    for lo, hi in boxes:
+        inside = np.all((pts >= lo) & (pts <= hi), axis=1)
+        n_in = int(inside.sum())
+        if n_in < 2_000:
+            continue
+        region = sub_cloud.select(inside)
+        try:
+            m = freeform_mesh_from_points(
+                region, voxel=fine, max_faces=1_200_000
+            )
+        except Exception:  # noqa: BLE001 — one bad region must not kill all
+            m = None
+        if m is None or len(m.faces) < 150:
+            continue
+        m = _drop_speckles(m, min_faces=150)
+        if m is not None and len(m.faces) >= 150:
+            out.append(m)
+    return out
+
+
+def _drop_speckles(mesh, min_faces: int = 150):
+    """Remove micro-components below ``min_faces`` from a small mesh."""
+    try:
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+
+        faces = mesh.faces
+        n_v = len(mesh.vertices)
+        rows = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+        cols = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
+        graph = sparse.coo_matrix(
+            (np.ones(len(rows), dtype=np.int8), (rows, cols)),
+            shape=(n_v, n_v),
+        )
+        n_comp, labels = connected_components(graph, directed=False)
+        if n_comp <= 1:
+            return mesh
+        face_label = labels[faces[:, 0]]
+        counts = np.bincount(face_label, minlength=n_comp)
+        keep = (counts >= min_faces)[face_label]
+        if keep.all():
+            return mesh
+        if not keep.any():
+            return None
+        new_faces = faces[keep]
+        used = np.zeros(n_v, dtype=bool)
+        used[new_faces] = True
+        remap = np.cumsum(used) - 1
+        from scantobim.core.mesh import Mesh as _M
+
+        out = _M(
+            vertices=mesh.vertices[used],
+            faces=remap[new_faces],
+            vertex_colors=(
+                mesh.vertex_colors[used]
+                if mesh.vertex_colors is not None else None
+            ),
+        )
+        out.freeform_stats = dict(getattr(mesh, "freeform_stats", {}) or {})
+        return out
+    except Exception:  # noqa: BLE001
+        return mesh
+
+
+def _build_window_panes(result):
+    """Fill window/door openings with flat glass panes.
+
+    Every hole polygon of a non-terrain surface (the openings the plane
+    reconstruction cut out) gets a centroid-fan pane, inset 4 cm behind
+    the wall face — that is what makes windows read as GLASS instead of
+    ragged voids in the detail mesh. Area-filtered so hole artifacts and
+    whole-facade cutouts are skipped."""
+    if result is None or not getattr(result, "surfaces", None):
+        return []
+    from scantobim.core.mesh import Mesh as _M
+
+    glass = np.array([166, 182, 191], dtype=np.uint8)  # bluish glass-grey
+    panes = []
+    for s in result.surfaces:
+        if getattr(s, "surface_class", "") == "terrain":
+            continue
+        holes = getattr(s, "holes", None)
+        if not holes:
+            continue
+        n = np.asarray(s.normal, dtype=np.float64)
+        nrm = np.linalg.norm(n)
+        if nrm == 0:
+            continue
+        n = n / nrm
+        for hole in holes:
+            ring = np.asarray(hole, dtype=np.float64)
+            if len(ring) < 3:
+                continue
+            centroid = ring.mean(axis=0)
+            spokes = ring - centroid
+            nxt = np.roll(ring, -1, axis=0) - centroid
+            area = 0.5 * float(
+                np.linalg.norm(np.cross(spokes, nxt).sum(axis=0))
+            )
+            if not (0.04 <= area <= 25.0):
+                continue
+            verts = np.vstack([centroid[None, :], ring]) - 0.04 * n
+            k = len(ring)
+            idx = np.arange(k)
+            faces = np.column_stack(
+                [np.zeros(k, dtype=np.int64), idx + 1, (idx + 1) % k + 1]
+            )
+            pane = _M(
+                vertices=verts,
+                faces=faces,
+                vertex_colors=np.tile(glass, (len(verts), 1)),
+            )
+            pane.freeform_stats = {}
+            panes.append(pane)
+    return panes
+
+
+def _merge_plain(meshes):
+    """Concatenate meshes into ONE (vertices/faces/colors) — the merged
+    model then runs through the SHARED photo-atlas bake, so building,
+    rebuilt elements and glass panes end up in one texture space."""
+    from scantobim.core.mesh import Mesh as _M
+
+    meshes = [m for m in meshes if m is not None and len(m.faces)]
+    if not meshes:
+        return None
+    if len(meshes) == 1:
+        return meshes[0]
+    verts, faces, colors = [], [], []
+    any_colors = any(m.vertex_colors is not None for m in meshes)
+    off = 0
+    for m in meshes:
+        verts.append(np.asarray(m.vertices, dtype=np.float64))
+        faces.append(np.asarray(m.faces, dtype=np.int64) + off)
+        if any_colors:
+            if m.vertex_colors is not None:
+                colors.append(np.asarray(m.vertex_colors, dtype=np.uint8))
+            else:
+                colors.append(
+                    np.full((len(m.vertices), 3), 180, dtype=np.uint8)
+                )
+        off += len(m.vertices)
+    merged = _M(
+        vertices=np.vstack(verts),
+        faces=np.vstack(faces),
+        vertex_colors=np.vstack(colors) if any_colors else None,
+    )
+    stats = dict(getattr(meshes[0], "freeform_stats", {}) or {})
+    stats["triangles"] = int(len(merged.faces))
+    stats["vertices"] = int(len(merged.vertices))
+    merged.freeform_stats = stats
+    return merged
 
 
 def _write_detail_mesh(

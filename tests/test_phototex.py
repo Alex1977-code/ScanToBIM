@@ -214,3 +214,32 @@ def test_viewer_detail_layer_default(tmp_path):
     assert "Detail-Mesh Gebäude (fotorealistisch)" in text
     assert '"dt_indices": 6' in text and '"dt_textured": true' in text
     assert "data:image/" in text  # embedded detail texture
+
+
+def test_camera_majority_smoothing():
+    from scantobim.core.phototex import _smooth_camera_assignment
+
+    # Strip of 3 triangles: the middle one disagrees with both neighbors.
+    faces = np.array([[0, 1, 2], [2, 1, 3], [2, 3, 4]])
+    best = np.array([0, 1, 0], dtype=np.int32)
+    n = _smooth_camera_assignment(faces, best)
+    assert n == 1
+    assert best.tolist() == [0, 0, 0]
+
+    # Faces without a camera are never given one (coverage stays honest).
+    best = np.array([0, -1, 0], dtype=np.int32)
+    n = _smooth_camera_assignment(faces, best)
+    assert n == 0
+    assert best.tolist() == [0, -1, 0]
+
+
+def test_camera_smoothing_kills_single_face_speckle():
+    from scantobim.core.phototex import _smooth_camera_assignment
+
+    mesh = _floor_mesh(n=10)
+    best = np.zeros(len(mesh.faces), dtype=np.int32)
+    mid = len(mesh.faces) // 2
+    best[mid] = 7  # a lone speckle inside a camera-0 area ("Schraffur")
+    n = _smooth_camera_assignment(mesh.faces, best)
+    assert n == 1
+    assert np.all(best == 0)

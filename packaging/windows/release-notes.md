@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.22.0 — Bauteil-Nachbau: verworfene Elemente einzeln fein nachvernetzt, Fensterscheiben, Schraffur-Glättung
+
+Der 3.21-Lauf hat die Fototextur bestätigt — jetzt geht es an die gemeldeten Restpunkte: raue Fenster mit Schraffur und die aus der Detailansicht verworfenen Kleinelemente (Geländer, Masten, Anbauten).
+
+- **Bauteil-Nachbau**: Die Störer-Abtrennung merkt sich jetzt die RÄUME der verworfenen Komponenten (überlappende Bereiche werden zu Regionen vereint). Jede Region wird ANSCHLIESSEND EINZELN neu vernetzt — mit halbem Raster (min. 6 mm), denn dünne Bauteile wie Geländerstäbe hängen bei 1 cm zusammen, wo sie bei 2 cm zerfallen. Alle Elemente werden danach mit dem Gebäude zu EINEM sauberen Modell verschmolzen, das durch denselben Foto-Atlas läuft — eine Textur, ein Modell. Im Bericht: `bauteil_nachbau` (Regionen, Elemente, Dreiecke).
+- **Fensterscheiben**: Jede erkannte Öffnung (Fenster/Tür) in Wand- und Dachflächen erhält eine plane Glasscheibe, 4 cm hinter der Fassadenflucht eingesetzt (Flächenfilter 0,04–25 m² gegen Artefakte). Fenster lesen sich damit als Glas statt als ausgefranste Löcher — die Zahl steht im Bericht (`fensterscheiben`).
+- **Anti-Schraffur**: Die Schraffur auf Wänden und Fenstern entstand durch Nachbar-Dreiecke, die zwischen zwei fast gleich guten Kameras hin- und hersprangen (leicht andere Belichtung/Parallaxe pro Dreieck = Streifenmuster). Eine Mehrheits-Glättung über die Dreiecks-Nachbarschaft ordnet jedes Dreieck der Kamera zu, auf die sich seine Nachbarn einigen — statt Streifen bleiben wenige lange, ruhige Übergänge (`kamera_glaettung` im Bericht).
+
 ### Neu in 3.21.0 — DER Foto-Fix: ImgPose-Spalten endlich richtig gelesen (roll/pitch/yaw waren nie eine Position)
 
 Die echte ImgPose.txt hat die Frage beendet. Ihre Kopfzeile lautet:
