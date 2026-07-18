@@ -494,6 +494,7 @@ def photo_colors_for_mesh(
     stats_out: dict | None = None,
     min_facing: float = 0.25,
     max_used_cameras: int = 600,
+    image_map: dict | None = None,
 ) -> float:
     """Sample the ORIGINAL photos onto a mesh's vertex colors.
 
@@ -517,7 +518,9 @@ def photo_colors_for_mesh(
     if not cameras or not len(mesh.vertices):
         return 0.0
     images_dir = Path(images_dir)
-    image_index = _index_images(images_dir)
+    # Validated per-camera map beats the ambiguous basename index (stereo
+    # exports reuse filenames across left/ and right/).
+    image_index = dict(image_map) if image_map else _index_images(images_dir)
 
     rot_w = transform[:3, :3] if transform is not None else np.eye(3)
     t_w = transform[:3, 3] if transform is not None else np.zeros(3)

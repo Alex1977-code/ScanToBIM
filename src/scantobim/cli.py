@@ -1114,6 +1114,35 @@ def _cmd_project(args) -> int:
     # (e.g. little photo coverage on huge terrain planes) must never kill
     # the photorealistic atlas of the building meshes.
     photo_cams = camera_source if use_photos else None
+    image_map = None
+    if photo_cams is not None and cloud.colors is not None:
+        # EVERY camera is color-checked against the cloud individually —
+        # a 92% pose score can hide single cameras sampling the wrong
+        # file (stereo exports reuse basenames across left/ and right/).
+        try:
+            from scantobim.photogrammetry.camcheck import validate_cameras
+
+            ck: dict = {}
+            kept_cams, image_map = validate_cameras(
+                _resolve_cameras(photo_cams), project.images_dir, cloud,
+                stats_out=ck,
+            )
+            print(
+                f"  Kamera-Selbstprüfung: {ck.get('validiert', 0)} von "
+                f"{ck.get('gesamt', 0)} Kameras farb-validiert "
+                f"(Median-Score {ck.get('median_score', 0.0):.2f}"
+                + (
+                    f", {ck['mehrdeutige_namen']} mehrdeutige Dateinamen "
+                    "aufgelöst"
+                    if ck.get("mehrdeutige_namen") else ""
+                )
+                + ")"
+            )
+            rep["kamera_pruefung"] = ck
+            if image_map is not None:
+                photo_cams = kept_cams
+        except Exception as exc:  # noqa: BLE001 — check is best-effort
+            print(f"  Kamera-Selbstprüfung übersprungen ({exc})")
     depth_sample = None
     if photo_cams is not None:
         # Dense scene depth for the visibility test on the coarse structure
@@ -1162,7 +1191,7 @@ def _cmd_project(args) -> int:
             textured = bake_photo_atlas(
                 base, photo_cams, project.images_dir,
                 transform=transform, stats_out=st_stats,
-                depth_points=depth_sample,
+                depth_points=depth_sample, image_map=image_map,
             )
             frac = (
                 st_stats.get("photo_fraction", 0.0)
@@ -1215,6 +1244,7 @@ def _cmd_project(args) -> int:
             frac = photo_colors_for_mesh(
                 full_mesh, photo_cams, project.images_dir,
                 transform=transform, stats_out=ff_stats,
+                image_map=image_map,
             )
             if frac > 0 and full_viewer is not None and full_viewer is not full_mesh:
                 from scipy.spatial import cKDTree
@@ -1251,7 +1281,7 @@ def _cmd_project(args) -> int:
     ):
         full_viewer = _bake_full_photo_atlas(
             full_viewer, photo_cams, project.images_dir,
-            transform, rep, output,
+            transform, rep, output, image_map=image_map,
         )
     detail_result = None
     if _detail_future is not None:
@@ -1262,7 +1292,7 @@ def _cmd_project(args) -> int:
         detail_mesh, detail_sub = detail_result
         detail_viewer = _write_detail_mesh(
             detail_mesh, detail_sub, photo_cams, project.images_dir,
-            transform, rep, output, result=result,
+            transform, rep, output, result=result, image_map=image_map,
         )
     state_out = getattr(args, "state_out", None)
     if state_out is not None:
@@ -1796,7 +1826,7 @@ def _strip_detail_clutter(detail):
 
 def _write_detail_mesh(
     detail, sub_cloud, photo_cams, images_dir, transform, rep: dict,
-    output: Path, result=None,
+    output: Path, result=None, image_map=None,
 ):
     """Photo-texture and write ``<name>_detail.glb``; returns the VIEWER
     layer (a lighter, equally photo-textured variant of the detail mesh —
@@ -1807,6 +1837,35 @@ def _write_detail_mesh(
 
         st = detail.freeform_stats
         out_mesh = detail
+        if (
+            photo_cams is not None
+            and images_dir is not None
+            and result is not None
+            and result.surfaces
+        ):
+            # Kanten-Fotoabgleich: die Fotos lösen 3-5 mm auf — Kanten des
+            # Detail-Mesh werden an den Bild-Gradienten nachjustiert,
+            # BEVOR der Atlas gebacken wird. Die vermessenen Ebenen
+            # (Maße, Flächen) bleiben unberührt.
+            try:
+                from scantobim.core.edgerefine import refine_detail_edges
+
+                er_stats: dict = {}
+                refine_detail_edges(
+                    detail, result.surfaces, photo_cams, images_dir,
+                    image_map=image_map, stats_out=er_stats,
+                )
+                if er_stats.get("kanten_kandidaten"):
+                    print(
+                        f"  Kanten-Fotoabgleich: "
+                        f"{er_stats.get('kanten_nachjustiert', 0)} von "
+                        f"{er_stats['kanten_kandidaten']} Kanten an den "
+                        f"Foto-Gradienten nachjustiert (Median "
+                        f"{er_stats.get('median_verschiebung_mm', 0.0):.1f} mm)"
+                    )
+                    st = {**st, "kanten_fotoabgleich": er_stats}
+            except Exception as exc:  # noqa: BLE001 — refinement optional
+                print(f"  Kanten-Fotoabgleich übersprungen ({exc})")
         if photo_cams is not None and images_dir is not None:
             try:
                 print("Foto-Textur: Atlas wird auf das Detail-Mesh projiziert …")
@@ -1814,7 +1873,7 @@ def _write_detail_mesh(
                 textured = bake_photo_atlas(
                     detail, photo_cams, images_dir,
                     transform=transform, stats_out=dx_stats,
-                    max_atlas=8192, max_pages=4,
+                    max_atlas=8192, max_pages=4, image_map=image_map,
                 )
                 if (
                     textured is not None
@@ -1871,7 +1930,7 @@ def _write_detail_mesh(
                         lt = bake_photo_atlas(
                             light, photo_cams, images_dir,
                             transform=transform, stats_out=lv_stats,
-                            max_atlas=8192, max_pages=3,
+                            max_atlas=8192, max_pages=3, image_map=image_map,
                         )
                         if (
                             lt is not None
@@ -1892,7 +1951,8 @@ def _write_detail_mesh(
 
 
 def _bake_full_photo_atlas(
-    full_viewer, camera_source, images_dir, transform, rep, output
+    full_viewer, camera_source, images_dir, transform, rep, output,
+    image_map=None,
 ):
     """Bake the photo atlas onto the complete-mesh viewer layer.
 
@@ -1908,7 +1968,7 @@ def _bake_full_photo_atlas(
         px_stats: dict = {}
         textured = bake_photo_atlas(
             full_viewer, camera_source, images_dir,
-            transform=transform, stats_out=px_stats,
+            transform=transform, stats_out=px_stats, image_map=image_map,
         )
         if textured is not None and px_stats.get("photo_fraction", 0.0) >= 0.15:
             aw, ah = px_stats["atlas"]

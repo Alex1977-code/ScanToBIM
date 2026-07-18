@@ -166,14 +166,22 @@ def _target_texel(v_scan: np.ndarray, cam_centers: np.ndarray, med_fx: float):
     from scipy.spatial import cKDTree
 
     if not len(cam_centers):
-        return 0.01
+        return 0.01, {}
     vs = v_scan
     if len(vs) > 20_000:
         rng = np.random.default_rng(0)
         vs = vs[rng.choice(len(vs), 20_000, replace=False)]
     d, _ = cKDTree(np.asarray(cam_centers)).query(vs, k=1, workers=-1)
-    gsd = float(np.median(d)) / max(med_fx, 1.0)
-    return float(min(max(0.75 * gsd, 0.003), 0.025))
+    # 25th percentile: robust when part of the camera path is far away.
+    d_ref = float(np.percentile(d, 25))
+    gsd = d_ref / max(med_fx, 1.0)
+    texel = float(min(max(0.75 * gsd, 0.003), 0.025))
+    diag = {
+        "kamera_abstand_p25_m": round(d_ref, 2),
+        "kamera_abstand_median_m": round(float(np.median(d)), 2),
+        "gsd_mm": round(gsd * 1000.0, 1),
+    }
+    return texel, diag
 
 
 # ----------------------------------------------------------- camera choice
@@ -395,6 +403,7 @@ def bake_photo_atlas(
     stats_out: dict | None = None,
     depth_points: np.ndarray | None = None,
     max_pages: int = 1,
+    image_map: dict | None = None,
 ) -> Mesh | None:
     """Bake a full-resolution photo texture atlas onto ``mesh``.
 
@@ -420,7 +429,11 @@ def bake_photo_atlas(
     cameras = _resolve_cameras(model_or_cameras)
     if not cameras or not len(mesh.faces):
         return None
-    image_index = _index_images(Path(images_dir))
+    # A validated per-camera map (Kamera-Selbstprüfung) beats the ambiguous
+    # basename index — stereo exports reuse filenames across left/right.
+    image_index = (
+        dict(image_map) if image_map else _index_images(Path(images_dir))
+    )
     if not any(
         cam.name in image_index or Path(cam.name).name in image_index
         for cam in cameras
@@ -475,7 +488,7 @@ def bake_photo_atlas(
         if cam.name in image_index or _Path(cam.name).name in image_index
     ])
     med_fx = float(np.median([cam.fx for cam in cameras]))
-    texel = _target_texel(v_scan, cam_centers, med_fx)
+    texel, gsd_diag = _target_texel(v_scan, cam_centers, med_fx)
     packed = None
     for _ in range(8):
         packed = _pack_charts_pages(extents, texel, max_atlas, max_pages)
@@ -670,4 +683,5 @@ def bake_photo_atlas(
         stats_out["faces_with_photo"] = round(
             float((best_cam >= 0).mean()), 3
         )
+        stats_out.update(gsd_diag)
     return textured

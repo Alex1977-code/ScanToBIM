@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.18.0 — Kamera-Selbstprüfung findet den Foto-Dieb, Kanten-Fotoabgleich ist drin
+
+Diagnose zum 3.17-Lauf: texel_cm stand exakt am 2,5-cm-Deckel (Kamera-Abstände wirkten um ein Vielfaches zu groß) und Wände zeigten Himmelsfarben — obwohl der Posen-Score 92 % sagte. Der Hauptverdächtige: **Stereo-Namenskollision** — `left/0123.jpg` und `right/0123.jpg` teilen sich den Dateinamen, der Bild-Index reichte etlichen Kameras stillschweigend die falsche Seite.
+
+- **Kamera-Selbstprüfung (neu, immer aktiv)**: JEDE Kamera wird einzeln gegen die farbige Punktwolke geprüft — bei mehrdeutigen Dateinamen werden ALLE Kandidaten-Dateien getestet und die farblich passende gewählt; Kameras, deren Foto nirgends zur Wolke passt, fliegen ganz raus. Protokoll: „Kamera-Selbstprüfung: X von Y Kameras farb-validiert (Median-Score …, N mehrdeutige Dateinamen aufgelöst)"; Bericht: `kamera_pruefung`. Alle Textur-Stufen (Strukturmodell, Komplett-Mesh, Detail-Mesh, Viewer) nutzen ab jetzt die validierte Kamera→Datei-Zuordnung.
+- **GSD-Diagnose im Bericht**: Der Atlas dokumentiert jetzt `kamera_abstand_p25_m`, `kamera_abstand_median_m` und `gsd_mm` — steht der Texel wieder am Anschlag, zeigt der Bericht sofort, welcher Abstand ihn dorthin gezwungen hat. Die Texel-Ableitung nutzt das robuste 25-%-Perzentil der Abstände zur nächsten Kamera.
+- **Kanten-Fotoabgleich (neu)**: Die Fotos lösen 3-5 mm pro Pixel auf — deutlich feiner als der LiDAR. Kandidatenkanten (Schnittgeraden benachbarter Strukturebenen) werden in die am besten sehenden validierten Fotos projiziert, dort per **Subpixel-Gradientensuche** quer zur Kante lokalisiert (robuster Median über Abtastpunkte und mehrere Kameras, Kappung 2,5 cm), und die Detail-Mesh-Kanten werden VOR dem Textur-Backen auf die fotografische Kante gezogen. Protokoll: „Kanten-Fotoabgleich: X von Y Kanten nachjustiert (Median … mm)". Die vermessenen Ebenen (Maße, Flächen, Bericht) bleiben unangetastet.
+
 ### Neu in 3.17.0 — Atlas-Packer neu gebaut: mm-Texel aus der Foto-GSD, mehrere Atlas-Seiten, plane Wände
 
 Umsetzung der Diagnose zum 3.16-Lauf (Atlas 12288×256, Texel weiter 6,2 cm, Foto-Anteil 49 %):
