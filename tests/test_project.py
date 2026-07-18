@@ -388,7 +388,8 @@ def test_project_cli_with_photo_projection(tmp_path, capsys):
     assert code == 0
     log = capsys.readouterr().out
     assert "projecting 1 photos" in log and "texture atlas" in log
-    assert b"data:image/png" in out.read_bytes()  # textured viewer
+    # Atlas texture embedded in the viewer (JPEG for big atlases, PNG small).
+    assert b"data:image/" in out.read_bytes()
 
 
 def test_project_photo_fallback_wrong_frame(tmp_path, capsys):
@@ -412,7 +413,7 @@ def test_project_photo_fallback_wrong_frame(tmp_path, capsys):
     assert "Textur: punktfarben" in log
     report = json.loads((tmp_path / "modell_bericht.json").read_text())
     assert report["texture"]["source"] == "punktfarben"
-    assert b"data:image/png" in out.read_bytes()  # textured after fallback
+    assert b"data:image/" in out.read_bytes()  # textured after fallback
 
 
 def test_project_photo_fallback_unreadable_images(tmp_path, capsys):
@@ -1176,3 +1177,54 @@ def test_cameras_from_imgpose_polyfisheye_end_to_end(tmp_path):
     assert cam.model == "POLYFISHEYE"
     assert cam.poly == tuple(calib["poly"])
     assert abs(cam.fx - calib["fx"]) < 1e-9
+
+
+def test_detail_mesh_region_excludes_terrain(tmp_path):
+    """Detail bbox comes from BUILDING surfaces — terrain must not widen it."""
+    from types import SimpleNamespace
+
+    from scantobim.cli import _build_detail_mesh, _write_detail_mesh
+    from scantobim.core.cloud import PointCloud
+    from scantobim.core.pipeline import SurfaceGeometry
+
+    rng = np.random.default_rng(0)
+    # Building: 2x2x2 m box corner at origin, dense wall points.
+    n = 40_000
+    wall = np.column_stack([
+        rng.random(n) * 2.0, np.zeros(n), rng.random(n) * 2.0
+    ]) + rng.normal(0, 0.003, (n, 3))
+    # Terrain: huge sparse ground far beyond the building.
+    m = 40_000
+    ground = np.column_stack([
+        rng.random(m) * 60.0 - 30.0, rng.random(m) * 40.0 - 20.0,
+        np.zeros(m),
+    ]) + rng.normal(0, 0.003, (m, 3))
+    cloud = PointCloud(points=np.vstack([wall, ground]))
+
+    z = np.array([0.0, 0.0, 1.0])
+    terrain_geo = SurfaceGeometry(
+        plane_index=0, normal=z.copy(),
+        outer=np.array([[-30.0, -20, 0], [30, -20, 0], [30, 20, 0], [-30, 20, 0]]),
+        holes=[], surface_class="terrain",
+    )
+    wall_geo = SurfaceGeometry(
+        plane_index=1, normal=np.array([0.0, 1.0, 0.0]),
+        outer=np.array([[0.0, 0, 0], [2, 0, 0], [2, 0, 2], [0, 0, 2]]),
+        holes=[], surface_class="wall",
+    )
+    result = SimpleNamespace(surfaces=[terrain_geo, wall_geo])
+
+    detail = _build_detail_mesh(cloud, result, raster=0.05)
+    assert detail is not None
+    lo = detail.vertices.min(axis=0)
+    hi = detail.vertices.max(axis=0)
+    # Region = wall bbox + 1 m buffer (+ raster slack) — nowhere near ±30 m.
+    assert lo[0] > -1.5 and hi[0] < 3.5
+    assert lo[1] > -1.5 and hi[1] < 1.5
+
+    # Plain write path (no cameras): file + report entry.
+    rep: dict = {}
+    out = tmp_path / "modell.html"
+    _write_detail_mesh(detail, None, None, None, rep, out)
+    assert (tmp_path / "modell_detail.glb").exists()
+    assert rep["detail_mesh"]["triangles"] > 0

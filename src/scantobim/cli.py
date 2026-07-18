@@ -1108,40 +1108,85 @@ def _cmd_project(args) -> int:
                   "(anderes Koordinatensystem?) — Foto-Projektion übersprungen")
             use_photos = False
 
-    if use_photos:
+    # From here on the camera poses are FIXED: the structure-model texture,
+    # the complete-mesh photo colors, the photo atlas and the detail mesh
+    # each use them with their OWN quality gates. One stage falling back
+    # (e.g. little photo coverage on huge terrain planes) must never kill
+    # the photorealistic atlas of the building meshes.
+    photo_cams = camera_source if use_photos else None
+    depth_sample = None
+    if photo_cams is not None:
+        # Dense scene depth for the visibility test on the coarse structure
+        # mesh — the cloud IS the scene, photos cannot see through it.
+        depth_sample = cloud.points
+        if len(depth_sample) > 400_000:
+            rng = np.random.default_rng(0)
+            depth_sample = depth_sample[
+                rng.choice(len(depth_sample), 400_000, replace=False)
+            ]
+
+    no_texture = getattr(args, "no_texture", False)
+    if photo_cams is not None and not no_texture:
         try:
-            from scantobim.core.texture import bake_texture_from_photos
+            from pathlib import Path as _P
+
+            from scantobim.core.phototex import bake_photo_atlas
+            from scantobim.core.texture import _index_images
 
             print(f"projecting {project.image_count} photos onto the model …")
-            stats: dict = {}
-            photo_mesh = bake_texture_from_photos(
-                result, camera_source, project.images_dir,
-                texel_size=args.texel, transform=transform, stats_out=stats,
+            _cams_l = _resolve_cameras(photo_cams)
+            _img_idx = _index_images(project.images_dir)
+            _found = sum(
+                1 for c in _cams_l
+                if c.name in _img_idx or _P(c.name).name in _img_idx
             )
-            coverage = stats.get("coverage", 0.0)
-            print(f"  Fotos gefunden: {stats.get('images_found', 0)} von "
-                  f"{stats.get('cameras', 0)} registrierten Kameras")
-            print(f"  Foto-Abdeckung: {coverage * 100:.0f}% der Flächen "
-                  f"({stats.get('images_used', 0)} Fotos verwendet)")
-            if coverage < 0.2:
-                print("Hinweis: Foto-Abdeckung zu gering — "
-                      "verwende stattdessen Punktwolken-Farben")
-                use_photos = False
-            else:
-                output_mesh = photo_mesh
-                th, tw = output_mesh.texture.shape[:2]
-                print(f"  texture atlas: {tw} x {th} px")
+            print(f"  Fotos gefunden: {_found} von {len(_cams_l)} "
+                  "registrierten Kameras")
+            base = result.mesh
+            if base.vertex_colors is None and cloud.colors is not None:
+                # Nearest cloud color per vertex — base layer for texels
+                # no photo reaches (atlas texels fall back to vertex colors).
+                from scipy.spatial import cKDTree
+
+                rng = np.random.default_rng(0)
+                idx = rng.choice(
+                    len(cloud.points), min(len(cloud.points), 400_000),
+                    replace=False,
+                )
+                pts_model = cloud.points[idx]
+                if transform is not None:
+                    pts_model = pts_model @ transform[:3, :3].T + transform[:3, 3]
+                _, nn = cKDTree(pts_model).query(base.vertices, k=1, workers=-1)
+                base.vertex_colors = cloud.colors[idx][nn]
+            st_stats: dict = {}
+            textured = bake_photo_atlas(
+                base, photo_cams, project.images_dir,
+                transform=transform, stats_out=st_stats,
+                depth_points=depth_sample,
+            )
+            frac = (
+                st_stats.get("photo_fraction", 0.0)
+                if textured is not None else 0.0
+            )
+            print(f"  Foto-Anteil: {frac * 100:.0f}% der Modellfläche "
+                  f"({st_stats.get('cameras_used', 0)} Kameras)")
+            if textured is not None and frac >= 0.15:
+                output_mesh = textured
+                aw, ah = st_stats["atlas"]
+                print(f"  texture atlas: {aw} x {ah} px")
                 texture_info = {
                     "source": "foto-projektion",
-                    "coverage": round(coverage, 3),
-                    "images_used": stats.get("images_used", 0),
+                    "coverage": round(frac, 3),
+                    "images_used": st_stats.get("cameras_used", 0),
                 }
+            else:
+                print("Hinweis: Foto-Anteil am Strukturmodell zu gering — "
+                      "es erhält Punktwolken-Farben (der Foto-Atlas der "
+                      "Netz-Modelle läuft davon unabhängig)")
         except Exception as exc:  # noqa: BLE001 — fall back, don't fail the model
-            print(f"Hinweis: Foto-Projektion fehlgeschlagen ({exc}) — "
-                  "verwende Punktwolken-Farben")
-            use_photos = False
-    no_texture = getattr(args, "no_texture", False)
-    if not use_photos and not no_texture:
+            print(f"Hinweis: Foto-Projektion aufs Strukturmodell "
+                  f"fehlgeschlagen ({exc}) — verwende Punktwolken-Farben")
+    if texture_info["source"] == "keine" and not no_texture:
         if cloud.colors is not None:
             from scantobim.core.texture import bake_texture_from_cloud
 
@@ -1159,8 +1204,7 @@ def _cmd_project(args) -> int:
     # High-resolution photo colors onto the complete mesh (per vertex).
     if (
         full_mesh is not None
-        and use_photos
-        and camera_source is not None
+        and photo_cams is not None
         and project.images_dir is not None
     ):
         try:
@@ -1169,7 +1213,7 @@ def _cmd_project(args) -> int:
             print("Foto-Farben werden auf das Komplett-Mesh übertragen …")
             ff_stats: dict = {}
             frac = photo_colors_for_mesh(
-                full_mesh, camera_source, project.images_dir,
+                full_mesh, photo_cams, project.images_dir,
                 transform=transform, stats_out=ff_stats,
             )
             if frac > 0 and full_viewer is not None and full_viewer is not full_mesh:
@@ -1194,25 +1238,30 @@ def _cmd_project(args) -> int:
         _detail_pool = ThreadPoolExecutor(max_workers=1)
         _detail_future = _detail_pool.submit(
             _build_detail_mesh, cloud, result,
-            getattr(args, "detail_raster", 0.02), output, rep,
+            getattr(args, "detail_raster", 0.02),
         )
     _prog(0.78, "Foto-Textur-Atlas ∥ Detail-Mesh")
     # Photo-realistic texture ATLAS on the complete mesh: full photo
     # resolution instead of one color per vertex.
     if (
         full_viewer is not None
-        and use_photos
-        and camera_source is not None
+        and photo_cams is not None
         and project.images_dir is not None
         and output.suffix.lower() not in (".stp", ".step", ".ifc")
     ):
         full_viewer = _bake_full_photo_atlas(
-            full_viewer, camera_source, project.images_dir,
+            full_viewer, photo_cams, project.images_dir,
             transform, rep, output,
         )
+    detail_mesh = None
     if _detail_future is not None:
-        _detail_future.result()
+        detail_mesh = _detail_future.result()
         _detail_pool.shutdown(wait=False)
+    if detail_mesh is not None:
+        _write_detail_mesh(
+            detail_mesh, photo_cams, project.images_dir,
+            transform, rep, output,
+        )
     _prog(0.92, "Dateien schreiben")
 
     ext = output.suffix.lower()
@@ -1500,6 +1549,22 @@ def _fallback_photo_atlas(project, args, cloud, full_viewer, report, output):
     ):
         return full_viewer
     camera_source = project.colmap_model
+    if camera_source is None and project.imgpose is not None:
+        try:
+            from scantobim.photogrammetry.xyzopk import cameras_from_imgpose
+
+            print("Kameraposen (ImgPose): Quaternion-Posen werden am Scan "
+                  "validiert …")
+            ip_stats: dict = {}
+            cams = cameras_from_imgpose(
+                project.imgpose, project.images_dir, cloud,
+                stats_out=ip_stats, calibration=project.calibration_data,
+            )
+            if ip_stats.get("score", 0.0) >= 0.5:
+                camera_source = cams
+                report["kameraposen"] = {"quelle": "imgpose", **ip_stats}
+        except Exception as exc:  # noqa: BLE001 — photos are best-effort
+            print(f"  ImgPose übersprungen ({exc})")
     if camera_source is None and project.xyzopk is not None:
         try:
             from scantobim.photogrammetry.xyzopk import cameras_from_xyzopk
@@ -1528,45 +1593,94 @@ def _fallback_photo_atlas(project, args, cloud, full_viewer, report, output):
     )
 
 
-def _build_detail_mesh(cloud, result, raster: float, output: Path, rep: dict) -> None:
+def _build_detail_mesh(cloud, result, raster: float):
     """High-detail mesh of the BUILDING region (1–2 cm raster).
 
     The overview mesh covers the whole 100-m-class scene at a coarse
-    raster; the detail mesh re-meshes only the region around the detected
-    structure surfaces at ``raster`` — full constructive detail without a
-    billion-face scene mesh. Written as ``<name>_detail.glb``.
+    raster. The detail region is the bounding box of the BUILDING surfaces
+    (walls, roofs, slabs, ceilings) — terrain is excluded, otherwise a
+    59×41 m ground plane drags the whole scene into the box and the face
+    budget forces the raster far above the requested 1–2 cm. Returns the
+    mesh (written later, photo-textured when cameras exist) or ``None``.
     """
     if raster is None or raster <= 0 or result is None or not result.surfaces:
-        return
+        return None
     try:
         from scantobim.core.freeform import (
             freeform_mesh_from_points,
             sharpen_mesh_with_planes,
         )
 
-        pts = np.vstack([s.outer for s in result.surfaces])
+        building = [
+            s for s in result.surfaces
+            if getattr(s, "surface_class", "") != "terrain"
+        ]
+        if not building:
+            building = result.surfaces
+        pts = np.vstack([s.outer for s in building])
         lo = pts.min(axis=0) - 1.0
         hi = pts.max(axis=0) + 1.0
         mask = np.all((cloud.points >= lo) & (cloud.points <= hi), axis=1)
         if int(mask.sum()) < 5_000:
-            return
+            return None
         sub = cloud.select(mask)
         print(
-            f"Detail-Mesh: Gebäuderegion ({int(mask.sum()):,} Punkte) wird mit "
-            f"Raster {raster * 100:.1f} cm vernetzt …"
+            f"Detail-Mesh: Gebäuderegion ohne Gelände "
+            f"({int(mask.sum()):,} Punkte) wird mit Raster "
+            f"{raster * 100:.1f} cm vernetzt …"
         )
         detail = freeform_mesh_from_points(
             sub, voxel=float(raster), max_faces=8_000_000
         )
         if detail is None:
             print("  Detail-Mesh übersprungen (zu wenig zusammenhängende Geometrie)")
-            return
+            return None
         sharpen_mesh_with_planes(
             detail, result.surfaces, detail.freeform_stats["voxel"]
         )
-        detail_glb = output.with_name(output.stem + "_detail.glb")
-        write_mesh(detail, detail_glb)
+        return detail
+    except Exception as exc:  # noqa: BLE001 — detail is a bonus layer
+        print(f"  Detail-Mesh übersprungen ({exc})")
+        return None
+
+
+def _write_detail_mesh(
+    detail, photo_cams, images_dir, transform, rep: dict, output: Path
+) -> None:
+    """Photo-texture (when cameras exist) and write ``<name>_detail.glb``."""
+    try:
         st = detail.freeform_stats
+        out_mesh = detail
+        if photo_cams is not None and images_dir is not None:
+            try:
+                from scantobim.core.phototex import bake_photo_atlas
+
+                print("Foto-Textur: Atlas wird auf das Detail-Mesh projiziert …")
+                dx_stats: dict = {}
+                textured = bake_photo_atlas(
+                    detail, photo_cams, images_dir,
+                    transform=transform, stats_out=dx_stats,
+                )
+                if (
+                    textured is not None
+                    and dx_stats.get("photo_fraction", 0.0) >= 0.15
+                ):
+                    out_mesh = textured
+                    aw, ah = dx_stats["atlas"]
+                    print(
+                        f"  → Atlas {aw}×{ah} px, "
+                        f"{dx_stats['texel_cm']:.1f} cm/Texel, "
+                        f"{dx_stats['photo_fraction'] * 100:.0f}% Foto-Anteil "
+                        f"({dx_stats['cameras_used']} Kameras)"
+                    )
+                    st = {**st, "foto_textur": dx_stats}
+                elif textured is not None:
+                    print("  Foto-Anteil zu gering — Detail-Mesh behält "
+                          "Vertex-Farben")
+            except Exception as exc:  # noqa: BLE001 — atlas is best-effort
+                print(f"  Detail-Foto-Textur übersprungen ({exc})")
+        detail_glb = output.with_name(output.stem + "_detail.glb")
+        write_mesh(out_mesh, detail_glb)
         print(
             f"  Detail-Mesh: {st['triangles']:,} Dreiecke "
             f"(Raster {st['voxel'] * 100:.1f} cm) → {detail_glb.name}"

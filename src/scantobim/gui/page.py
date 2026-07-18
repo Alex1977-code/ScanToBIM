@@ -260,7 +260,7 @@ button.ghost:hover{border-color:var(--accent)}
         </select>
         <div style="margin-top:.6rem">
           <label class="opt"><input type="checkbox" id="watertight"> Wasserdichtes Volumenmodell (schließt Scanschatten)</label>
-          <label class="opt"><input type="checkbox" id="texture" checked> Fototextur aus Punktfarben</label>
+          <label class="opt" title="Textur des STRUKTURMODELLS (Flächen &amp; Kanten): Fotos, sonst Punktfarben. Der fotorealistische Foto-Atlas von Komplett- und Detail-Mesh läuft davon unabhängig immer."><input type="checkbox" id="texture" checked> Textur fürs Strukturmodell (Fotos, sonst Punktfarben)</label>
           <label class="opt" title="Stufe 1: Der GESAMTE Scan wird zuerst als farbiges Dreiecksnetz rekonstruiert (bis 4 Mio Dreiecke, komplett.glb) — maximale Fülle, nichts geht verloren. Im Viewer als Ebene schaltbar."><input type="checkbox" id="freeform" checked> Komplett-Mesh: ganzer Scan als Dreiecksnetz (Stufe 1)</label>
           <label class="opt" title="Stufe 2 (Option): Ebenen, Kanten und Linien werden algorithmisch gesucht — liefert das Strukturmodell mit Maßen, Öffnungen, Bauteilklassen und die BIM/CAD-Exporte (IFC, STEP, DXF). Abschaltbar, wenn nur das Netz gebraucht wird."><input type="checkbox" id="structure" checked> Ebenen &amp; Linien suchen (Strukturmodell, Stufe 2)</label>
           <label class="opt"><input type="checkbox" id="align"> Achsen ausrichten, Boden auf Z=0</label>

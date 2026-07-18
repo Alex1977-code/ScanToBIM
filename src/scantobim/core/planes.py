@@ -241,20 +241,56 @@ def _median_spacing(points: np.ndarray, rng: np.random.Generator, sample: int = 
 
 
 def _largest_component(pts: np.ndarray, radius: float) -> np.ndarray:
-    """Indices (into ``pts``) of the largest radius-connected component."""
+    """Indices (into ``pts``) of the largest radius-connected component.
+
+    Connectivity runs on an occupancy grid (cell = ``radius``,
+    26-neighbourhood): any two points within ``radius`` land in the same or
+    adjacent cells, so a true component is never split — merges may reach a
+    little further (up to √3·radius across cell diagonals), which is benign
+    for keep-the-largest-patch decisions. The former per-point radius graph
+    built million-edge sparse matrices whose construction dominated the
+    whole structure stage on large planes.
+    """
     n = len(pts)
     if n == 0:
         return np.zeros(0, dtype=np.int64)
-    tree = cKDTree(pts)
-    pairs = tree.query_pairs(r=radius, output_type="ndarray")
-    if len(pairs) == 0:
-        return np.arange(1)  # everything isolated; keep a single point
-    graph = sparse.csr_matrix(
-        (np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n)
+    cell = max(float(radius), 1e-9)
+    ijk = np.floor(pts / cell).astype(np.int64)
+    ijk -= ijk.min(axis=0)
+    dims = ijk.max(axis=0) + 2  # +2: neighbour codes never alias a real cell
+    code = (ijk[:, 0] * dims[1] + ijk[:, 1]) * dims[2] + ijk[:, 2]
+    vox_code, inv = np.unique(code, return_inverse=True)
+    nv = len(vox_code)
+    if nv == 1:
+        return np.arange(n)
+    offsets = [
+        (dx * dims[1] + dy) * dims[2] + dz
+        for dx in (0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+        if (dx, dy, dz) > (0, 0, 0)  # half neighbourhood — graph is undirected
+    ]
+    src_list, dst_list = [], []
+    for off in offsets:
+        target = vox_code + off
+        pos = np.searchsorted(vox_code, target)
+        pos = np.minimum(pos, nv - 1)
+        ok = vox_code[pos] == target
+        if ok.any():
+            src_list.append(np.flatnonzero(ok))
+            dst_list.append(pos[ok])
+    if not src_list:
+        counts = np.bincount(inv)
+        return np.flatnonzero(inv == counts.argmax())
+    src = np.concatenate(src_list)
+    dst = np.concatenate(dst_list)
+    graph = sparse.coo_matrix(
+        (np.ones(len(src), dtype=np.int8), (src, dst)), shape=(nv, nv)
     )
-    n_comp, labels = connected_components(graph, directed=False)
+    n_comp, vlabels = connected_components(graph, directed=False)
     if n_comp == 1:
         return np.arange(n)
+    labels = vlabels[inv]
     counts = np.bincount(labels)
     return np.flatnonzero(labels == counts.argmax())
 
@@ -272,6 +308,7 @@ def plane_adjacency(
     physical edge in the scanned scene.
     """
     trees = [cKDTree(points[p.inliers]) for p in planes]
+    pts_of = [points[p.inliers] for p in planes]
     adjacent: set[tuple[int, int]] = set()
     for i in range(len(planes)):
         for j in range(i + 1, len(planes)):
@@ -279,8 +316,18 @@ def plane_adjacency(
             cos_angle = abs(float(planes[i].normal @ planes[j].normal))
             if cos_angle > 0.97:
                 continue
-            contacts = trees[i].query_ball_tree(trees[j], r=contact_radius)
-            n_contact = sum(1 for lst in contacts if lst)
-            if n_contact >= min_contacts:
+            # Cheap reject: bounding boxes further apart than the radius.
+            lo_i, hi_i = pts_of[i].min(axis=0), pts_of[i].max(axis=0)
+            lo_j, hi_j = pts_of[j].min(axis=0), pts_of[j].max(axis=0)
+            if (np.maximum(lo_i - hi_j, lo_j - hi_i) > contact_radius).any():
+                continue
+            # Count SMALLER-side points that touch the other plane — C-fast
+            # and multithreaded (the former query_ball_tree built Python
+            # lists for every point of the larger side).
+            a, b = (i, j) if len(pts_of[i]) <= len(pts_of[j]) else (j, i)
+            lengths = trees[b].query_ball_point(
+                pts_of[a], r=contact_radius, return_length=True, workers=-1
+            )
+            if int((lengths > 0).sum()) >= min_contacts:
                 adjacent.add((i, j))
     return adjacent

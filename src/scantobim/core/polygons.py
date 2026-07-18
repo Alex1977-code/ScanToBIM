@@ -64,11 +64,14 @@ def alpha_shape_loops(
     if len(keep) == 0:
         return None, []
 
-    # Boundary edges appear exactly once among kept triangles.
+    # Boundary edges appear exactly once among kept triangles. Encode each
+    # undirected edge as one int64 — np.unique on scalars is many times
+    # faster than the row-wise (axis=0) variant on million-edge arrays.
     edges = np.vstack([keep[:, [0, 1]], keep[:, [1, 2]], keep[:, [2, 0]]])
     edges_sorted = np.sort(edges, axis=1)
+    codes = edges_sorted[:, 0].astype(np.int64) * len(pts) + edges_sorted[:, 1]
     _, first_idx, counts = np.unique(
-        edges_sorted, axis=0, return_index=True, return_counts=True
+        codes, return_index=True, return_counts=True
     )
     boundary_edges = edges[first_idx[counts == 1]]
     if len(boundary_edges) < 3:

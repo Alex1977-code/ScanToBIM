@@ -431,17 +431,32 @@ def reconstruct(
     parts: list[Mesh] = []
     geometries: list[SurfaceGeometry] = []
     plane_reports = []
-    for pi, plane in enumerate(planes):
-        part, info, geometry = _reconstruct_plane(
-            plane,
-            pi,
-            work.points,
-            plane_spacing.get(pi, spacing),
-            cfg,
-            lines_by_plane.get(pi, []),
-            corners_by_plane.get(pi, []),
-            palette[pi],
-        )
+    # Every plane's polygonization (Delaunay, boundary tracing, snapping)
+    # is independent of the others — run them across the cores instead of
+    # one after another; results are collected in plane order.
+    from concurrent.futures import ThreadPoolExecutor
+
+    import os as _os
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(8, (_os.cpu_count() or 4)))
+    ) as _pool:
+        _futures = [
+            _pool.submit(
+                _reconstruct_plane,
+                plane,
+                pi,
+                work.points,
+                plane_spacing.get(pi, spacing),
+                cfg,
+                lines_by_plane.get(pi, []),
+                corners_by_plane.get(pi, []),
+                palette[pi],
+            )
+            for pi, plane in enumerate(planes)
+        ]
+        _results = [f.result() for f in _futures]
+    for part, info, geometry in _results:
         plane_reports.append(info)
         if part is not None:
             parts.append(part)

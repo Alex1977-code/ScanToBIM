@@ -4,6 +4,17 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.14.0 — Foto-Textur garantiert, Detail-Mesh wirklich 2 cm, Strukturanalyse mehrkernig
+
+Analyse des Steuerhaus-Laufs von 3.13.0 (Bericht: `"texture": "keine"`, Detail-Raster 4,9 statt 2 cm): Drei Ursachen gefunden und behoben.
+
+- **Der Foto-Atlas hängt nicht mehr am Strukturmodell**: Bisher galt — scheiterte die Foto-Texturierung des STRUKTURMODELLS (bei 540 m² Gelände in den Flächen fast zwangsläufig unter der 20-%-Schwelle), wurden **auch** Foto-Farben und Foto-Atlas des Komplett-Meshes übersprungen. Genau das machte das Modell „verwaschen": beste Kameraposen (Score 92 %), aber keine einzige Foto-Textur. Jetzt hat jede Stufe ihr eigenes Qualitäts-Tor — der fotorealistische Atlas läuft, sobald Kameraposen existieren.
+- **Detail-Mesh: Gebäude-Region ohne Gelände**: Die Detail-Box wurde bisher über ALLE erkannten Flächen gespannt — inklusive der 59×41-m-Geländeflächen. Damit umfasste „Detail" die ganze Szene, und das Flächen-Budget zwang das Raster von 2 auf 4,9 cm hoch. Jetzt zählen nur Gebäudeflächen (Wände, Dächer, Decken) — das Detail-Mesh erreicht die bestellten **1–2 cm am Bauwerk**.
+- **Detail-Mesh bekommt den Foto-Atlas**: `<name>_detail.glb` ist jetzt selbst fotorealistisch texturiert (gleiches Verfahren wie das Komplett-Mesh) — das ist das Modell für „realitätsnah": feinstes Raster + echte Fotos.
+- **Strukturmodell-Textur auf neuem Fundament**: Die Foto-Projektion aufs Strukturmodell nutzt jetzt dieselbe Atlas-Maschinerie (Z-Buffer-Sichtbarkeit gegen eine dichte Wolken-Stichprobe statt Strahltest gegen jedes Dreieck, exaktes POLYFISHEYE, GPU) — schneller und ohne Durchscheinen verdeckter Flächen. Als Basisschicht unter den Fotos liegen echte Punktfarben.
+- **Strukturanalyse deutlich schneller und mehrkernig** (der „6 % CPU"-Befund): Die Zusammenhangs-Analyse pro Fläche baute Millionen-Kanten-Graphen (Minuten pro Fläche!) — ersetzt durch ein Belegungsgitter (Sekunden). Die Polygon-Rekonstruktion aller Flächen läuft jetzt **parallel über die Kerne**, das Zylinder-RANSAC bewertet Hypothesen auf einer Stichprobe (Gewinner exakt auf allen Punkten), Flächen-Nachbarschaften werden C-parallel gezählt. Messung am Testdatensatz: Strukturphase ~4× schneller.
+- GUI: Der Ordner-Chip zeigt jetzt korrekt „Kameraposen (ImgPose)", wenn die Quaternion-Posen verwendet werden; die Textur-Checkbox heißt klar „Textur fürs Strukturmodell" (der Foto-Atlas läuft unabhängig davon immer).
+
 ### Neu in 3.13.0 — höhere Auslastung: unabhängige Stufen laufen parallel
 
 - **Komplett-Mesh ∥ Strukturanalyse**: Die beiden großen Rechenstufen sind unabhängig und laufen jetzt **gleichzeitig** statt nacheinander — die Wartezeit ist das Maximum statt der Summe, die CPU-Auslastung verdoppelt sich in dieser Phase. (Die Protokollzeilen beider Stufen erscheinen dadurch verschränkt.)

@@ -93,3 +93,31 @@ def test_adjacency_box():
     adj = plane_adjacency(planes, cloud.points, contact_radius=0.15)
     # A closed box has 12 edges → 12 adjacent pairs.
     assert len(adj) == 12
+
+
+def test_largest_component_grid_split_and_keep():
+    """Grid connectivity: separated clusters split, chained points stay one."""
+    from scantobim.core.planes import _largest_component
+
+    rng = np.random.default_rng(3)
+    big = rng.random((400, 3)) * 0.5              # dense 0.5 m blob
+    far = rng.random((60, 3)) * 0.5 + 10.0        # far-away small blob
+    idx = _largest_component(np.vstack([big, far]), radius=0.2)
+    assert len(idx) == 400
+    assert idx.max() < 400  # exactly the big cluster
+
+    # A chain of points, each within radius of the next → one component.
+    chain = np.column_stack([
+        np.arange(50) * 0.15, np.zeros(50), np.zeros(50)
+    ])
+    idx = _largest_component(chain, radius=0.2)
+    assert len(idx) == 50
+
+
+def test_largest_component_never_splits_within_radius():
+    """Any two points closer than the radius always share a component."""
+    from scantobim.core.planes import _largest_component
+
+    pts = np.array([[0.0, 0.0, 0.0], [0.09, 0.0, 0.0], [5.0, 5.0, 5.0]])
+    idx = _largest_component(pts, radius=0.1)
+    assert set(idx.tolist()) == {0, 1}

@@ -125,11 +125,24 @@ def detect_cylinders(
         pts = points[remaining]
         nrm = normals[remaining]
 
+        # Sample-based hypothesis scoring (same trick as the plane RANSAC):
+        # each of the hundreds of hypotheses is judged on a subsample; only
+        # the winner is re-evaluated exactly on ALL points below. On
+        # million-point residuals this is the difference between minutes
+        # and seconds — results are identical up to RANSAC sampling noise.
+        if len(pts) > 150_000:
+            sel = rng.choice(len(pts), 150_000, replace=False)
+            s_pts, s_nrm = pts[sel], nrm[sel]
+            scale = len(pts) / 150_000.0
+        else:
+            s_pts, s_nrm = pts, nrm
+            scale = 1.0
+
         best_count = 0
         best_model = None
         for _ in range(ransac_iterations):
-            i, j = rng.integers(len(pts), size=2)
-            model = _cylinder_from_two_points(pts[i], nrm[i], pts[j], nrm[j])
+            i, j = rng.integers(len(s_pts), size=2)
+            model = _cylinder_from_two_points(s_pts[i], s_nrm[i], s_pts[j], s_nrm[j])
             if model is None:
                 continue
             center, axis, radius = model
@@ -137,17 +150,24 @@ def detect_cylinders(
                 continue
             if max_radius is not None and radius > max_radius:
                 continue
-            dist, radial_align = _cylinder_residuals(pts, nrm, center, axis, radius)
+            dist, radial_align = _cylinder_residuals(
+                s_pts, s_nrm, center, axis, radius
+            )
             mask = (np.abs(dist) < distance_threshold) & (radial_align > 0.85)
             count = int(mask.sum())
             if count > best_count:
                 best_count = count
-                best_model = (center, axis, radius, mask)
+                best_model = (center, axis, radius)
 
-        if best_model is None or best_count < min_inliers:
+        if best_model is None or best_count * scale < min_inliers:
             break
 
-        center, axis, radius, mask = best_model
+        center, axis, radius = best_model
+        dist, radial_align = _cylinder_residuals(pts, nrm, center, axis, radius)
+        mask = (np.abs(dist) < distance_threshold) & (radial_align > 0.85)
+        if int(mask.sum()) < min_inliers:
+            consecutive_fails += 1
+            continue
         # Refine on inliers, then re-collect once.
         for _ in range(3):
             center, axis, radius = _refine_cylinder(pts[mask], nrm[mask], center, axis)

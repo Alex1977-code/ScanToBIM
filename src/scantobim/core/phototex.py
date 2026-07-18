@@ -340,11 +340,18 @@ def bake_photo_atlas(
     min_facing: float = 0.2,
     max_used_cameras: int = 600,
     stats_out: dict | None = None,
+    depth_points: np.ndarray | None = None,
 ) -> Mesh | None:
     """Bake a full-resolution photo texture atlas onto ``mesh``.
 
     Returns a new textured mesh (chart-seam vertices duplicated) or None
     when no usable camera/photo pair exists. ``mesh`` itself is untouched.
+
+    ``depth_points`` (scan-frame, optional) densify the per-camera depth
+    buffer used for the visibility test. The complete mesh is dense enough
+    on its own — but a coarse structure mesh (a handful of polygon corners)
+    is not, so callers pass a point-cloud sample to represent the real
+    scene depth (anything the photos could not see through).
     """
     from pathlib import Path
 
@@ -441,8 +448,12 @@ def bake_photo_atlas(
     tri_scan = v_scan[faces]
     f_centers = tri_scan.mean(axis=1)
     f_normals = mesh.face_normals() @ rot_w
+    depth_verts = v_scan
+    if depth_points is not None and len(depth_points):
+        dp_scan = (np.asarray(depth_points, dtype=np.float64) - t_w) @ rot_w
+        depth_verts = np.vstack([v_scan, dp_scan])
     best_cam = _assign_cameras(
-        f_centers, f_normals, v_scan, cameras, image_index,
+        f_centers, f_normals, depth_verts, cameras, image_index,
         min_facing, max_used_cameras,
     )
 
