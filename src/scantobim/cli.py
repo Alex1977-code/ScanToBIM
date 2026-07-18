@@ -257,6 +257,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_proj.add_argument("--tolerance", type=float, default=0.005)
     p_proj.add_argument("--views", type=Path, default=None, metavar="DIR",
                         help="true-to-scale orthographic views as PNG")
+    p_proj.add_argument("--detail-raster", dest="detail_raster", type=float,
+                        default=0.02, metavar="M",
+                        help="Raster des Detail-Mesh der Gebäuderegion in m "
+                             "(Standard 0.02 = 2 cm; 0 = aus)")
     p_proj.add_argument("--max-points", type=int, default=None,
                         help="thin huge scans to at most this many points")
     p_proj.add_argument("--report-html", type=Path, default=None, metavar="HTML",
@@ -810,8 +814,10 @@ def _cmd_reconstruct(args) -> int:
 
 def _cmd_project(args) -> int:
     """SLAM project folder → photo-textured clean-edged model."""
+    from scantobim.core.progress import report as _prog
     from scantobim.io.project import read_trajectory, scan_project_dir
 
+    _prog(0.01, "Projektordner analysieren")
     project = scan_project_dir(args.directory)
     if project.cloud is None:
         raise ValueError(
@@ -829,7 +835,9 @@ def _cmd_project(args) -> int:
     else:
         print("  Datei-Inventar: alle erkannten Dateien werden verwendet.")
 
+    _prog(0.03, "Punktwolke laden")
     cloud = read_point_cloud(project.cloud, max_points=args.max_points)
+    _prog(0.10, "Punktwolke geladen")
     print(f"  geladen: {len(cloud):,} Punkte"
           + (", mit Farben" if cloud.colors is not None else ""))
     if (
@@ -845,8 +853,14 @@ def _cmd_project(args) -> int:
         )
 
     # Dense-but-uncolorized cloud + colored sibling → graft the colors onto
-    # the dense geometry (nearest neighbour, header-verified sibling).
-    if cloud.colors is None and project.color_source is not None:
+    # the dense geometry. IMPORTANT: R=G=B intensity greyscales (e.g.
+    # uncolorized.las) count as UNcolored — grey must never become the
+    # texture when real colors are available.
+    grey_rgb = _colors_are_grey(cloud)
+    if grey_rgb:
+        print("  Hinweis: RGB der Wolke ist nur Intensitäts-Grau (R=G=B) — "
+              "wird nicht als Farbtextur verwendet")
+    if (cloud.colors is None or grey_rgb) and project.color_source is not None:
         from scantobim.core.preprocess import transfer_colors
 
         print(f"  Farben übertragen von: {project.color_source.name} …")
@@ -855,6 +869,8 @@ def _cmd_project(args) -> int:
         )
         fraction = transfer_colors(cloud, color_cloud)
         print(f"  → {fraction:.0%} der Punkte eingefärbt")
+    elif grey_rgb:
+        cloud.colors = None  # grau lieber neutral als falsch
 
     trajectory = None
     if project.trajectory is not None:
@@ -899,7 +915,9 @@ def _cmd_project(args) -> int:
     _copy_diagnosis(report_extra, args.directory)
     full_mesh = full_viewer = None
     if getattr(args, "freeform", True):
+        _prog(0.14, "Komplett-Mesh vernetzen")
         full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
+    _prog(0.34, "Strukturanalyse")
 
     fallback_report = {
         "input_points": len(cloud),
@@ -950,7 +968,9 @@ def _cmd_project(args) -> int:
         )
     rep = result.report
     rep.update(report_extra)
+    _prog(0.55, "Kontur-Schärfung")
     _contour_full_mesh(full_mesh, full_viewer, result, rep)
+    _prog(0.60, "Kameraposen")
     print(f"  planes: {rep['planes']}  angles: {rep['plane_angles']}  "
           f"residual: {rep['residual_points']}")
     if rep.get("point_spacing", 0) > 0.05:
@@ -1100,6 +1120,7 @@ def _cmd_project(args) -> int:
     rep["texture"] = texture_info
     print(f"Textur: {texture_info['source']}")
 
+    _prog(0.68, "Foto-Farben")
     # High-resolution photo colors onto the complete mesh (per vertex).
     if (
         full_mesh is not None
@@ -1131,6 +1152,7 @@ def _cmd_project(args) -> int:
         except Exception as exc:  # noqa: BLE001 — photo colors are best-effort
             print(f"  Foto-Farben übersprungen ({exc})")
 
+    _prog(0.78, "Foto-Textur-Atlas")
     # Photo-realistic texture ATLAS on the complete mesh: full photo
     # resolution instead of one color per vertex.
     if (
@@ -1144,6 +1166,12 @@ def _cmd_project(args) -> int:
             full_viewer, camera_source, project.images_dir,
             transform, rep, output,
         )
+    _prog(0.86, "Detail-Mesh")
+    if output.suffix.lower() not in (".stp", ".step", ".ifc"):
+        _build_detail_mesh(
+            cloud, result, getattr(args, "detail_raster", 0.02), output, rep
+        )
+    _prog(0.92, "Dateien schreiben")
 
     ext = output.suffix.lower()
     if ext in (".stp", ".step"):
@@ -1187,6 +1215,7 @@ def _cmd_project(args) -> int:
         print(f"wrote {out} (druckfertiger Prüfbericht)")
 
     _print_gpu_usage(rep)
+    _prog(1.0, "fertig")
     report_path = args.report or output.with_name(output.stem + "_bericht.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(rep, indent=2, default=_json_default))
@@ -1267,6 +1296,17 @@ def _print_gpu_usage(rep: dict | None = None) -> None:
               "(Wolke zu klein) — die CPU hat alles übernommen")
     if rep is not None:
         rep["gpu_nutzung"] = u
+
+
+def _colors_are_grey(cloud, sample: int = 5000) -> bool:
+    """True when the cloud's RGB is just intensity as grey (R≈G≈B)."""
+    if cloud.colors is None or len(cloud) == 0:
+        return False
+    step = max(1, len(cloud) // sample)
+    c = cloud.colors[::step].astype(np.int16)
+    dev = int(np.abs(c[:, 0] - c[:, 1]).max()) if len(c) else 0
+    dev = max(dev, int(np.abs(c[:, 1] - c[:, 2]).max()) if len(c) else 0)
+    return dev <= 3
 
 
 def _copy_diagnosis(report_extra: dict, target_dir: Path) -> None:
@@ -1444,6 +1484,54 @@ def _fallback_photo_atlas(project, args, cloud, full_viewer, report, output):
     return _bake_full_photo_atlas(
         full_viewer, camera_source, project.images_dir, None, report, output
     )
+
+
+def _build_detail_mesh(cloud, result, raster: float, output: Path, rep: dict) -> None:
+    """High-detail mesh of the BUILDING region (1–2 cm raster).
+
+    The overview mesh covers the whole 100-m-class scene at a coarse
+    raster; the detail mesh re-meshes only the region around the detected
+    structure surfaces at ``raster`` — full constructive detail without a
+    billion-face scene mesh. Written as ``<name>_detail.glb``.
+    """
+    if raster is None or raster <= 0 or result is None or not result.surfaces:
+        return
+    try:
+        from scantobim.core.freeform import (
+            freeform_mesh_from_points,
+            sharpen_mesh_with_planes,
+        )
+
+        pts = np.vstack([s.outer for s in result.surfaces])
+        lo = pts.min(axis=0) - 1.0
+        hi = pts.max(axis=0) + 1.0
+        mask = np.all((cloud.points >= lo) & (cloud.points <= hi), axis=1)
+        if int(mask.sum()) < 5_000:
+            return
+        sub = cloud.select(mask)
+        print(
+            f"Detail-Mesh: Gebäuderegion ({int(mask.sum()):,} Punkte) wird mit "
+            f"Raster {raster * 100:.1f} cm vernetzt …"
+        )
+        detail = freeform_mesh_from_points(
+            sub, voxel=float(raster), max_faces=8_000_000
+        )
+        if detail is None:
+            print("  Detail-Mesh übersprungen (zu wenig zusammenhängende Geometrie)")
+            return
+        sharpen_mesh_with_planes(
+            detail, result.surfaces, detail.freeform_stats["voxel"]
+        )
+        detail_glb = output.with_name(output.stem + "_detail.glb")
+        write_mesh(detail, detail_glb)
+        st = detail.freeform_stats
+        print(
+            f"  Detail-Mesh: {st['triangles']:,} Dreiecke "
+            f"(Raster {st['voxel'] * 100:.1f} cm) → {detail_glb.name}"
+        )
+        rep["detail_mesh"] = st
+    except Exception as exc:  # noqa: BLE001 — detail is a bonus layer
+        print(f"  Detail-Mesh übersprungen ({exc})")
 
 
 def _bake_full_photo_atlas(

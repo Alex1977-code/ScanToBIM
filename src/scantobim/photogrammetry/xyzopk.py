@@ -255,15 +255,22 @@ def cameras_from_xyzopk(
         pts = pts[sel]
         colors = None if colors is None else colors[sel]
 
+    from scantobim.photogrammetry.calibration import pick_calibration
+
+    calib = pick_calibration(calibration, width, height)
     cx = cy = None
-    if calibration and calibration.get("fx"):
-        # Factory focal length: search only a narrow band around it (the
-        # photos in `undistort` may carry a slightly different new-camera
-        # matrix, so a small sweep stays in place of blind trust).
-        fx_grid = np.geomspace(0.85, 1.2, 5) * float(calibration["fx"])
-        cx = calibration.get("cx")
-        cy = calibration.get("cy")
-        intrinsics_source = "calibration.yaml"
+    if calib and calib.get("fx"):
+        # Factory focal length OF THE MATCHING CAMERA (size-verified — the
+        # 640x480 navigation camera must never calibrate the photo rig).
+        # Narrow sweep instead of blind trust: undistorted photos may carry
+        # a slightly different new-camera matrix.
+        fx_grid = np.geomspace(0.85, 1.2, 5) * float(calib["fx"])
+        cx = calib.get("cx")
+        cy = calib.get("cy")
+        cam_name = calib.get("name")
+        intrinsics_source = (
+            f"calibration.yaml/{cam_name}" if cam_name else "calibration.yaml"
+        )
     else:
         fx_grid = np.geomspace(0.35, 1.8, 14) * width
         intrinsics_source = "selbstkalibriert"
@@ -356,12 +363,18 @@ def cameras_from_imgpose(
         pts = pts[sel]
         colors = None if colors is None else colors[sel]
 
+    from scantobim.photogrammetry.calibration import pick_calibration
+
+    calib = pick_calibration(calibration, width, height)
     cx = cy = None
-    if calibration and calibration.get("fx"):
-        fx_grid = np.geomspace(0.85, 1.2, 5) * float(calibration["fx"])
-        cx = calibration.get("cx")
-        cy = calibration.get("cy")
-        intrinsics_source = "calibration.yaml"
+    if calib and calib.get("fx"):
+        fx_grid = np.geomspace(0.85, 1.2, 5) * float(calib["fx"])
+        cx = calib.get("cx")
+        cy = calib.get("cy")
+        cam_name = calib.get("name")
+        intrinsics_source = (
+            f"calibration.yaml/{cam_name}" if cam_name else "calibration.yaml"
+        )
     else:
         fx_grid = np.geomspace(0.35, 1.8, 10) * width
         intrinsics_source = "selbstkalibriert"

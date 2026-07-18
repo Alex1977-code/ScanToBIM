@@ -167,11 +167,19 @@ class SlamProject:
                 "(weder COLMAP-Modell noch xyzopk.txt)"
             )
         if self.calibration is not None and self.calibration_data:
-            cd = self.calibration_data
+            cams = self.calibration_data
+            if isinstance(cams, dict):
+                cams = [cams]
+            parts = ", ".join(
+                (c.get("name") or "Kamera")
+                + (f" {c['width']}×{c['height']}" if c.get("width") else "")
+                + f" fx={c['fx']:.0f}"
+                for c in cams[:4]
+            )
             lines.append(
                 f"Kalibrierung: {self.calibration.relative_to(self.root)} "
-                f"(fx={cd['fx']:.0f} px — echte Scanner-Brennweite "
-                "für die Foto-Projektion)"
+                f"— {len(cams)} Kamera(s): {parts} "
+                "(Auswahl nach Bildgröße der Fotos)"
             )
         if self.trajectory is not None:
             lines.append(f"Trajektorie:  {self.trajectory.relative_to(self.root)}")
@@ -369,7 +377,19 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
             return float(count) if count else p.stat().st_size / 20.0
 
         densest = max(info, key=weight)
-        colored = [p for p in info if info[p][1] is True]
+
+        def _truly_colored(p: Path) -> bool:
+            """Header colors alone lie: uncolorized exports often carry the
+            INTENSITY as R=G=B grey. Name hints and a small data probe
+            keep grey ramps out of the color ranking."""
+            if info[p][1] is not True:
+                return False
+            if re.search(r"uncolor|nocolor|no_color|ohne_?farb|intens|grau|gr[ae]y",
+                         p.name.lower()):
+                return False
+            return _colors_grey_probe(p) is not True
+
+        colored = [p for p in info if _truly_colored(p)]
         best_colored = max(colored, key=weight) if colored else None
         # Geometry first: the densest cloud wins unless the colored sibling
         # is practically the same size (≥95%). SLAM exports pair e.g. a
@@ -384,7 +404,7 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
                 )
         else:
             chosen = densest
-            if best_colored is not None and info[chosen][1] is not True:
+            if best_colored is not None and chosen not in colored:
                 project.color_source = best_colored
                 project.cloud_note = (
                     f"dichteste Wolke als Geometriequelle gewählt "
@@ -397,7 +417,10 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
                 )
         project.cloud = chosen
         project.cloud_points = info[chosen][0]
-        project.cloud_colored = info[chosen][1]
+        # "colored" means REAL camera colors — grey intensity ramps don't count.
+        project.cloud_colored = (
+            (chosen in colored) if info[chosen][1] else info[chosen][1]
+        )
 
     # COLMAP model: shallowest hit.
     if colmap_dirs:
@@ -429,6 +452,36 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
     project.colmap_dirs = colmap_dirs
 
     return project
+
+
+def _colors_grey_probe(path: Path, sample: int = 4000) -> bool | None:
+    """True when a cloud's RGB is only a grey ramp (R≈G≈B, intensity).
+
+    Reads a small sample of ACTUAL color data (LAS/LAZ chunked); None when
+    the format can't be probed cheaply — the caller then trusts the header.
+    """
+    ext = path.suffix.lower()
+    if ext not in (".las", ".laz"):
+        return None
+    try:
+        import laspy
+
+        with laspy.open(str(path)) as reader:
+            for chunk in reader.chunk_iterator(sample):
+                dims = set(chunk.point_format.dimension_names)
+                if not {"red", "green", "blue"} <= dims:
+                    return None
+                r = np.asarray(chunk.red, dtype=np.int64)
+                g = np.asarray(chunk.green, dtype=np.int64)
+                b = np.asarray(chunk.blue, dtype=np.int64)
+                if not len(r):
+                    return None
+                peak = max(int(r.max()), int(g.max()), int(b.max()), 1)
+                dev = max(int(np.abs(r - g).max()), int(np.abs(g - b).max()))
+                return dev <= max(2, peak // 100)
+    except Exception:  # noqa: BLE001 — probe is best-effort
+        return None
+    return None
 
 
 def read_trajectory(path: str | Path) -> np.ndarray:

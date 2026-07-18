@@ -717,8 +717,9 @@ def test_read_camera_calibration_styles(tmp_path):
         "camera:\n  fx: 1234.5\n  fy: 1236.1\n  cx: 2027.3\n  cy: 1519.8\n"
         "  k1: -0.041\nimage_width: 4056\nimage_height: 3040\n"
     )
-    d = read_camera_calibration(flat)
-    assert d is not None
+    cams = read_camera_calibration(flat)
+    assert cams is not None
+    d = cams[0]
     assert d["fx"] == 1234.5 and d["fy"] == 1236.1
     assert d["cx"] == 2027.3 and d["k1"] == -0.041
     assert d["width"] == 4056 and d["height"] == 3040
@@ -730,8 +731,9 @@ def test_read_camera_calibration_styles(tmp_path):
         "distortion_coefficients:\n  rows: 1\n  cols: 5\n"
         "  data: [-0.041, 0.012, 0., 0., 0.]\n"
     )
-    d = read_camera_calibration(ocv)
-    assert d is not None
+    cams = read_camera_calibration(ocv)
+    assert cams is not None
+    d = cams[0]
     assert d["fx"] == 1234.5 and d["cy"] == 1519.8 and d["k1"] == -0.041
 
     junk = tmp_path / "leer.yaml"
@@ -790,7 +792,7 @@ def test_scan_project_dir_detects_calibration(tmp_path):
     )
     project = scan_project_dir(root)
     assert project.calibration is not None
-    assert project.calibration_data["fx"] == 1234.5
+    assert project.calibration_data[0]["fx"] == 1234.5
     lines = "\n".join(project.describe())
     assert "Kalibrierung" in lines and "1234" in lines
     used, reason = project._classify(info / "calibration.yaml")
@@ -936,3 +938,108 @@ def test_scan_project_dir_detects_imgpose(tmp_path):
     assert project.imgpose is not None
     used, reason = project._classify(root / "camera" / "ImgPose.txt")
     assert used and "Quaternionen" in reason
+
+
+# --------------------------------------- v3.11: verified-data corrections
+
+def test_grey_rgb_cloud_is_not_colored(tmp_path):
+    """R=G=B intensity ramps (uncolorized.las) must not count as colored."""
+    import laspy
+
+    from scantobim.io.project import _colors_grey_probe
+
+    def _write_las(path, grey):
+        header = laspy.LasHeader(point_format=3, version="1.2")
+        las = laspy.LasData(header)
+        n = 500
+        rng = np.random.default_rng(1)
+        las.x = rng.uniform(0, 5, n)
+        las.y = rng.uniform(0, 5, n)
+        las.z = rng.uniform(0, 3, n)
+        if grey:
+            v = rng.integers(0, 65535, n)
+            las.red = v
+            las.green = v
+            las.blue = v
+        else:
+            las.red = rng.integers(0, 65535, n)
+            las.green = rng.integers(0, 65535, n)
+            las.blue = rng.integers(0, 65535, n)
+        las.write(str(path))
+
+    _write_las(tmp_path / "grau.las", grey=True)
+    _write_las(tmp_path / "bunt.las", grey=False)
+    assert _colors_grey_probe(tmp_path / "grau.las") is True
+    assert _colors_grey_probe(tmp_path / "bunt.las") is False
+
+    # Selection: grey-RGB densest cloud + truly colored sibling → densest
+    # wins as geometry, colored sibling becomes the color source.
+    root = tmp_path / "proj"
+    root.mkdir()
+    _write_las(root / "scan_uncolorized.las", grey=True)
+    _write_ply_cloud(root / "scan_col.ply", 400, colored=True)
+    project = scan_project_dir(root)
+    assert project.cloud.name == "scan_uncolorized.las"
+    assert project.cloud_colored is False  # grey ≠ colored
+    assert project.color_source is not None
+
+
+def test_colors_are_grey_helper():
+    from scantobim.cli import _colors_are_grey
+    from scantobim.core.cloud import PointCloud
+
+    n = 300
+    rng = np.random.default_rng(0)
+    v = rng.integers(0, 255, n).astype(np.uint8)
+    grey = PointCloud(
+        points=rng.uniform(0, 1, (n, 3)),
+        colors=np.column_stack([v, v, v]),
+    )
+    assert _colors_are_grey(grey) is True
+    colored = PointCloud(
+        points=rng.uniform(0, 1, (n, 3)),
+        colors=rng.integers(0, 255, (n, 3)).astype(np.uint8),
+    )
+    assert _colors_are_grey(colored) is False
+
+
+def test_pick_calibration_matches_photo_size(tmp_path):
+    """The 640×480 navigation camera must never calibrate the photo rig."""
+    from scantobim.photogrammetry.calibration import (
+        pick_calibration,
+        read_camera_calibration,
+    )
+
+    yaml = tmp_path / "calibration.yaml"
+    yaml.write_text(
+        "fisheye_middle:\n"
+        "  image_width: 640\n"
+        "  image_height: 480\n"
+        "  fx: 548.0\n  fy: 548.0\n  cx: 320.0\n  cy: 240.0\n"
+        "fisheye_left:\n"
+        "  camera_model: POLYFISHEYE\n"
+        "  image_width: 3504\n"
+        "  image_height: 4672\n"
+        "  A11: 1480.2\n  A22: 1481.0\n  u0: 1752.3\n  v0: 2336.1\n"
+        "  k2: -0.003\n  k3: 0.0006\n  k4: 0.0\n"
+    )
+    cams = read_camera_calibration(yaml)
+    assert cams is not None and len(cams) >= 2
+    names = [c.get("name") for c in cams]
+    assert "fisheye_middle" in names and "fisheye_left" in names
+
+    # Photo size 3504×4672 → the POLYFISHEYE camera, A11 as fx.
+    cam = pick_calibration(cams, 3504, 4672)
+    assert cam is not None
+    assert cam["name"] == "fisheye_left"
+    assert abs(cam["fx"] - 1480.2) < 0.01
+    assert cam["cx"] == 1752.3
+    assert cam["model"] == "POLYFISHEYE"
+    assert cam["poly"] == [-0.003, 0.0006, 0.0]
+
+    # Landscape/portrait tolerant.
+    assert pick_calibration(cams, 4672, 3504)["name"] == "fisheye_left"
+    # Nav camera resolution picks the nav camera.
+    assert pick_calibration(cams, 640, 480)["name"] == "fisheye_middle"
+    # Unknown size → NO calibration (self-calibration instead of wrong cam).
+    assert pick_calibration(cams, 2000, 1500) is None

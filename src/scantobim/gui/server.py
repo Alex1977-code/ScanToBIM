@@ -154,6 +154,47 @@ class GuiState:
             return job
 
 
+_SYSSTATS_CACHE: list = [0.0, {}]
+
+
+def _sysstats() -> dict:
+    """CPU/RAM/GPU utilization snapshot for the GUI (cached ~1.5 s)."""
+    import time
+
+    now = time.monotonic()
+    if now - _SYSSTATS_CACHE[0] < 1.5:
+        return _SYSSTATS_CACHE[1]
+    out: dict = {}
+    try:
+        import psutil
+
+        out["cpu"] = psutil.cpu_percent(interval=None)
+        vm = psutil.virtual_memory()
+        out["ram_used"] = round(vm.used / 2**30, 1)
+        out["ram_total"] = round(vm.total / 2**30, 1)
+    except Exception:  # noqa: BLE001 — stats are informational
+        pass
+    try:
+        import subprocess
+
+        r = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3,
+        )
+        line = r.stdout.strip().splitlines()[0]
+        g, mu, mt = [float(x) for x in line.split(",")[:3]]
+        out["gpu"] = g
+        out["vram_used"] = round(mu / 1024, 1)
+        out["vram_total"] = round(mt / 1024, 1)
+    except Exception:  # noqa: BLE001 — no NVIDIA driver / tool
+        pass
+    _SYSSTATS_CACHE[0] = now
+    _SYSSTATS_CACHE[1] = out
+    return out
+
+
 # --------------------------------------------------------------- job runners
 
 def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
@@ -190,6 +231,7 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             report_html=(outdir / "pruefbericht.html")
             if opts.get("report_html") else None,
             max_points=int(opts.get("max_points") or 40_000_000),
+            detail_raster=float(opts.get("detail_raster") if opts.get("detail_raster") is not None else 0.02),
             freeform=opts.get("freeform", True),
             structure=opts.get("structure", True),
             seed=None,
@@ -587,6 +629,9 @@ def _job_worker(mode: str, files: list[str], opts: dict, outdir: str, q) -> None
                     q.put(("log", line.rstrip()))
             return len(s)
 
+    import os
+
+    os.environ["SCANTOBIM_PROGRESS"] = "1"
     writer = _QueueWriter()
     try:
         with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
@@ -633,7 +678,15 @@ def _execute_job(state: GuiState, job: dict, files: list[Path], opts: dict) -> N
                     job["state"] = final = "error"
                 continue
             if kind == "log":
-                job["log"].append(payload)
+                if payload.startswith("##PROGRESS "):
+                    try:
+                        _, frac, *rest = payload.split(" ", 2)
+                        job["progress"] = float(frac)
+                        job["phase"] = rest[0] if rest else ""
+                    except ValueError:
+                        pass
+                else:
+                    job["log"].append(payload)
             elif kind == "done":
                 job["summary"] = payload
                 job["state"] = final = "done"
@@ -645,7 +698,7 @@ def _execute_job(state: GuiState, job: dict, files: list[Path], opts: dict) -> N
         with contextlib.suppress(_pyqueue.Empty):
             while True:
                 kind, payload = q.get_nowait()
-                if kind == "log":
+                if kind == "log" and not payload.startswith("##PROGRESS "):
                     job["log"].append(payload)
         proc.join(5)
     finally:
@@ -725,6 +778,8 @@ def _make_handler(state: GuiState):
                 })
             elif route == "/api/profiles":
                 self._json({"profiles": _load_profiles()})
+            elif route == "/api/sysstats":
+                self._json(_sysstats())
             elif route == "/api/status":
                 job = state.jobs.get(self._query().get("job", ""))
                 if job is None:
@@ -742,6 +797,8 @@ def _make_handler(state: GuiState):
                 self._json(
                     {
                         "state": job["state"],
+                        "progress": job.get("progress"),
+                        "phase": job.get("phase"),
                         "log": job["log"],
                         "summary": job["summary"],
                         "error": job["error"],

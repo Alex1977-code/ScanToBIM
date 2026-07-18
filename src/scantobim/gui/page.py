@@ -283,6 +283,7 @@ button.ghost:hover{border-color:var(--accent)}
             <label title="Mindestgröße erkannter Öffnungen (Fenster/Türen) als Vielfaches des Punktabstands. Größer = weniger falsche Öffnungen durch Abschattungen. Standard 8.">Öffnungs-Mindestgröße [×&nbsp;Punktabstand] <input id="adv_min_opening" placeholder="8"></label>
             <label title="Toleranz der Soll-Ist-Abweichungsanalyse in Millimetern — bestimmt die Quote 'innerhalb Toleranz'. Standard 5 mm.">QS-Toleranz [mm] <input id="adv_tolerance" placeholder="5"></label>
             <label title="Speicherschutz: riesige Scans werden beim Einlesen blockweise auf diese Punktzahl (in Millionen) ausgedünnt. Standard 40.">Max. Punkte [Mio.] <input id="adv_max_points" placeholder="40"></label>
+            <label title="Raster des hochaufgelösten Detail-Mesh der Gebäuderegion in Zentimetern (wird zusätzlich als _detail.glb geschrieben). Standard 2 cm. 0 = aus.">Detail-Raster [cm] <input id="adv_detail" placeholder="2"></label>
           </div>
         </details>
         <label class="sel-label">Zusätzliche Exportformate</label>
@@ -323,6 +324,13 @@ button.ghost:hover{border-color:var(--accent)}
     <button class="primary" id="run">Modell erstellen</button>
     <button class="ghost" id="cancel" style="display:none"
       title="Bricht die laufende Berechnung sofort ab. Bereits geschriebene Ergebnisdateien bleiben erhalten.">⛔ Abbrechen</button>
+    <div id="progwrap" style="display:none;margin-top:.6rem">
+      <div style="height:8px;border-radius:99px;background:var(--line);overflow:hidden">
+        <div id="progbar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#7fd0a8);transition:width .6s"></div>
+      </div>
+      <div id="progtext" style="font-size:.75rem;color:var(--muted);margin-top:.3rem"></div>
+    </div>
+    <div id="sysstats" style="font-size:.72rem;color:var(--muted);margin-top:.4rem"></div>
   </div>
 
   <div class="content">
@@ -465,6 +473,8 @@ function gatherOptions(){
   if (!isNaN(tol)) options.tolerance = tol / 1000.0;
   const mp = parseFloat($("#adv_max_points").value.replace(",", "."));
   if (!isNaN(mp)) options.max_points = Math.round(mp * 1e6);
+  const dr = parseFloat($("#adv_detail").value.replace(",", "."));
+  if (!isNaN(dr)) options.detail_raster = dr / 100.0;
   options.unfold = $("#unfold").checked;
   return options;
 }
@@ -486,6 +496,7 @@ function applySettings(s){
     (s.advanced && "ortho_tol_deg" in s.advanced) ? String(s.advanced.ortho_tol_deg) : "";
   $("#adv_tolerance").value = ("tolerance" in s) ? String(s.tolerance * 1000) : "";
   $("#adv_max_points").value = ("max_points" in s) ? String(s.max_points / 1e6) : "";
+  $("#adv_detail").value = ("detail_raster" in s) ? String(s.detail_raster * 100) : "";
   if ("unfold" in s) $("#unfold").checked = !!s.unfold;
 }
 
@@ -559,6 +570,10 @@ $("#run").onclick = async () => {
   $("#cancel").disabled = false;
   $("#log").textContent = "";
   $("#dlcard").style.display = "none";
+  $("#progwrap").style.display = "";
+  $("#progbar").style.width = "0%";
+  $("#progtext").textContent = "";
+  state.progT0 = null;
   setStatus("Berechnung läuft …", "run");
   state.timer = setInterval(poll, 800);
 };
@@ -578,11 +593,26 @@ async function poll(){
   const log = $("#log");
   log.textContent = s.log.join("\n") || "…";
   log.scrollTop = log.scrollHeight;
+  if (s.progress != null) {
+    $("#progwrap").style.display = "";
+    $("#progbar").style.width = (s.progress * 100).toFixed(1) + "%";
+    if (!state.progT0 && s.progress > 0) state.progT0 = Date.now() / 1000;
+    let eta = "";
+    if (state.progT0 && s.progress > 0.05 && s.progress < 1) {
+      const el = Date.now() / 1000 - state.progT0;
+      const rem = el * (1 - s.progress) / s.progress;
+      eta = " · ≈ " + fmtDur(rem) + " verbleibend";
+    }
+    $("#progtext").textContent =
+      Math.round(s.progress * 100) + "% — " + (s.phase || "") + eta;
+  }
   if (s.state === "running") return;
 
   clearInterval(state.timer);
   $("#run").disabled = false;
   $("#cancel").style.display = "none";
+  if (s.state === "done") { $("#progbar").style.width = "100%"; $("#progtext").textContent = "100% — fertig"; }
+  else { $("#progwrap").style.display = "none"; }
   if (s.state === "cancelled") {
     setStatus("abgebrochen", "err");
   } else if (s.state === "error") {
@@ -658,6 +688,28 @@ function syncSourceTitle(){
 }
 srcSel.onchange = syncSourceTitle;
 syncSourceTitle();
+
+function fmtDur(sec){
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s2 = sec % 60;
+  if (m >= 60) { const h = Math.floor(m / 60); return h + " h " + (m % 60) + " min"; }
+  return m > 0 ? m + " min " + s2 + " s" : s2 + " s";
+}
+
+/* CPU/RAM/GPU/VRAM live stats (server-side cached, cheap) */
+async function pollStats(){
+  try {
+    const st = await (await fetch("/api/sysstats")).json();
+    const parts = [];
+    if (st.cpu != null) parts.push("CPU " + Math.round(st.cpu) + "%");
+    if (st.ram_used != null) parts.push("RAM " + st.ram_used + "/" + st.ram_total + " GB");
+    if (st.gpu != null) parts.push("GPU " + Math.round(st.gpu) + "%");
+    if (st.vram_used != null) parts.push("VRAM " + st.vram_used + "/" + st.vram_total + " GB");
+    $("#sysstats").textContent = parts.join(" · ");
+  } catch (e) { /* Server weg — still bleiben */ }
+}
+setInterval(pollStats, 2500);
+pollStats();
 
 /* preloaded files (drag & drop onto the exe) + GPU badge */
 function applyMeta(m, first){

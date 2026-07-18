@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.11.0 — verifizierte Korrekturen + Fortschrittsbalken
+
+- **Grauwert-Falle entschärft**: `uncolorized.las` trägt die Intensität als R=G=B — das zählte fälschlich als „farbig". Jetzt prüft die Wolkenauswahl echte Farbdaten (Stichprobe): Grau-Rampen gelten als unfarbig, die Farben kommen zwingend von `colorized.las` bzw. den Fotos. Ein graues Modell kann nicht mehr entstehen.
+- **Kamera-Auswahl nach Bildgröße**: `calibration.yaml` enthält MEHRERE Kameras — bisher wurde die erste genommen (die 640×480-Navigationskamera, fx≈548!). Jetzt werden alle Kameras gelesen und die zur Foto-Auflösung (3504×4672) passende gewählt: fisheye_left/right mit A11≈1480, inkl. POLYFISHEYE-Koeffizienten k2… Ohne Größen-Match wird lieber selbstkalibriert als falsch kalibriert.
+- **Detail-Mesh der Gebäuderegion**: Neben dem Übersichts-Mesh der Gesamtszene entsteht jetzt ein hochaufgelöstes **`_detail.glb` mit 1–2 cm Raster** (Standard 2 cm) der Region um die erkannten Strukturflächen — einstellbar unter Erweiterte Einstellungen → „Detail-Raster [cm]" bzw. `--detail-raster`.
+- **Fortschrittsbalken mit Restzeit-Schätzung**: Die Oberfläche zeigt jetzt einen Balken mit Phase („Komplett-Mesh vernetzen", „Foto-Textur-Atlas", …), Prozent und geschätzter Restdauer.
+- **CPU/GPU/RAM live**: Unter dem Balken laufen die Systemwerte mit — CPU %, RAM belegt/gesamt, GPU % (CUDA) und VRAM belegt/gesamt (über nvidia-smi).
+
 ### Neu in 3.10.0 — bestmögliches Netz: alle Informationsquellen des S20-Exports
 
 - **Dichteste Wolke als Geometriequelle**: `uncolorized.las` (20,0 Mio Punkte) schlägt jetzt `colorized.las` (18,1 Mio) — die farbige Wolke gewinnt nur noch, wenn sie praktisch gleich groß ist (≥95 %). Die Farben werden verlustarm von der farbigen Schwester übertragen. **+10 % echte Geometrie.**

@@ -56,6 +56,7 @@ jobs:
           done
           pyinstaller --onefile --console --name scantobim \
             --collect-all laspy --collect-all lazrs --collect-all pye57 \
+            --hidden-import psutil \
             $EXTRA \
             packaging/windows/launcher.py
 

@@ -374,3 +374,36 @@ def test_page_has_winner_button(gui_server):
     url, _ = gui_server
     _, body = _get(url + "/")
     assert "Gewinner-Einstellungen als Profil speichern" in body.decode()
+
+
+def test_progress_and_sysstats(gui_server, tmp_path):
+    """Jobs report progress fractions; /api/sysstats returns live stats."""
+    url, _ = gui_server
+    status, body = _get(url + "/api/sysstats")
+    assert status == 200
+    stats = json.loads(body)
+    assert isinstance(stats, dict)  # cpu/ram present where psutil exists
+
+    src = write_point_cloud(make_box_scan(density=500, noise=0.004), tmp_path / "scan.ply")
+    _, body = _post(url + "/api/upload", src.read_bytes(), {"X-Filename": "scan.ply"})
+    uploaded = json.loads(body)
+    _, body = _post(
+        url + "/api/run",
+        json.dumps({
+            "mode": "reconstruct",
+            "files": [uploaded["path"]],
+            "options": {"preset": "fast", "texture": False},
+        }).encode(),
+    )
+    job = json.loads(body)["job"]
+    deadline = time.time() + 180
+    while True:
+        _, body = _get(url + f"/api/status?job={job}")
+        s = json.loads(body)
+        if s["state"] != "running":
+            break
+        assert time.time() < deadline
+        time.sleep(0.3)
+    assert s["state"] == "done", s.get("error")
+    # Progress markers must never leak into the visible protokoll.
+    assert not any("##PROGRESS" in line for line in s["log"])
