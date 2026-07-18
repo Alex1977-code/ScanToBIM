@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.12.0 — POLYFISHEYE: die Fisheye-Fotos werden exakt projiziert
+
+- **Das vollständige POLYFISHEYE-Modell der S20-Fotokameras ist umgesetzt** (aus der echten `calibration.yaml`): `r(θ) = θ + k2·θ² + … + k7·θ⁷` über den Einfallswinkel, Abbildung über die A-Matrix (A11/A12/A22) und den Bildhauptpunkt (u0/v0), gültig bis 120° Einfallswinkel. Keine Pinhole-Näherung mehr — die Foto-Projektion stimmt jetzt bis in die Bildränder.
+- **Jede Stereo-Seite bekommt ihre eigene Kalibrierung**: Fotos unter `left/` nutzen fisheye_left (A11=1480,03), unter `right/` fisheye_right (A11=1476,93) — mit jeweils eigenen Verzeichnungskoeffizienten und Hauptpunkten.
+- **Kein Brennweiten-Raten mehr**: Mit dem exakten Werksmodell entfällt die Suche komplett — nur die Rotationskonvention wird noch farb-validiert. Protokoll: „Brennweite 1480 px (calibration.yaml/fisheye_left POLYFISHEYE)".
+- Verifiziert mit einem synthetisch über das echte Polynom gerenderten Testfoto (Übereinstimmung > 80 % in der Selbstvalidierung) und den exakten Werkskoeffizienten als Regressionstest.
+
 ### Neu in 3.11.0 — verifizierte Korrekturen + Fortschrittsbalken
 
 - **Grauwert-Falle entschärft**: `uncolorized.las` trägt die Intensität als R=G=B — das zählte fälschlich als „farbig". Jetzt prüft die Wolkenauswahl echte Farbdaten (Stichprobe): Grau-Rampen gelten als unfarbig, die Farben kommen zwingend von `colorized.las` bzw. den Fotos. Ein graues Modell kann nicht mehr entstehen.

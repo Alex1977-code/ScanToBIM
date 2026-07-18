@@ -103,6 +103,25 @@ def read_imgpose(path: str | Path):
     return entries
 
 
+def _project_for_score(pc, fx, px0, py0, fisheye):
+    """(px, py, valid) for the color scoring — pinhole or POLYFISHEYE."""
+    if fisheye is not None:
+        from scantobim.photogrammetry.colmap import polyfisheye_px
+
+        px, py = polyfisheye_px(
+            pc, fisheye["fx"], fisheye["fy"], fisheye.get("a12") or 0.0,
+            fisheye["cx"], fisheye["cy"], tuple(fisheye["poly"]),
+        )
+        max_t = np.deg2rad(fisheye.get("max_theta_deg") or 120.0)
+        rho = np.sqrt(pc[:, 0] ** 2 + pc[:, 1] ** 2)
+        valid = np.arctan2(rho, pc[:, 2]) <= max_t
+        return px, py, valid
+    with np.errstate(divide="ignore", invalid="ignore"):
+        px = fx * pc[:, 0] / pc[:, 2] + px0
+        py = fx * pc[:, 1] / pc[:, 2] + py0
+    return px, py, pc[:, 2] > 0.2
+
+
 def _quat_to_rot(q: np.ndarray, order: str) -> np.ndarray:
     """Unit quaternion → rotation matrix; ``order`` is 'xyzw' or 'wxyz'."""
     if order == "wxyz":
@@ -163,26 +182,41 @@ def _conventions():
 def _build_cameras(
     entries, convention, fx, width, height,
     cx: float | None = None, cy: float | None = None,
+    calibs: list | None = None,
 ) -> list[CameraPose]:
+    from scantobim.photogrammetry.calibration import calibration_for_name
+
     cams = []
     for name, xyz, opk in entries:
         o, p, k = np.deg2rad(opk)
         rot = convention(o, p, k)
-        cams.append(
-            CameraPose(
-                name=name,
-                width=width,
-                height=height,
-                fx=fx,
-                fy=fx,
-                cx=width / 2.0 if cx is None else cx,
-                cy=height / 2.0 if cy is None else cy,
-                k1=0.0,
-                rotation=rot,
-                translation=-rot @ xyz,
-            )
-        )
+        cams.append(_make_pose(
+            name, rot, xyz, fx, width, height, cx, cy,
+            calibration_for_name(calibs, name) if calibs else None,
+        ))
     return cams
+
+
+def _make_pose(name, rot, xyz, fx, width, height, cx, cy, calib) -> CameraPose:
+    """One CameraPose; POLYFISHEYE calibs bring their own exact intrinsics
+    (per stereo side: left/ photos → fisheye_left, right/ → fisheye_right)."""
+    if calib is not None and calib.get("model") == "POLYFISHEYE" and calib.get("poly"):
+        return CameraPose(
+            name=name, width=width, height=height,
+            fx=float(calib["fx"]), fy=float(calib["fy"]),
+            cx=float(calib["cx"]), cy=float(calib["cy"]),
+            k1=0.0, rotation=rot, translation=-rot @ xyz,
+            model="POLYFISHEYE", poly=tuple(calib["poly"]),
+            a12=float(calib.get("a12") or 0.0),
+            max_theta_deg=float(calib.get("max_theta_deg") or 120.0),
+        )
+    return CameraPose(
+        name=name, width=width, height=height,
+        fx=fx, fy=fx,
+        cx=width / 2.0 if cx is None else cx,
+        cy=height / 2.0 if cy is None else cy,
+        k1=0.0, rotation=rot, translation=-rot @ xyz,
+    )
 
 
 def cameras_from_xyzopk(
@@ -255,11 +289,28 @@ def cameras_from_xyzopk(
         pts = pts[sel]
         colors = None if colors is None else colors[sel]
 
-    from scantobim.photogrammetry.calibration import pick_calibration
+    from scantobim.photogrammetry.calibration import (
+        calibration_for_name,
+        pick_calibration,
+        pick_calibrations,
+    )
 
+    sized = pick_calibrations(calibration, width, height)
     calib = pick_calibration(calibration, width, height)
+    fisheye = calib if (calib and calib.get("model") == "POLYFISHEYE"
+                       and calib.get("poly")) else None
     cx = cy = None
-    if calib and calib.get("fx"):
+    if fisheye is not None:
+        # Exact factory model (POLYFISHEYE): no sweep — the polynomial IS
+        # the projection; only the rotation convention remains open.
+        fx_grid = [float(calib["fx"])]
+        cx, cy = calib.get("cx"), calib.get("cy")
+        cam_name = calib.get("name")
+        intrinsics_source = (
+            f"calibration.yaml/{cam_name} POLYFISHEYE" if cam_name
+            else "calibration.yaml POLYFISHEYE"
+        )
+    elif calib and calib.get("fx"):
         # Factory focal length OF THE MATCHING CAMERA (size-verified — the
         # 640x480 navigation camera must never calibrate the photo rig).
         # Narrow sweep instead of blind trust: undistorted photos may carry
@@ -279,7 +330,7 @@ def cameras_from_xyzopk(
         for fx in fx_grid:
             score = _score(
                 entries, conv, float(fx), width, height,
-                probe_photos, pts, colors, cx=cx, cy=cy,
+                probe_photos, pts, colors, cx=cx, cy=cy, fisheye=fisheye,
             )
             if best is None or score > best[0]:
                 best = (score, conv_name, float(fx))
@@ -291,8 +342,10 @@ def cameras_from_xyzopk(
         stats_out["score"] = round(float(score), 4)
         stats_out["cameras"] = len(entries)
         stats_out["intrinsics_quelle"] = intrinsics_source
+    calibs = sized if fisheye is not None else None
     return _build_cameras(
-        entries, _conventions()[conv_name], fx, width, height, cx=cx, cy=cy
+        entries, _conventions()[conv_name], fx, width, height, cx=cx, cy=cy,
+        calibs=calibs,
     )
 
 
@@ -363,11 +416,26 @@ def cameras_from_imgpose(
         pts = pts[sel]
         colors = None if colors is None else colors[sel]
 
-    from scantobim.photogrammetry.calibration import pick_calibration
+    from scantobim.photogrammetry.calibration import (
+        calibration_for_name,
+        pick_calibration,
+        pick_calibrations,
+    )
 
+    sized = pick_calibrations(calibration, width, height)
     calib = pick_calibration(calibration, width, height)
+    fisheye = calib if (calib and calib.get("model") == "POLYFISHEYE"
+                       and calib.get("poly")) else None
     cx = cy = None
-    if calib and calib.get("fx"):
+    if fisheye is not None:
+        fx_grid = [float(calib["fx"])]  # exact factory model — no sweep
+        cx, cy = calib.get("cx"), calib.get("cy")
+        cam_name = calib.get("name")
+        intrinsics_source = (
+            f"calibration.yaml/{cam_name} POLYFISHEYE" if cam_name
+            else "calibration.yaml POLYFISHEYE"
+        )
+    elif calib and calib.get("fx"):
         fx_grid = np.geomspace(0.85, 1.2, 5) * float(calib["fx"])
         cx = calib.get("cx")
         cy = calib.get("cy")
@@ -398,7 +466,7 @@ def cameras_from_imgpose(
         for fx in fx_grid:
             score = _score_rotations(
                 entries, rots, float(fx), width, height,
-                probe_photos, pts, colors, cx=cx, cy=cy,
+                probe_photos, pts, colors, cx=cx, cy=cy, fisheye=fisheye,
             )
             if best is None or score > best[0]:
                 best = (score, label, float(fx), rots)
@@ -412,21 +480,17 @@ def cameras_from_imgpose(
         stats_out["intrinsics_quelle"] = intrinsics_source
     cams = []
     for (name, xyz, _q), rot in zip(entries, rots):
-        cams.append(
-            CameraPose(
-                name=name, width=width, height=height,
-                fx=fx, fy=fx,
-                cx=width / 2.0 if cx is None else cx,
-                cy=height / 2.0 if cy is None else cy,
-                k1=0.0, rotation=rot, translation=-rot @ xyz,
-            )
-        )
+        cams.append(_make_pose(
+            name, rot, xyz, fx, width, height, cx, cy,
+            calibration_for_name(sized, name) if fisheye is not None else None,
+        ))
     return cams
 
 
 def _score_rotations(
     entries, rots, fx, width, height, probe_photos, pts, colors,
     cx: float | None = None, cy: float | None = None,
+    fisheye: dict | None = None,
 ) -> float:
     """Like :func:`_score`, but with precomputed per-entry rotations."""
     px0 = width / 2.0 if cx is None else cx
@@ -437,13 +501,10 @@ def _score_rotations(
         xyz = entries[ei][1]
         rot = rots[ei]
         pc = (pts - xyz) @ rot.T
-        in_front = pc[:, 2] > 0.2
-        if in_front.sum() < 50:
+        px, py, valid = _project_for_score(pc, fx, px0, py0, fisheye)
+        if valid.sum() < 50:
             continue
-        with np.errstate(divide="ignore", invalid="ignore"):
-            px = fx * pc[:, 0] / pc[:, 2] + px0
-            py = fx * pc[:, 1] / pc[:, 2] + py0
-        ok = in_front & (px >= 0) & (px <= width - 1) & (py >= 0) & (py <= height - 1)
+        ok = valid & (px >= 0) & (px <= width - 1) & (py >= 0) & (py <= height - 1)
         if ok.sum() < 50:
             continue
         frac = float(ok.mean())
@@ -464,6 +525,7 @@ def _score_rotations(
 def _score(
     entries, conv, fx, width, height, probe_photos, pts, colors,
     cx: float | None = None, cy: float | None = None,
+    fisheye: dict | None = None,
 ) -> float:
     """Mean agreement of projected cloud points with the probe photos."""
     px0 = width / 2.0 if cx is None else cx
@@ -475,13 +537,10 @@ def _score(
         o, p, k = np.deg2rad(opk)
         rot = conv(o, p, k)
         pc = (pts - xyz) @ rot.T
-        in_front = pc[:, 2] > 0.2
-        if in_front.sum() < 50:
+        px, py, valid = _project_for_score(pc, fx, px0, py0, fisheye)
+        if valid.sum() < 50:
             continue
-        with np.errstate(divide="ignore", invalid="ignore"):
-            px = fx * pc[:, 0] / pc[:, 2] + px0
-            py = fx * pc[:, 1] / pc[:, 2] + py0
-        ok = in_front & (px >= 0) & (px <= width - 1) & (py >= 0) & (py <= height - 1)
+        ok = valid & (px >= 0) & (px <= width - 1) & (py >= 0) & (py <= height - 1)
         if ok.sum() < 50:
             continue
         frac = float(ok.mean())

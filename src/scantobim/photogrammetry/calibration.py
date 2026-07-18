@@ -26,7 +26,8 @@ def _parse_block(text: str) -> dict | None:
     """Intrinsics from one text block; None when nothing camera-like."""
     out: dict = {
         "fx": None, "fy": None, "cx": None, "cy": None,
-        "k1": None, "width": None, "height": None,
+        "k1": None, "a12": None, "max_theta_deg": None,
+        "width": None, "height": None,
         "model": None, "poly": None,
     }
 
@@ -47,7 +48,8 @@ def _parse_block(text: str) -> dict | None:
     flat = {
         "fx": r"\b(?:fx|A11)\b", "fy": r"\b(?:fy|A22)\b",
         "cx": r"\b(?:cx|u0)\b", "cy": r"\b(?:cy|v0)\b",
-        "k1": r"\bk1\b",
+        "k1": r"\bk1\b", "a12": r"\bA12\b",
+        "max_theta_deg": r"\bmaxIncidentAngle\b",
         "width": r"\b(?:image_)?width\b",
         "height": r"\b(?:image_)?height\b",
     }
@@ -58,7 +60,8 @@ def _parse_block(text: str) -> dict | None:
         if m:
             out[key] = float(m.group(1))
 
-    mm = re.search(r"(?:camera_)?model\s*[:=]\s*([A-Za-z_]+)", text, re.IGNORECASE)
+    mm = re.search(r"(?:camera_)?model(?:_type)?\s*[:=]\s*([A-Za-z_]+)",
+                   text, re.IGNORECASE)
     if mm:
         out["model"] = mm.group(1).upper()
     poly = []
@@ -152,9 +155,47 @@ def pick_calibration(
     sized = [c for c in cams if _matches(c)]
     if sized:
         return sized[0]
+    return _pick_unsized(cams)
+
+
+def pick_calibrations(calibration, width: int, height: int) -> list[dict]:
+    """ALL size-matching calibration entries (e.g. fisheye_left AND _right).
+
+    Lets stereo rigs use each photo's own camera: images under ``left/``
+    get fisheye_left's intrinsics, ``right/`` fisheye_right's.
+    """
+    single = pick_calibration(calibration, width, height)
+    if single is None:
+        return []
+    cams = calibration if isinstance(calibration, list) else [calibration]
+    sized = []
+    for c in cams:
+        w, h = c.get("width"), c.get("height")
+        if not w or not h:
+            continue
+        for cw, ch in ((w, h), (h, w)):
+            if abs(cw - width) <= 0.02 * width and abs(ch - height) <= 0.02 * height:
+                sized.append(c)
+                break
+    return sized or [single]
+
+
+def calibration_for_name(sized: list[dict], name: str | None) -> dict:
+    """The entry whose camera name matches the photo path (left/right/…)."""
+    low = (name or "").lower()
+    for c in sized:
+        cname = (c.get("name") or "").lower()
+        for side in ("left", "right", "middle"):
+            if side in cname and side in low:
+                return c
+    return sized[0]
+
+
+def _pick_unsized(cams: list[dict]) -> dict | None:
     # No sizes recorded anywhere → a single entry may still be right;
     # multiple entries without sizes are ambiguous → refuse.
     unsized = [c for c in cams if not c.get("width")]
     if len(cams) == 1 and len(unsized) == 1:
         return unsized[0]
     return None
+

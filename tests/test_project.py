@@ -1043,3 +1043,136 @@ def test_pick_calibration_matches_photo_size(tmp_path):
     assert pick_calibration(cams, 640, 480)["name"] == "fisheye_middle"
     # Unknown size → NO calibration (self-calibration instead of wrong cam).
     assert pick_calibration(cams, 2000, 1500) is None
+
+
+# ------------------------------------------- POLYFISHEYE (echte S20-Kalib)
+
+_S20_YAML = "tests/data_s20_calibration.yaml"
+
+
+def test_real_s20_calibration_parsed():
+    """The genuine S20 calibration.yaml: all cameras, exact parameters."""
+    from pathlib import Path
+
+    from scantobim.photogrammetry.calibration import (
+        calibration_for_name,
+        pick_calibration,
+        pick_calibrations,
+        read_camera_calibration,
+    )
+
+    cams = read_camera_calibration(Path(_S20_YAML))
+    assert cams is not None
+    by_name = {c["name"]: c for c in cams}
+    left = by_name["fisheye_left"]
+    assert left["model"] == "POLYFISHEYE"
+    assert abs(left["fx"] - 1480.0265217354813) < 1e-6
+    assert abs(left["cx"] - 1749.5565059398484) < 1e-6
+    assert abs(left["a12"] - 1.0749520834239590) < 1e-9
+    assert left["max_theta_deg"] == 120.0
+    assert len(left["poly"]) == 6
+    assert abs(left["poly"][0] - (-1.6738521467337498e-02)) < 1e-12
+
+    # Photo size 3504×4672 → left/right, never the 640×480 nav camera.
+    pick = pick_calibration(cams, 3504, 4672)
+    assert pick["name"] == "fisheye_left"
+    sized = pick_calibrations(cams, 3504, 4672)
+    assert {c["name"] for c in sized} == {"fisheye_left", "fisheye_right"}
+    assert calibration_for_name(sized, "right/frame_01.jpg")["name"] == "fisheye_right"
+    assert calibration_for_name(sized, "left/frame_01.jpg")["name"] == "fisheye_left"
+    assert pick_calibration(cams, 640, 480)["name"] == "fisheye_middle"
+
+
+def test_polyfisheye_projection_geometry():
+    """Center ray → principal point; r(θ) monotonic; 60° near the edge."""
+    from pathlib import Path
+
+    from scantobim.photogrammetry.calibration import read_camera_calibration
+    from scantobim.photogrammetry.colmap import polyfisheye_px
+
+    left = {c["name"]: c for c in read_camera_calibration(Path(_S20_YAML))}[
+        "fisheye_left"
+    ]
+    poly = tuple(left["poly"])
+
+    center = np.array([[0.0, 0.0, 1.0]])
+    px, py = polyfisheye_px(center, left["fx"], left["fy"], left["a12"],
+                            left["cx"], left["cy"], poly)
+    assert abs(px[0] - left["cx"]) < 1e-6 and abs(py[0] - left["cy"]) < 1e-6
+
+    # Rays at increasing incidence along +x → strictly growing radius.
+    thetas = np.deg2rad(np.arange(5, 121, 5))
+    pts = np.column_stack([np.sin(thetas), np.zeros_like(thetas), np.cos(thetas)])
+    px, py = polyfisheye_px(pts, left["fx"], left["fy"], left["a12"],
+                            left["cx"], left["cy"], poly)
+    radii = px - left["cx"]
+    assert np.all(np.diff(radii) > 0)
+    # 60° incidence lands near the horizontal image border (~1578 px).
+    r60 = radii[np.argmin(np.abs(thetas - np.deg2rad(60)))]
+    assert 1400 < r60 < 1800
+
+
+def test_cameras_from_imgpose_polyfisheye_end_to_end(tmp_path):
+    """A photo RENDERED with the real fisheye model validates at high score."""
+    PIL = pytest.importorskip("PIL.Image")
+    from pathlib import Path
+
+    from scantobim.core.cloud import PointCloud
+    from scantobim.photogrammetry.calibration import read_camera_calibration
+    from scantobim.photogrammetry.colmap import polyfisheye_px
+    from scantobim.photogrammetry.xyzopk import cameras_from_imgpose
+
+    cams = read_camera_calibration(Path(_S20_YAML))
+    left = {c["name"]: c for c in cams}["fisheye_left"]
+    # Shrink to a small test sensor, SAME polynomial: scale A/centers by 1/8.
+    scale = 8.0
+    calib = dict(left)
+    calib["fx"] = left["fx"] / scale
+    calib["fy"] = left["fy"] / scale
+    calib["a12"] = left["a12"] / scale
+    calib["cx"] = left["cx"] / scale
+    calib["cy"] = left["cy"] / scale
+    calib["width"] = int(3504 / scale)
+    calib["height"] = int(4672 / scale)
+
+    def field(x, y):
+        r = 50 + 100 * (x + 3) / 6
+        b = 120 + 100 * (y + 2) / 4
+        return np.stack([r, np.full_like(r, 80.0), b], axis=-1)
+
+    # Floor grid, camera at (0,0,-5) looking +z (identity quaternion).
+    gx, gy = np.meshgrid(np.linspace(-3, 3, 700), np.linspace(-2, 2, 500))
+    gpts = np.column_stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)])
+    pc = gpts - np.array([0.0, 0.0, -5.0])
+    px, py = polyfisheye_px(pc, calib["fx"], calib["fy"], calib["a12"],
+                            calib["cx"], calib["cy"], tuple(calib["poly"]))
+    W, H = calib["width"], calib["height"]
+    photo = np.full((H, W, 3), 90, dtype=np.float64)
+    cols = field(gpts[:, 0], gpts[:, 1])
+    ix = np.clip(px.round().astype(int), 1, W - 2)
+    iy = np.clip(py.round().astype(int), 1, H - 2)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            photo[iy + dy, ix + dx] = cols
+    img_dir = tmp_path / "left"
+    img_dir.mkdir()
+    PIL.fromarray(photo.astype(np.uint8)).save(img_dir / "foto.png")
+
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([
+        rng.uniform(-3, 3, 20000), rng.uniform(-2, 2, 20000), np.zeros(20000),
+    ])
+    cloud = PointCloud(points=pts, colors=field(pts[:, 0], pts[:, 1]).astype(np.uint8))
+    ip = tmp_path / "ImgPose.txt"
+    ip.write_text("foto.png 0.0 0.0 -5.0 0.0 0.0 0.0 1.0 100.0\n")
+
+    stats = {}
+    result = cameras_from_imgpose(
+        ip, img_dir, cloud, stats_out=stats, calibration=[calib]
+    )
+    assert stats["score"] > 0.8
+    assert "POLYFISHEYE" in stats["intrinsics_quelle"]
+    cam = result[0]
+    assert cam.model == "POLYFISHEYE"
+    assert cam.poly == tuple(calib["poly"])
+    assert abs(cam.fx - calib["fx"]) < 1e-9

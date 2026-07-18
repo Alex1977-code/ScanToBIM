@@ -37,12 +37,41 @@ from scantobim.io.readers import read_point_cloud
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".heic"}
 
 
+def polyfisheye_px(
+    pts_cam: np.ndarray,
+    fx: float, fy: float, a12: float, cx: float, cy: float,
+    poly: tuple,
+) -> tuple[np.ndarray, np.ndarray]:
+    """POLYFISHEYE projection (SHARE S20 photo cameras).
+
+    ``r(θ) = θ + k2·θ² + … + k7·θ⁷`` of the incidence angle θ, mapped
+    through the affine matrix [[A11, A12], [0, A22]] plus the principal
+    point. Valid past 90° (the caller bounds θ via maxIncidentAngle).
+    """
+    x, y, z = pts_cam[:, 0], pts_cam[:, 1], pts_cam[:, 2]
+    rho = np.sqrt(x * x + y * y)
+    theta = np.arctan2(rho, z)  # 0..π, handles z<0 (θ>90°)
+    r = theta.copy()
+    tp = theta.copy()
+    for k in poly:
+        tp = tp * theta
+        r = r + k * tp
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ux = np.where(rho > 1e-12, x / rho, 0.0)
+        uy = np.where(rho > 1e-12, y / rho, 0.0)
+    mx = r * ux
+    my = r * uy
+    return fx * mx + a12 * my + cx, fy * my + cy
+
+
 @dataclass
 class CameraPose:
     """One registered photo: intrinsics + world→camera pose (COLMAP convention).
 
     ``p_cam = rotation @ p_world + translation``; the camera center in world
-    coordinates is ``-rotation.T @ translation``.
+    coordinates is ``-rotation.T @ translation``. ``model`` is PINHOLE
+    (+k1 radial) by default; POLYFISHEYE uses the polynomial fisheye of
+    the SHARE S20 photo cameras (``poly`` = k2..k7, ``a12`` = A12 skew).
     """
 
     name: str
@@ -55,9 +84,18 @@ class CameraPose:
     k1: float  # radial distortion (SIMPLE_RADIAL), 0 for pinhole models
     rotation: np.ndarray  # (3, 3)
     translation: np.ndarray  # (3,)
+    model: str = "PINHOLE"
+    poly: tuple | None = None
+    a12: float = 0.0
+    max_theta_deg: float = 120.0
 
     def project(self, pts_cam: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Project camera-space points to pixel coordinates."""
+        if self.model == "POLYFISHEYE" and self.poly:
+            return polyfisheye_px(
+                pts_cam, self.fx, self.fy, self.a12, self.cx, self.cy,
+                tuple(self.poly),
+            )
         with np.errstate(divide="ignore", invalid="ignore"):
             xn = pts_cam[:, 0] / pts_cam[:, 2]
             yn = pts_cam[:, 1] / pts_cam[:, 2]
