@@ -26,7 +26,7 @@ from scantobim.core.pipeline import (
 )
 from scantobim.core.registration import merge_clouds, register_point_to_plane
 
-__version__ = "3.7.0"
+__version__ = "3.7.1"
 
 __all__ = [
     "PointCloud",

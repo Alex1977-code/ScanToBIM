@@ -4,6 +4,11 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.7.1 — eindeutige Diagnose
+
+- Das Protokoll beginnt jetzt mit **„ScanToBIM 3.7.1"** — damit ist sofort sichtbar, welche Version wirklich läuft (Verwechslung mit einem älteren entpackten Zip ausgeschlossen).
+- Schlägt das **Laden der CUDA-DLLs** fehl (ImportError „DLL load failed …"), steht der konkrete Grund jetzt ebenfalls in der GPU-Protokollzeile statt der allgemeinen CPU-Modus-Meldung.
+
 ### Neu in 3.7.0 — GPU-Fix + fotorealistischer Textur-Atlas
 
 - **GPU-Version läuft jetzt ohne CUDA-Toolkit** — Fix für „cuda path could not be detected": Das GPU-Zip von 3.6.0 erwartete die CUDA-Laufzeitbibliotheken vom (auf den meisten PCs nicht installierten) CUDA-Toolkit — deshalb blieb die RTX bei 0 %. Jetzt sind **cudart + NVRTC direkt im Exe gebündelt**; es genügt der normale NVIDIA-Grafiktreiber. Zusätzlich rechnet die Normalenschätzung ihre Eigenvektoren jetzt in geschlossener Form (elementweise Kernels statt cuSOLVER) — weniger Abhängigkeiten, gleicher Output. Wenn CUDA dennoch nicht startet, nennt das Protokoll jetzt den **konkreten Grund** („GPU: CUDA nicht nutzbar (…) — CPU-Modus").

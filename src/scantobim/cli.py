@@ -1157,8 +1157,10 @@ def _cmd_compare(args) -> int:
 
 
 def _print_gpu_status(report_extra: dict | None = None) -> None:
+    from scantobim import __version__
     from scantobim.core.accel import gpu_error, gpu_name
 
+    print(f"ScanToBIM {__version__}")
     name = gpu_name()
     error = gpu_error()
     if name:

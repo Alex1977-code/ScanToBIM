@@ -117,8 +117,12 @@ def gpu():
             _gpu = cupy
         else:
             _error = "kein CUDA-Gerät gefunden (NVIDIA-Treiber installiert?)"
-    except ImportError:
-        _error = None  # CPU build without CuPy — nothing to report
+    except ImportError as exc:
+        # CPU build without CuPy → nothing to report. A GPU build whose
+        # CUDA DLLs fail to load raises ImportError too ("DLL load
+        # failed …") — that one must reach the log.
+        msg = str(exc).splitlines()[0] if str(exc) else ""
+        _error = None if "No module named" in msg else f"ImportError: {msg[:200]}"
     except Exception as exc:
         _gpu = None
         _name = None
