@@ -700,3 +700,93 @@ def test_project_cli_prints_inventory(tmp_path, capsys):
     log = capsys.readouterr().out
     assert "Datei-Inventar" in log
     assert "raw.bag" in log and "Rohaufnahme" in log
+
+
+# ------------------------------------------------- camera calibration file
+
+def test_read_camera_calibration_styles(tmp_path):
+    from scantobim.photogrammetry.calibration import read_camera_calibration
+
+    flat = tmp_path / "calib_flat.yaml"
+    flat.write_text(
+        "camera:\n  fx: 1234.5\n  fy: 1236.1\n  cx: 2027.3\n  cy: 1519.8\n"
+        "  k1: -0.041\nimage_width: 4056\nimage_height: 3040\n"
+    )
+    d = read_camera_calibration(flat)
+    assert d is not None
+    assert d["fx"] == 1234.5 and d["fy"] == 1236.1
+    assert d["cx"] == 2027.3 and d["k1"] == -0.041
+    assert d["width"] == 4056 and d["height"] == 3040
+
+    ocv = tmp_path / "calibration.yaml"
+    ocv.write_text(
+        "camera_matrix:\n  rows: 3\n  cols: 3\n"
+        "  data: [1234.5, 0., 2027.3, 0., 1236.1, 1519.8, 0., 0., 1.]\n"
+        "distortion_coefficients:\n  rows: 1\n  cols: 5\n"
+        "  data: [-0.041, 0.012, 0., 0., 0.]\n"
+    )
+    d = read_camera_calibration(ocv)
+    assert d is not None
+    assert d["fx"] == 1234.5 and d["cy"] == 1519.8 and d["k1"] == -0.041
+
+    junk = tmp_path / "leer.yaml"
+    junk.write_text("sensor: lidar\nversion: 3\n")
+    assert read_camera_calibration(junk) is None
+
+
+def test_cameras_from_xyzopk_with_calibration(tmp_path):
+    """Factory intrinsics narrow the sweep and land closer to the truth."""
+    PIL = pytest.importorskip("PIL.Image")
+    from scantobim.core.cloud import PointCloud
+    from scantobim.photogrammetry.xyzopk import cameras_from_xyzopk
+
+    fx_true, W, H = 350.0, 400, 300
+
+    def field(x, y):
+        r = 50 + 100 * (x + 1) / 2
+        b = 120 + 100 * (y + 1) / 2
+        return np.stack([r, np.full_like(r, 80.0), b], axis=-1)
+
+    px, py = np.meshgrid(np.arange(W), np.arange(H))
+    photo = field((px - W / 2) * 5.0 / fx_true, (py - H / 2) * 5.0 / fx_true)
+    img_dir = tmp_path / "bilder"
+    img_dir.mkdir()
+    PIL.fromarray(photo.astype(np.uint8)).save(img_dir / "foto.png")
+
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([
+        rng.uniform(-1, 1, 20000), rng.uniform(-0.7, 0.7, 20000),
+        np.zeros(20000),
+    ])
+    cloud = PointCloud(
+        points=pts, colors=field(pts[:, 0], pts[:, 1]).astype(np.uint8)
+    )
+    opk = tmp_path / "xyzopk.txt"
+    opk.write_text("foto.png 0.0 0.0 -5.0 180.0 0.0 0.0\n")
+
+    calib = {"fx": 350.0, "fy": 350.0, "cx": W / 2.0, "cy": H / 2.0,
+             "k1": None, "width": W, "height": H}
+    stats = {}
+    cams = cameras_from_xyzopk(
+        opk, img_dir, cloud, stats_out=stats, calibration=calib
+    )
+    assert stats["intrinsics_quelle"] == "calibration.yaml"
+    assert 340 < stats["fx"] < 372  # narrow band around the factory value
+    assert stats["score"] > 0.9
+    assert cams[0].cx == W / 2.0
+
+
+def test_scan_project_dir_detects_calibration(tmp_path):
+    root = _build_project(tmp_path, with_photos=True)
+    info = root / "info"
+    info.mkdir()
+    (info / "calibration.yaml").write_text(
+        "camera_matrix:\n  data: [1234.5, 0., 200.0, 0., 1236.1, 150.0, 0., 0., 1.]\n"
+    )
+    project = scan_project_dir(root)
+    assert project.calibration is not None
+    assert project.calibration_data["fx"] == 1234.5
+    lines = "\n".join(project.describe())
+    assert "Kalibrierung" in lines and "1234" in lines
+    used, reason = project._classify(info / "calibration.yaml")
+    assert used and "Kalibrierung" in reason

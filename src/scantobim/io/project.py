@@ -107,6 +107,8 @@ class SlamProject:
     color_source: Path | None = None
     colmap_model: Path | None = None
     xyzopk: Path | None = None
+    calibration: Path | None = None
+    calibration_data: dict | None = None
     images_dir: Path | None = None
     image_count: int = 0
     trajectory: Path | None = None
@@ -157,6 +159,13 @@ class SlamProject:
                 "Kameraposen:  NICHT gefunden — Foto-Projektion nicht möglich "
                 "(weder COLMAP-Modell noch xyzopk.txt)"
             )
+        if self.calibration is not None and self.calibration_data:
+            cd = self.calibration_data
+            lines.append(
+                f"Kalibrierung: {self.calibration.relative_to(self.root)} "
+                f"(fx={cd['fx']:.0f} px — echte Scanner-Brennweite "
+                "für die Foto-Projektion)"
+            )
         if self.trajectory is not None:
             lines.append(f"Trajektorie:  {self.trajectory.relative_to(self.root)}")
         if self.bags:
@@ -193,6 +202,11 @@ class SlamProject:
             return False, "weitere Trajektorien-Datei — die größte wurde gewählt"
         if f == self.xyzopk:
             return True, "Kameraposen (xyzopk, selbstkalibriert)"
+        if f == self.calibration:
+            return True, (
+                "Kamera-Kalibrierung — echte Brennweite/Bildmitte "
+                "für die Foto-Projektion"
+            )
         if self.colmap_model is not None and f.parent == self.colmap_model:
             if f.stem in ("cameras", "images"):
                 return True, "Kameraposen (COLMAP)"
@@ -256,6 +270,7 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
 
     clouds: list[Path] = []
     traj_candidates: list[Path] = []
+    calib_candidates: list[Path] = []
     image_dirs: dict[Path, int] = {}
     colmap_dirs: list[Path] = []
 
@@ -292,10 +307,22 @@ def scan_project_dir(root: str | Path, max_depth: int = 6) -> SlamProject:
                 traj_candidates.append(e)
             elif ext == ".txt" and "xyzopk" in name:
                 project.xyzopk = e
+            elif ext in (".yaml", ".yml") and "calib" in name:
+                calib_candidates.append(e)
         if n_images:
             image_dirs[d] = n_images
 
     walk(root, 0)
+
+    # Scanner camera calibration: real intrinsics beat self-calibration.
+    for cand in sorted(calib_candidates):
+        from scantobim.photogrammetry.calibration import read_camera_calibration
+
+        data = read_camera_calibration(cand)
+        if data is not None:
+            project.calibration = cand
+            project.calibration_data = data
+            break
 
     # Point cloud: SLAM exports often contain BOTH a colorized and a larger
     # uncolorized cloud of the same scan — picking by size alone loses the

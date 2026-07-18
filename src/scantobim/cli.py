@@ -832,6 +832,17 @@ def _cmd_project(args) -> int:
     cloud = read_point_cloud(project.cloud, max_points=args.max_points)
     print(f"  geladen: {len(cloud):,} Punkte"
           + (", mit Farben" if cloud.colors is not None else ""))
+    if (
+        args.max_points
+        and project.cloud_points
+        and project.cloud_points > args.max_points
+    ):
+        print(
+            f"  HINWEIS: Wolke hat {project.cloud_points:,} Punkte — auf das "
+            f"Limit von {args.max_points / 1e6:.0f} Mio ausgedünnt. Für "
+            "maximales Detail das Limit erhöhen (GUI: Erweiterte "
+            "Einstellungen → Max. Punkte, CLI: --max-points)."
+        )
 
     # Dense-but-uncolorized cloud + colored sibling → graft the colors onto
     # the dense geometry (nearest neighbour, header-verified sibling).
@@ -968,13 +979,15 @@ def _cmd_project(args) -> int:
                   "und Brennweite am Scan …")
             xy_stats: dict = {}
             camera_source = cameras_from_xyzopk(
-                project.xyzopk, project.images_dir, cloud, stats_out=xy_stats
+                project.xyzopk, project.images_dir, cloud, stats_out=xy_stats,
+                calibration=project.calibration_data,
             )
             rep["kameraposen"] = {"quelle": "xyzopk", **xy_stats}
             print(
                 f"  → Konvention {xy_stats['convention']}, Brennweite "
-                f"{xy_stats['fx']:.0f} px, Übereinstimmung "
-                f"{xy_stats['score'] * 100:.0f}%"
+                f"{xy_stats['fx']:.0f} px "
+                f"({xy_stats.get('intrinsics_quelle', 'selbstkalibriert')}), "
+                f"Übereinstimmung {xy_stats['score'] * 100:.0f}%"
             )
         except Exception as exc:  # noqa: BLE001 — photos are best-effort
             print(f"  Selbstkalibrierung fehlgeschlagen ({exc}) — "
@@ -1371,7 +1384,8 @@ def _fallback_photo_atlas(project, args, cloud, full_viewer, report, output):
                   "und Brennweite am Scan …")
             xy_stats: dict = {}
             camera_source = cameras_from_xyzopk(
-                project.xyzopk, project.images_dir, cloud, stats_out=xy_stats
+                project.xyzopk, project.images_dir, cloud, stats_out=xy_stats,
+                calibration=project.calibration_data,
             )
             report["kameraposen"] = {"quelle": "xyzopk", **xy_stats}
         except Exception as exc:  # noqa: BLE001 — photos are best-effort

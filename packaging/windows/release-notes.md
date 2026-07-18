@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.9.1 — Scanner-Kalibrierung wird genutzt (bestmögliches Modell aus dem Projektordner)
+
+- **`info/calibration.yaml` wird jetzt gelesen und verwendet**: Die Werks-Kalibrierung der Scanner-Kamera (echte Brennweite, Bildhauptpunkt) ersetzt das breite Raten der Selbstkalibrierung — gesucht wird nur noch ein schmales Band um den Werkswert, weiterhin farb-validiert am Scan. Ergebnis: **präzisere Foto-Projektion → schärfere Foto-Textur**, und schnellere Kalibrierung. Protokoll: „Brennweite … px (calibration.yaml)" und neue Zeile „Kalibrierung: info/calibration.yaml (fx=… px)". Beide gängigen Formate werden verstanden (flache fx/fy/cx/cy-Schlüssel und OpenCV-`camera_matrix`).
+- **Punktlimit sichtbar gemacht**: Wird die Wolke auf das Punktlimit ausgedünnt, sagt das Protokoll jetzt ausdrücklich „Wolke hat X Punkte — auf Y Mio ausgedünnt" mit dem Hinweis, wo sich das Limit erhöhen lässt (GUI: Erweiterte Einstellungen → Max. Punkte; CLI: `--max-points`). Für das bestmögliche Netz zählt jeder Punkt.
+- Datei-Inventar: `calibration.yaml` gilt jetzt als VERWENDET mit Begründung; `.opt`-Dateien und Scanner-Logs bleiben zu Recht ungenutzt (keine Geometrie).
+
 ### Neu in 3.9.0 — EINE Version: GPU mit automatischem CPU-Fallback
 
 - **Nur noch ein Download**: `scantobim-windows-x64.zip` enthält jetzt immer die GPU-Unterstützung (CUDA-Laufzeit gebündelt) und fällt ohne NVIDIA-Karte automatisch auf die CPU zurück. Der bisherige Link `…-gpu.zip` bleibt gültig und liefert dieselbe Datei. Kein Rätselraten mehr, welche Version läuft.

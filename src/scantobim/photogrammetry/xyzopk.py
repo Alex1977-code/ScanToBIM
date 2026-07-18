@@ -93,7 +93,10 @@ def _conventions():
     }
 
 
-def _build_cameras(entries, convention, fx, width, height) -> list[CameraPose]:
+def _build_cameras(
+    entries, convention, fx, width, height,
+    cx: float | None = None, cy: float | None = None,
+) -> list[CameraPose]:
     cams = []
     for name, xyz, opk in entries:
         o, p, k = np.deg2rad(opk)
@@ -105,8 +108,8 @@ def _build_cameras(entries, convention, fx, width, height) -> list[CameraPose]:
                 height=height,
                 fx=fx,
                 fy=fx,
-                cx=width / 2.0,
-                cy=height / 2.0,
+                cx=width / 2.0 if cx is None else cx,
+                cy=height / 2.0 if cy is None else cy,
                 k1=0.0,
                 rotation=rot,
                 translation=-rot @ xyz,
@@ -122,6 +125,7 @@ def cameras_from_xyzopk(
     stats_out: dict | None = None,
     sample_points: int = 30_000,
     probe_cameras: int = 8,
+    calibration: dict | None = None,
 ) -> list[CameraPose]:
     """xyzopk poses → calibrated ``CameraPose`` list.
 
@@ -129,6 +133,11 @@ def cameras_from_xyzopk(
     sample of the (photo-)colorized point cloud into a handful of probe
     photos: the combination that best reproduces the point colors wins.
     Without cloud colors the in-image fraction decides.
+
+    ``calibration`` (from the scanner's calibration.yaml) narrows the
+    focal-length search to a small band around the factory value and
+    supplies the true principal point — sharper projections, faster search.
+    The color check still validates it, so a stale calibration cannot hurt.
     """
     from scantobim.core.texture import _index_images
 
@@ -179,13 +188,24 @@ def cameras_from_xyzopk(
         pts = pts[sel]
         colors = None if colors is None else colors[sel]
 
-    fx_grid = np.geomspace(0.35, 1.8, 14) * width
+    cx = cy = None
+    if calibration and calibration.get("fx"):
+        # Factory focal length: search only a narrow band around it (the
+        # photos in `undistort` may carry a slightly different new-camera
+        # matrix, so a small sweep stays in place of blind trust).
+        fx_grid = np.geomspace(0.85, 1.2, 5) * float(calibration["fx"])
+        cx = calibration.get("cx")
+        cy = calibration.get("cy")
+        intrinsics_source = "calibration.yaml"
+    else:
+        fx_grid = np.geomspace(0.35, 1.8, 14) * width
+        intrinsics_source = "selbstkalibriert"
     best = None  # (score, conv_name, fx)
     for conv_name, conv in _conventions().items():
         for fx in fx_grid:
             score = _score(
                 entries, conv, float(fx), width, height,
-                probe_photos, pts, colors,
+                probe_photos, pts, colors, cx=cx, cy=cy,
             )
             if best is None or score > best[0]:
                 best = (score, conv_name, float(fx))
@@ -196,11 +216,19 @@ def cameras_from_xyzopk(
         stats_out["fx"] = round(fx, 1)
         stats_out["score"] = round(float(score), 4)
         stats_out["cameras"] = len(entries)
-    return _build_cameras(entries, _conventions()[conv_name], fx, width, height)
+        stats_out["intrinsics_quelle"] = intrinsics_source
+    return _build_cameras(
+        entries, _conventions()[conv_name], fx, width, height, cx=cx, cy=cy
+    )
 
 
-def _score(entries, conv, fx, width, height, probe_photos, pts, colors) -> float:
+def _score(
+    entries, conv, fx, width, height, probe_photos, pts, colors,
+    cx: float | None = None, cy: float | None = None,
+) -> float:
     """Mean agreement of projected cloud points with the probe photos."""
+    px0 = width / 2.0 if cx is None else cx
+    py0 = height / 2.0 if cy is None else cy
     total = 0.0
     n = 0
     for ei, photo in probe_photos:
@@ -212,8 +240,8 @@ def _score(entries, conv, fx, width, height, probe_photos, pts, colors) -> float
         if in_front.sum() < 50:
             continue
         with np.errstate(divide="ignore", invalid="ignore"):
-            px = fx * pc[:, 0] / pc[:, 2] + width / 2.0
-            py = fx * pc[:, 1] / pc[:, 2] + height / 2.0
+            px = fx * pc[:, 0] / pc[:, 2] + px0
+            py = fx * pc[:, 1] / pc[:, 2] + py0
         ok = in_front & (px >= 0) & (px <= width - 1) & (py >= 0) & (py <= height - 1)
         if ok.sum() < 50:
             continue
