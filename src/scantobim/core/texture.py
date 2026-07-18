@@ -19,6 +19,7 @@ feeds the visual exports (GLB, HTML, OBJ).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -594,7 +595,7 @@ def photo_colors_for_mesh(
     # the GIL while decompressing).
     from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=min(16, os.cpu_count() or 8)) as pool:
         for out in pool.map(_sample, used.tolist()):
             if out is None:
                 continue

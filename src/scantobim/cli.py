@@ -636,16 +636,29 @@ def _cmd_reconstruct(args) -> int:
     _print_gpu_status(report_extra, diag_dir=args.output.parent)
     if args.input:
         _copy_diagnosis(report_extra, Path(args.input[0]).parent)
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
     full_mesh = full_viewer = None
+    _ff_pool = None
+    _ff_future = None
     if (
         getattr(args, "freeform", True)
         and args.output.suffix.lower() not in (".stp", ".step", ".ifc")
     ):
-        full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
+        # Komplett-Mesh parallel zur Strukturanalyse (unabhängige Stufen).
+        _ff_pool = _TPE(max_workers=1)
+        _ff_future = _ff_pool.submit(_build_full_mesh, cloud, report_extra)
+
+    def _join_ff():
+        nonlocal full_mesh, full_viewer
+        if _ff_future is not None:
+            full_mesh, full_viewer = _ff_future.result()
+            _ff_pool.shutdown(wait=False)
 
     # ---- Stufe 2 (Option): Ebenen & Linien suchen ---------------------------
     if not getattr(args, "structure", True):
         print("Strukturanalyse übersprungen (--no-structure).")
+        _join_ff()
         return _write_full_only(
             args.output, full_mesh, full_viewer,
             {"input_points": len(cloud), **report_extra},
@@ -672,6 +685,7 @@ def _cmd_reconstruct(args) -> int:
         else:
             result = reconstruct(cloud, cfg, trajectory=trajectory)
     except ValueError as exc:
+        _join_ff()
         if full_mesh is None:
             raise
         print(f"Strukturanalyse fehlgeschlagen ({exc})")
@@ -681,6 +695,7 @@ def _cmd_reconstruct(args) -> int:
             {"input_points": len(cloud), **report_extra},
             getattr(args, "report", None),
         )
+    _join_ff()
     rep = result.report
     rep.update(report_extra)
     _contour_full_mesh(full_mesh, full_viewer, result, rep)
@@ -913,17 +928,33 @@ def _cmd_project(args) -> int:
     report_extra: dict = {}
     _print_gpu_status(report_extra, diag_dir=output.parent)
     _copy_diagnosis(report_extra, args.directory)
+    # Stufe 1 und Stufe 2 sind unabhängig — sie laufen PARALLEL (numpy/
+    # scipy geben das GIL bei großen Operationen frei, die Kerne addieren
+    # sich statt zu warten).
+    from concurrent.futures import ThreadPoolExecutor
+
     full_mesh = full_viewer = None
+    _full_pool = None
+    _full_future = None
     if getattr(args, "freeform", True):
-        _prog(0.14, "Komplett-Mesh vernetzen")
-        full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
+        _prog(0.14, "Komplett-Mesh ∥ Strukturanalyse")
+        _full_pool = ThreadPoolExecutor(max_workers=1)
+        _full_future = _full_pool.submit(_build_full_mesh, cloud, report_extra)
     _prog(0.34, "Strukturanalyse")
 
-    fallback_report = {
-        "input_points": len(cloud),
-        "trajectory_positions": 0 if trajectory is None else int(len(trajectory)),
-        **report_extra,
-    }
+    def _join_full_mesh():
+        nonlocal full_mesh, full_viewer
+        if _full_future is not None:
+            full_mesh, full_viewer = _full_future.result()
+            _full_pool.shutdown(wait=False)
+
+    def _fallback_report():
+        _join_full_mesh()
+        return {
+            "input_points": len(cloud),
+            "trajectory_positions": 0 if trajectory is None else int(len(trajectory)),
+            **report_extra,
+        }
     fallback_report_path = args.report or output.with_name(
         output.stem + "_bericht.json"
     )
@@ -931,11 +962,12 @@ def _cmd_project(args) -> int:
     # ---- Stufe 2 (Option): Ebenen & Linien suchen ---------------------------
     if not getattr(args, "structure", True):
         print("Strukturanalyse übersprungen (--no-structure).")
+        fb = _fallback_report()
         full_viewer = _fallback_photo_atlas(
-            project, args, cloud, full_viewer, fallback_report, output
+            project, args, cloud, full_viewer, fb, output
         )
         return _write_full_only(
-            output, full_mesh, full_viewer, fallback_report, fallback_report_path
+            output, full_mesh, full_viewer, fb, fallback_report_path
         )
     print(f"reconstructing (preset: {args.preset}, Quelle: {source}) …")
     try:
@@ -955,17 +987,20 @@ def _cmd_project(args) -> int:
         else:
             result = reconstruct(cloud, cfg, trajectory=trajectory)
     except ValueError as exc:
+        _join_full_mesh()
         if full_mesh is None:
             raise
         print(f"Strukturanalyse fehlgeschlagen ({exc})")
         print("Komplett-Mesh bleibt als Ergebnis erhalten.")
+        fb = _fallback_report()
         full_viewer = _fallback_photo_atlas(
-            project, args, cloud, full_viewer, fallback_report, output
+            project, args, cloud, full_viewer, fb, output
         )
         return _write_full_only(
             output, full_mesh, full_viewer,
-            fallback_report, fallback_report_path,
+            fb, fallback_report_path,
         )
+    _join_full_mesh()
     rep = result.report
     rep.update(report_extra)
     _prog(0.55, "Kontur-Schärfung")
@@ -1152,7 +1187,16 @@ def _cmd_project(args) -> int:
         except Exception as exc:  # noqa: BLE001 — photo colors are best-effort
             print(f"  Foto-Farben übersprungen ({exc})")
 
-    _prog(0.78, "Foto-Textur-Atlas")
+    # Detail-Mesh und Foto-Atlas sind unabhängig → parallel.
+    _detail_future = None
+    _detail_pool = None
+    if output.suffix.lower() not in (".stp", ".step", ".ifc"):
+        _detail_pool = ThreadPoolExecutor(max_workers=1)
+        _detail_future = _detail_pool.submit(
+            _build_detail_mesh, cloud, result,
+            getattr(args, "detail_raster", 0.02), output, rep,
+        )
+    _prog(0.78, "Foto-Textur-Atlas ∥ Detail-Mesh")
     # Photo-realistic texture ATLAS on the complete mesh: full photo
     # resolution instead of one color per vertex.
     if (
@@ -1166,11 +1210,9 @@ def _cmd_project(args) -> int:
             full_viewer, camera_source, project.images_dir,
             transform, rep, output,
         )
-    _prog(0.86, "Detail-Mesh")
-    if output.suffix.lower() not in (".stp", ".step", ".ifc"):
-        _build_detail_mesh(
-            cloud, result, getattr(args, "detail_raster", 0.02), output, rep
-        )
+    if _detail_future is not None:
+        _detail_future.result()
+        _detail_pool.shutdown(wait=False)
     _prog(0.92, "Dateien schreiben")
 
     ext = output.suffix.lower()

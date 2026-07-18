@@ -295,9 +295,21 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
     from scantobim.cli import _print_gpu_status
 
     _print_gpu_status(report_extra, diag_dir=outdir)
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
     full_mesh = full_viewer = None
+    _ff_future = None
+    _ff_pool = None
     if opts.get("freeform", True):
-        full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
+        # Komplett-Mesh parallel zur Strukturanalyse (unabhängige Stufen).
+        _ff_pool = _TPE(max_workers=1)
+        _ff_future = _ff_pool.submit(_build_full_mesh, cloud, report_extra)
+
+    def _join_ff():
+        nonlocal full_mesh, full_viewer
+        if _ff_future is not None:
+            full_mesh, full_viewer = _ff_future.result()
+            _ff_pool.shutdown(wait=False)
 
     # ---- Stufe 2 (Option): Ebenen & Linien suchen ---------------------------
     result = None
@@ -322,11 +334,13 @@ def _run_reconstruct(files: list[Path], opts: dict, outdir: Path) -> dict:
             else:
                 result = reconstruct(cloud, cfg)
         except ValueError as exc:
+            _join_ff()
             if full_mesh is None:
                 raise
             print(f"Strukturanalyse fehlgeschlagen ({exc})")
             print("Komplett-Mesh bleibt als Ergebnis erhalten.")
 
+    _join_ff()
     if result is None:
         if full_mesh is None:
             raise ValueError(

@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.13.0 — höhere Auslastung: unabhängige Stufen laufen parallel
+
+- **Komplett-Mesh ∥ Strukturanalyse**: Die beiden großen Rechenstufen sind unabhängig und laufen jetzt **gleichzeitig** statt nacheinander — die Wartezeit ist das Maximum statt der Summe, die CPU-Auslastung verdoppelt sich in dieser Phase. (Die Protokollzeilen beider Stufen erscheinen dadurch verschränkt.)
+- **Detail-Mesh ∥ Foto-Textur-Atlas**: ebenfalls parallelisiert.
+- **Foto-Dekodierung breiter**: bis 16 parallele Decoder-Threads (vorher 8), Atlas-Prefetch 4 Bilder.
+- Einordnung zur Auslastung: Zwischen den voll parallelen Phasen (Nachbarschaftssuchen, Foto-Dekodierung, GPU-Kerne) liegen Einzelkern-Abschnitte (RANSAC-Logik, Voxel-Verwaltung) — 100 % Dauerauslastung ist bei dieser Art Pipeline nicht das Ziel, kürzere Gesamtzeit schon. Der Fortschrittsbalken zeigt, wo der Lauf steht; die Zeile „GPU-Nutzung: …" belegt die Grafikkartenarbeit.
+
 ### Neu in 3.12.0 — POLYFISHEYE: die Fisheye-Fotos werden exakt projiziert
 
 - **Das vollständige POLYFISHEYE-Modell der S20-Fotokameras ist umgesetzt** (aus der echten `calibration.yaml`): `r(θ) = θ + k2·θ² + … + k7·θ⁷` über den Einfallswinkel, Abbildung über die A-Matrix (A11/A12/A22) und den Bildhauptpunkt (u0/v0), gültig bis 120° Einfallswinkel. Keine Pinhole-Näherung mehr — die Foto-Projektion stimmt jetzt bis in die Bildränder.

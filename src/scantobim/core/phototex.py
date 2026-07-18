@@ -474,12 +474,12 @@ def bake_photo_atlas(
 
     from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {}
         photo_cis = [ci for ci, _ in cam_groups if ci >= 0]
-        for ci in photo_cis[:2]:
+        for ci in photo_cis[:4]:
             futures[ci] = pool.submit(_load_photo, ci)
-        next_i = 2
+        next_i = 4
 
         for ci, fsel in cam_groups:
             photo = None
