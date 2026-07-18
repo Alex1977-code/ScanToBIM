@@ -1045,7 +1045,22 @@ def _cmd_project(args) -> int:
             cams = cameras_from_imgpose(
                 project.imgpose, project.images_dir, cloud,
                 stats_out=ip_stats, calibration=project.calibration_data,
+                trajectory=trajectory,
             )
+            pa = ip_stats.get("posen_ausrichtung")
+            if pa and pa.get("angewendet"):
+                print(
+                    f"  ImgPose lag im eigenen Koordinatensystem — per "
+                    f"Trajektorie ins Wolken-System geholt (Versatz "
+                    f"{pa['versatz_m']:.0f} m, Restfehler "
+                    f"{pa['residuum_cm']:.0f} cm, Zuordnung {pa['zuordnung']})"
+                )
+            elif pa:
+                print(
+                    f"  ACHTUNG: ImgPose-Posen passen nicht zur Trajektorie "
+                    f"(Residuum {pa.get('residuum_m', 0)} m) — Posen bleiben "
+                    "unverändert"
+                )
             if ip_stats.get("score", 0.0) >= 0.5:
                 camera_source = cams
                 rep["kameraposen"] = {"quelle": "imgpose", **ip_stats}

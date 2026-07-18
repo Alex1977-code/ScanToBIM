@@ -1243,3 +1243,79 @@ def test_detail_mesh_region_excludes_terrain(tmp_path):
     assert (tmp_path / "modell_detail.glb").exists()
     assert rep["detail_mesh"]["triangles"] > 0
     assert viewer_layer is not None  # small mesh → embedded directly
+
+
+def test_imgpose_frame_offset_aligned_via_trajectory(tmp_path):
+    """ImgPose in its OWN frame (150 m off, rotated) — the trajectory
+    registration must pull every camera back into the cloud frame."""
+    PIL = pytest.importorskip("PIL.Image")
+    from scantobim.core.cloud import PointCloud
+    from scantobim.photogrammetry.xyzopk import cameras_from_imgpose
+
+    fx_true, W, H = 350.0, 400, 300
+
+    def field(x, y):
+        r = 50 + 100 * (x + 1) / 2
+        b = 120 + 100 * (y + 1) / 2
+        return np.stack([r, np.full_like(r, 80.0), b], axis=-1)
+
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([
+        rng.uniform(-1, 1, 20000), rng.uniform(-0.7, 0.7, 20000),
+        np.zeros(20000),
+    ])
+    cloud = PointCloud(
+        points=pts, colors=field(pts[:, 0], pts[:, 1]).astype(np.uint8)
+    )
+
+    # True camera path in the CLOUD frame: 10 cameras along x at z=-5,
+    # all looking +z (identity COLMAP rotation).
+    img_dir = tmp_path / "bilder"
+    img_dir.mkdir()
+    px, py = np.meshgrid(np.arange(W), np.arange(H))
+    centers = [np.array([-0.9 + 0.2 * i, 0.05 * i, -5.0]) for i in range(10)]
+    for i, c in enumerate(centers):
+        photo = field(
+            (px - W / 2) * 5.0 / fx_true + c[0],
+            (py - H / 2) * 5.0 / fx_true + c[1],
+        )
+        PIL.fromarray(photo.astype(np.uint8)).save(img_dir / f"f{i}.png")
+
+    # ImgPose frame: p_cloud = R_f @ p_img + t_f  (30° yaw, 150 m offset).
+    ang = np.deg2rad(30.0)
+    r_f = np.array([
+        [np.cos(ang), -np.sin(ang), 0.0],
+        [np.sin(ang), np.cos(ang), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    t_f = np.array([150.0, -80.0, 3.0])
+    qz = (0.0, 0.0, np.sin(ang / 2), np.cos(ang / 2))  # xyzw for Rz(30°)
+    lines = []
+    t0 = 1741600000.0
+    for i, c in enumerate(centers):
+        p_img = r_f.T @ (c - t_f)
+        lines.append(
+            f"f{i}.png {p_img[0]:.6f} {p_img[1]:.6f} {p_img[2]:.6f} "
+            f"{qz[0]} {qz[1]} {qz[2]:.9f} {qz[3]:.9f} {t0 + i:.1f}\n"
+        )
+    ip = tmp_path / "ImgPose.txt"
+    ip.write_text("".join(lines))
+
+    # Trajectory in the CLOUD frame with the same timestamps.
+    trajectory = np.array([
+        [c[0], c[1], c[2], t0 + i] for i, c in enumerate(centers)
+    ])
+
+    stats = {}
+    cams = cameras_from_imgpose(
+        ip, img_dir, cloud, stats_out=stats, trajectory=trajectory
+    )
+    pa = stats["posen_ausrichtung"]
+    assert pa["angewendet"] is True
+    assert pa["versatz_m"] > 100
+    assert pa["residuum_cm"] < 10
+    assert stats["score"] > 0.8
+    # Every camera center landed back on the true path.
+    for cam, c in zip(cams, centers):
+        center = -cam.rotation.T @ cam.translation
+        assert np.linalg.norm(center - c) < 0.05

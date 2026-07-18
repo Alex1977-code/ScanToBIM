@@ -4,6 +4,14 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.19.0 — Grundursache gefunden: die ImgPose-Posen lagen 150 m neben der Wolke
+
+Die Kamera-Selbstprüfung aus 3.18 hat geliefert: `kamera_abstand_p25_m: 151 m` — die ImgPose-Kamerapositionen liegen in einem EIGENEN Koordinatensystem, ~150 m neben der Punktwolke. Deshalb sampelten die Wände Himmel und Wasser, die Texel-Ableitung lief gegen ihren Sicherheitsdeckel, nur 103 von 746 Kameras bestanden die Prüfung und der Kanten-Fotoabgleich fand (korrekt!) keine verwertbaren Gradienten. Der weiche Posen-Score von 92 % hatte das jahrelang kaschiert.
+
+- **ImgPose wird jetzt auf die Trajektorie registriert**: Fotos und Trajektorie beschreiben denselben Lauf — die Fotoposen werden per Zeitstempel (Fallback: gleicher Weganteil/Bogenlänge) den Trajektorienpunkten zugeordnet, eine starre Transformation (Kabsch) rechnet den Kamerapfad ins Wolken-System, die Rotationen drehen mit. Ein Residuum-Tor (≤ 1 m) verhindert falsche Registrierungen; das Protokoll meldet „ImgPose lag im eigenen Koordinatensystem — per Trajektorie ins Wolken-System geholt (Versatz X m, Restfehler Y cm)", der Bericht führt `posen_ausrichtung`.
+- **Damit fällt die gesamte Foto-Kette in sich zusammen … in die richtige Richtung**: korrekte Kamerazentren → echte GSD (mm-Texel statt 2,5-cm-Deckel), korrektes Kamera-Ranking (Ziegel statt Himmel), Kamera-Selbstprüfung sollte >600 von 746 validieren, und der Kanten-Fotoabgleich findet endlich Gradienten zum Nachjustieren.
+- Verifiziert am synthetischen Gegenstück des Fehlers: Posen mit 170-m-Versatz und 30°-Drehung werden auf < 5 cm genau ins Wolken-System zurückgeholt, Farb-Score > 0,8, alle Kamerazentren auf dem wahren Pfad.
+
 ### Neu in 3.18.0 — Kamera-Selbstprüfung findet den Foto-Dieb, Kanten-Fotoabgleich ist drin
 
 Diagnose zum 3.17-Lauf: texel_cm stand exakt am 2,5-cm-Deckel (Kamera-Abstände wirkten um ein Vielfaches zu groß) und Wände zeigten Himmelsfarben — obwohl der Posen-Score 92 % sagte. Der Hauptverdächtige: **Stereo-Namenskollision** — `left/0123.jpg` und `right/0123.jpg` teilen sich den Dateinamen, der Bild-Index reichte etlichen Kameras stillschweigend die falsche Seite.

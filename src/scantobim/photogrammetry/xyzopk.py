@@ -103,6 +103,112 @@ def read_imgpose(path: str | Path):
     return entries
 
 
+def _align_raw_to_trajectory(raw, trajectory, stats_out: dict | None = None):
+    """Rigid-align ImgPose positions onto the scanner trajectory.
+
+    ImgPose files can live in their OWN coordinate frame (observed on the
+    S20: a ~150 m offset) while ``trajectory.txt`` is in the cloud frame —
+    the pose colors then sample sky and water although the soft pose score
+    looks fine. Both paths describe the SAME walk: match photo poses to
+    trajectory positions by timestamp (falling back to arc-length when the
+    clocks do not overlap), fit a rigid transform (Kabsch) and apply it
+    when the residual confirms the match.
+
+    Returns ``(aligned_raw, align_rot)`` — ``align_rot`` is ``None`` when
+    no alignment was applied, else the rotation every camera rotation must
+    be composed with (``rot_cloud = rot_imgframe @ align_rot.T``).
+    """
+    if trajectory is None:
+        return raw, None
+    traj = np.asarray(trajectory, dtype=np.float64)
+    if traj.ndim != 2 or len(traj) < 10:
+        return raw, None
+    xyz = np.array([x for (_n, x, _q, _t) in raw], dtype=np.float64)
+    if len(xyz) < 8:
+        return raw, None
+    txyz = traj[:, :3]
+
+    targets = None
+    matched_by = None
+    if traj.shape[1] >= 4:
+        times = np.array(
+            [t if t is not None else np.nan for (_n, _x, _q, t) in raw],
+            dtype=np.float64,
+        )
+        ok_t = np.isfinite(times)
+        tt = traj[:, 3]
+        order = np.argsort(tt)
+        tt_s, txyz_s = tt[order], txyz[order]
+        if ok_t.sum() >= 8 and tt_s[-1] > tt_s[0]:
+            pt = times.copy()
+            dur_p = np.nanmax(pt) - np.nanmin(pt)
+            dur_t = tt_s[-1] - tt_s[0]
+            overlap = min(np.nanmax(pt), tt_s[-1]) - max(np.nanmin(pt), tt_s[0])
+            if overlap < 0.5 * min(dur_p, dur_t) and dur_t > 0 and (
+                abs(dur_p - dur_t) < 0.35 * max(dur_p, dur_t)
+            ):
+                pt = pt + (tt_s[0] - np.nanmin(pt))  # constant clock offset
+                overlap = min(np.nanmax(pt), tt_s[-1]) - max(
+                    np.nanmin(pt), tt_s[0]
+                )
+            if overlap > 0.5 * min(dur_p, dur_t):
+                targets = np.column_stack([
+                    np.interp(pt[ok_t], tt_s, txyz_s[:, i]) for i in range(3)
+                ])
+                src_mask = ok_t
+                matched_by = "zeit"
+    if targets is None:
+        # Arc-length fallback: photo i sits at the same walked fraction of
+        # the path as its trajectory counterpart.
+        def _arc(p):
+            seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
+            a = np.concatenate([[0.0], np.cumsum(seg)])
+            return a / max(a[-1], 1e-9)
+        a_p = _arc(xyz)
+        a_t = _arc(txyz)
+        targets = np.column_stack([
+            np.interp(a_p, a_t, txyz[:, i]) for i in range(3)
+        ])
+        src_mask = np.ones(len(xyz), dtype=bool)
+        matched_by = "bogenlaenge"
+
+    src = xyz[src_mask]
+    if len(src) < 8:
+        return raw, None
+    # Kabsch: R, t minimizing |R src + t - targets|².
+    mu_s = src.mean(axis=0)
+    mu_d = targets.mean(axis=0)
+    h = (src - mu_s).T @ (targets - mu_d)
+    u, _s, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    r_a = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+    t_a = mu_d - r_a @ mu_s
+    resid = np.linalg.norm(src @ r_a.T + t_a - targets, axis=1)
+    residual = float(np.median(resid))
+    offset = float(np.linalg.norm(mu_d - mu_s))
+    if residual > 1.0:
+        if stats_out is not None:
+            stats_out["posen_ausrichtung"] = {
+                "angewendet": False, "residuum_m": round(residual, 2),
+                "versatz_m": round(offset, 1), "zuordnung": matched_by,
+            }
+        return raw, None
+    aligned = [
+        (n, r_a @ np.asarray(x, dtype=np.float64) + t_a, q, t)
+        for (n, x, q, t) in raw
+    ]
+    if stats_out is not None:
+        ang = np.degrees(np.arccos(np.clip((np.trace(r_a) - 1) / 2, -1, 1)))
+        stats_out["posen_ausrichtung"] = {
+            "angewendet": True,
+            "versatz_m": round(offset, 1),
+            "residuum_cm": round(residual * 100.0, 1),
+            "rotation_deg": round(float(ang), 2),
+            "zuordnung": matched_by,
+        }
+    return aligned, r_a
+
+
 def _project_for_score(pc, fx, px0, py0, fisheye):
     """(px, py, valid) for the color scoring — pinhole or POLYFISHEYE."""
     if fisheye is not None:
@@ -357,6 +463,7 @@ def cameras_from_imgpose(
     sample_points: int = 30_000,
     probe_cameras: int = 8,
     calibration: dict | None = None,
+    trajectory=None,
 ) -> list[CameraPose]:
     """ImgPose (quaternion) poses → calibrated ``CameraPose`` list.
 
@@ -375,6 +482,11 @@ def cameras_from_imgpose(
         ) from exc
 
     raw = read_imgpose(path)
+    # ImgPose frames are not guaranteed to match the cloud frame — register
+    # the photo path onto the scanner trajectory first (rigid, gated by
+    # residual). Without this the observed S20 export put every camera
+    # ~150 m beside the building.
+    raw, align_rot = _align_raw_to_trajectory(raw, trajectory, stats_out)
     entries = [(n, xyz, quat) for n, xyz, quat, _t in raw if n is not None]
     if not entries:
         raise ValueError(
@@ -457,6 +569,10 @@ def cameras_from_imgpose(
                             rot = rot.T
                         if _f:
                             rot = _D @ rot
+                        if align_rot is not None:
+                            # positions were re-registered into the cloud
+                            # frame — the world→camera rotation follows.
+                            rot = rot @ align_rot.T
                         return rot
                     yield f"{order}{'ᵀ' if transpose else ''}{'/flip' if flip else ''}", build
 
