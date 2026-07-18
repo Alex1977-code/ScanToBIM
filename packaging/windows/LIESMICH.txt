@@ -47,6 +47,9 @@ Benutzung (Eingabeaufforderung oder PowerShell)
   :: Punktwolke inspizieren
   scantobim.exe info scan.laz
 
+  :: GPU/CUDA-Diagnose (GPU-Version): schreibt gpu_diagnose.txt
+  scantobim.exe gpu
+
   :: Gebaeude/Raum -> Modell (interaktiver Viewer, einfach im Browser oeffnen)
   scantobim.exe reconstruct scan.laz -o modell.html --texture
 

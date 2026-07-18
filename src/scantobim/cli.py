@@ -355,6 +355,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_wiz.add_argument("files", type=Path, nargs="*",
                        help="point cloud(s) to reconstruct")
 
+    p_gpu = sub.add_parser(
+        "gpu", help="GPU/CUDA-Diagnose: prüft jede Stufe und schreibt gpu_diagnose.txt"
+    )
+    p_gpu.add_argument("-o", "--output", type=Path, default=None,
+                       help="Zielordner für gpu_diagnose.txt (Standard: aktueller Ordner)")
+
     p_photos = sub.add_parser(
         "photos", help="photos → dense point cloud via COLMAP (must be installed)"
     )
@@ -397,6 +403,8 @@ def _dispatch(args) -> int:
             if _is_frozen():
                 _pause()
             return code
+        if args.command == "gpu":
+            return _cmd_gpu(args)
         if args.command == "photos":
             return _cmd_photos(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
@@ -614,7 +622,7 @@ def _cmd_reconstruct(args) -> int:
 
     # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
     report_extra: dict = {}
-    _print_gpu_status(report_extra)
+    _print_gpu_status(report_extra, diag_dir=args.output.parent)
     full_mesh = full_viewer = None
     if (
         getattr(args, "freeform", True)
@@ -861,7 +869,7 @@ def _cmd_project(args) -> int:
     # ---- Stufe 1: Komplett-Mesh aus dem gesamten Scan ----------------------
     output = args.output or (args.directory / "scantobim_modell.html")
     report_extra: dict = {}
-    _print_gpu_status(report_extra)
+    _print_gpu_status(report_extra, diag_dir=output.parent)
     full_mesh = full_viewer = None
     if getattr(args, "freeform", True):
         full_mesh, full_viewer = _build_full_mesh(cloud, report_extra)
@@ -1156,7 +1164,21 @@ def _cmd_compare(args) -> int:
     return 0
 
 
-def _print_gpu_status(report_extra: dict | None = None) -> None:
+def _cmd_gpu(args) -> int:
+    """Print the deep GPU/CUDA diagnosis and write gpu_diagnose.txt."""
+    from scantobim.core.gpudiag import build_gpu_diagnosis, write_gpu_diagnosis
+
+    text = build_gpu_diagnosis()
+    print(text)
+    path = write_gpu_diagnosis(args.output)
+    if path is not None:
+        print(f"wrote {path}")
+    return 0
+
+
+def _print_gpu_status(
+    report_extra: dict | None = None, diag_dir: Path | None = None
+) -> None:
     from scantobim import __version__
     from scantobim.core.accel import gpu_error, gpu_name
 
@@ -1174,6 +1196,16 @@ def _print_gpu_status(report_extra: dict | None = None) -> None:
             print("  → Der NVIDIA-Grafiktreiber ist zu alt für CUDA 12. "
                   "Bitte aktualisieren: https://www.nvidia.de/Download/index.aspx "
                   "(danach Neustart) — das Programm läuft bis dahin im CPU-Modus.")
+        # Automatic deep diagnosis: every link of the CUDA chain tested
+        # separately, written next to the results.
+        from scantobim.core.gpudiag import write_gpu_diagnosis
+
+        diag_path = write_gpu_diagnosis(diag_dir)
+        if diag_path is not None:
+            print(f"  GPU-Diagnose geschrieben: {diag_path} — "
+                  "diese Datei zeigt die genaue Ursache (bitte mitschicken).")
+            if report_extra is not None:
+                report_extra["gpu_diagnose"] = str(diag_path)
     else:
         print("GPU: nicht verfügbar — CPU-Modus "
               "(NVIDIA-Karten: GPU-Version scantobim-windows-x64-gpu.zip)")

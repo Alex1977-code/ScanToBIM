@@ -4,6 +4,11 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.8.2 — automatische GPU-Tiefendiagnose
+
+- **`gpu_diagnose.txt` wird bei jedem GPU-Fehlstart automatisch geschrieben** (neben die Ergebnisdateien; in der Oberfläche erscheint sie bei den Downloads). Sie testet jede Stufe der CUDA-Kette einzeln: Umgebungsvariablen (inkl. `CUDA_PATH`-Altlasten), die gebündelten Laufzeit-Dateien mit Fundort und Größe, jeden einzelnen DLL-Ladevorgang mit Windows-Fehlercode — **auch `nvcuda.dll`, also den NVIDIA-Treiber selbst, samt unterstützter CUDA-Version** —, den CuPy-Import mit vollständigem Traceback und die `nvidia-smi`-Ausgabe. Eine Datei, eine eindeutige Ursache.
+- Neuer Befehl **`scantobim.exe gpu`**: schreibt dieselbe Diagnose jederzeit auf Kommando (ohne einen Rechenlauf zu starten).
+
 ### Neu in 3.8.1 — GPU-Start doppelt abgesichert
 
 - **CUDA-DLLs liegen jetzt zusätzlich im Paket-Stammverzeichnis** — dort registriert PyInstaller die DLL-Suche selbst, CuPys Module finden cudart/NVRTC damit ganz ohne Eigenlogik, unabhängig von Importreihenfolge und Prozess (auch im neuen Abbrechen-Rechenprozess).
