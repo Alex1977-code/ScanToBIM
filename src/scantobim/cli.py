@@ -63,6 +63,13 @@ def _launch_gui(files: list[Path], port: int = 8317, open_browser: bool = True) 
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles/pipes often use cp1252 — characters like '→' or '✓'
+    # in the protokoll must degrade gracefully instead of crashing a print.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:  # noqa: BLE001 — cosmetic only
+            pass
     if argv is None:
         argv = sys.argv[1:]
 

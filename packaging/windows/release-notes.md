@@ -4,6 +4,11 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.8.6 — GPU-Grundursache gefunden und behoben: fehlendes `graphlib`
+
+- **Das neue Release-Gate hat die eigentliche Ursache aller GPU-Fehlstarts seit 3.6.0 gefangen**: CuPy lädt das Python-Standardmodul `graphlib` dynamisch — PyInstallers Abhängigkeits-Scan übersah es, im Exe fehlte es, der CuPy-Import brach ab (`ModuleNotFoundError: No module named 'graphlib'`). Treiber, Karte und CUDA-DLLs waren die ganze Zeit in Ordnung. Das Modul wird jetzt explizit mitgebündelt; das Gate lässt nur noch Builds durch, in denen `import cupy` im fertigen Exe nachweislich gelingt.
+- Konsolen-Ausgaben stürzen nicht mehr über Sonderzeichen (→, ✓) auf cp1252-Konsolen ab (`errors="replace"`).
+
 ### Neu in 3.8.5 — GPU-Kette wird jetzt VOR jeder Veröffentlichung im fertigen Exe getestet
 
 - **Release-Gate**: Der Build führt die GPU-Diagnose jetzt **im fertigen Windows-Exe auf dem Build-Server aus** — schlägt `import cupy` dort fehl, wird das GPU-Zip gar nicht erst veröffentlicht. Die Diagnose des gebauten Exe wird zusätzlich als Build-Artefakt archiviert.
