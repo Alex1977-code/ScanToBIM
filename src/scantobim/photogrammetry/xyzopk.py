@@ -53,20 +53,48 @@ def read_xyzopk(path: str | Path) -> list[tuple[str, np.ndarray, np.ndarray]]:
     return entries
 
 
+def _imgpose_header_map(line: str):
+    """Column map from a header line naming its columns, or ``None``.
+
+    The real S20 header reads ``index x y z roll pitch yaw qx qy qz qw
+    timestamp`` — the guess-the-columns heuristic once picked roll/pitch/
+    yaw (≈90/179/150!) as the position and put every camera ~150 m beside
+    the building. When the file SAYS what its columns are, believe it.
+    """
+    toks = [t.lower() for t in line.replace(",", " ").split()]
+    if "x" not in toks or "qx" not in toks or "qw" not in toks:
+        return None
+    # Numeric columns only — a leading name column ("index", "name", …)
+    # corresponds to the filename token of the data rows.
+    numeric = [t for t in toks if t not in ("index", "name", "image", "file")]
+    try:
+        col = {key: numeric.index(key) for key in ("x", "y", "z", "qx", "qy", "qz", "qw")}
+    except ValueError:
+        return None
+    col["t"] = None
+    for key in ("timestamp", "time", "t", "stamp"):
+        if key in numeric:
+            col["t"] = numeric.index(key)
+            break
+    return col
+
+
 def read_imgpose(path: str | Path):
     """Parse an ImgPose file → ``[(name|None, xyz, quat(4), t|None)] …``.
 
-    SHARE S20 exports ``images/ImgPose.txt``: per photo a position, a unit
-    QUATERNION and a timestamp — unambiguous rotations, unlike Omega/Phi/
-    Kappa. The parser is layout-tolerant: the quaternion is found as the
-    first 4-number window with norm ≈ 1, the position as the 3 numbers
-    right before it (or after), the timestamp as the largest remaining
-    magnitude. The component ORDER (xyzw vs wxyz) stays open — the caller
-    resolves it by color-scoring both.
+    SHARE S20 exports ``ImgPose.txt``: per photo a position, Euler angles,
+    a unit QUATERNION and a timestamp. A header line naming the columns is
+    used verbatim when present. Without one, the quaternion is found as
+    the first 4-number window with norm ≈ 1; the position is the FIRST
+    three numbers when extra columns (Euler angles) sit between position
+    and quaternion, else the three right before/after the quaternion.
+    The component ORDER (xyzw vs wxyz) stays open — the caller resolves
+    it by color-scoring both.
     """
     entries = []
+    header = None
     for raw in Path(path).read_text(errors="replace").splitlines():
-        line = raw.strip().lstrip("#")
+        line = raw.strip().lstrip("#").strip()
         if not line:
             continue
         parts = line.replace(",", " ").replace(";", " ").split()
@@ -78,9 +106,30 @@ def read_imgpose(path: str | Path):
             except ValueError:
                 if name is None:
                     name = tok
+        if not nums:
+            if header is None:
+                header = _imgpose_header_map(line)
+            continue
         if len(nums) < 7:
             continue
         arr = np.array(nums)
+        if header is not None and len(arr) > max(
+            v for v in header.values() if v is not None
+        ):
+            quat = np.array([
+                arr[header["qx"]], arr[header["qy"]],
+                arr[header["qz"]], arr[header["qw"]],
+            ])
+            # Per-row sanity: the mapped quaternion must be a unit
+            # quaternion, otherwise this row does not follow the header
+            # (mixed layouts exist) — fall through to the heuristic.
+            if 0.85 < float(np.linalg.norm(quat)) < 1.15:
+                xyz = np.array([
+                    arr[header["x"]], arr[header["y"]], arr[header["z"]]
+                ])
+                t = None if header["t"] is None else float(arr[header["t"]])
+                entries.append((name, xyz, quat, t))
+                continue
         qi = None
         for i in range(len(arr) - 3):
             if 0.85 < float(np.linalg.norm(arr[i:i + 4])) < 1.15:
@@ -89,7 +138,13 @@ def read_imgpose(path: str | Path):
         if qi is None:
             continue
         quat = arr[qi:qi + 4].copy()
-        if qi >= 3:
+        if qi >= 6:
+            # Extra columns (Euler angles) between position and quaternion:
+            # the position is the FIRST triple, not the one adjacent to the
+            # quaternion — those adjacent values are roll/pitch/yaw.
+            xyz = arr[0:3].copy()
+            used = set(range(0, 3)) | set(range(qi, qi + 4))
+        elif qi >= 3:
             xyz = arr[qi - 3:qi].copy()
             used = set(range(qi - 3, qi + 4))
         elif len(arr) >= qi + 7:

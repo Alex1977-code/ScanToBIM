@@ -1434,3 +1434,56 @@ def test_imgpose_alignment_reports_all_hypotheses(tmp_path):
     pa = stats["posen_ausrichtung"]
     assert pa["angewendet"] is False
     assert len(pa["residuen_aller_hypothesen_m"]) >= 4
+
+
+def test_read_imgpose_real_s20_layout():
+    """VERBATIM head of the real Steuerhaus ImgPose.txt: header-driven
+    parsing must take x/y/z — NOT roll/pitch/yaw (the 150-m-bug)."""
+    import tempfile
+    from pathlib import Path as _P
+
+    from scantobim.photogrammetry.xyzopk import read_imgpose
+
+    content = (
+        "index x y z roll pitch yaw qx qy qz qw timestamp\n"
+        "left/left_00002.jpg 0.012742 0.028790 -0.041064 89.660685 "
+        "-179.184449 150.182908 -0.686598 0.177607 -0.186256 0.679962 "
+        "1735727239.466644525528\n"
+        "left/left_00003.jpg 0.011112306663 0.027359161741 -0.038952220449 "
+        "89.605855569018 -179.219844762601 150.180556981305 -0.686864904181 "
+        "0.177920815127 -0.185973163980 0.679687258397 "
+        "1735727240.466680049896\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _P(d) / "ImgPose.txt"
+        p.write_text(content)
+        entries = read_imgpose(p)
+    assert len(entries) == 2
+    name, xyz, quat, t = entries[0]
+    assert name == "left/left_00002.jpg"
+    assert np.allclose(xyz, [0.012742, 0.028790, -0.041064])       # x y z!
+    assert np.allclose(quat, [-0.686598, 0.177607, -0.186256, 0.679962])
+    assert abs(t - 1735727239.4666) < 0.01
+    # The old bug grabbed roll/pitch/yaw (~90/-179/150) as the position.
+    assert np.abs(xyz).max() < 1.0
+
+
+def test_read_imgpose_s20_layout_without_header():
+    """Same 11-number layout WITHOUT a header: first-triple heuristic."""
+    import tempfile
+    from pathlib import Path as _P
+
+    from scantobim.photogrammetry.xyzopk import read_imgpose
+
+    content = (
+        "left/left_00002.jpg 1.25 2.44 -0.41 89.660685 -179.184449 "
+        "150.182908 -0.686598 0.177607 -0.186256 0.679962 "
+        "1735727239.466644\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _P(d) / "ImgPose.txt"
+        p.write_text(content)
+        entries = read_imgpose(p)
+    name, xyz, quat, t = entries[0]
+    assert np.allclose(xyz, [1.25, 2.44, -0.41])
+    assert np.allclose(quat, [-0.686598, 0.177607, -0.186256, 0.679962])

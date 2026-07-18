@@ -4,7 +4,20 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
-### Neu in 3.20.1 — Format-Röntgenbild: der Bericht zeigt jetzt, WIE ImgPose gelesen wird
+### Neu in 3.21.0 — DER Foto-Fix: ImgPose-Spalten endlich richtig gelesen (roll/pitch/yaw waren nie eine Position)
+
+Die echte ImgPose.txt hat die Frage beendet. Ihre Kopfzeile lautet:
+
+    index x y z roll pitch yaw qx qy qz qw timestamp
+
+Der Format-Rater nahm bisher die drei Zahlen DIREKT VOR dem Quaternion als Position — das sind in diesem Layout aber **roll/pitch/yaw (≈ 90/−179/150 Grad)**. Ergebnis: alle 746 Kameras „standen" bei (90, −179, 150) — exakt die ~150 m Kamera-Abstand, die die Selbstprüfung seit 3.18 gemessen hat. Daran sind sämtliche Foto-Stufen seit Wochen gescheitert: Himmel auf den Wänden, 2,5-cm-Texel-Deckel, 103 von 746 validierte Kameras, 0 nachjustierte Kanten.
+
+- **Kopfzeilen-gesteuertes Parsen**: Nennt die Datei ihre Spalten (wie die S20-ImgPose), werden sie wörtlich übernommen — x/y/z als Position, qx/qy/qz/qw als Quaternion, timestamp als Zeit. Pro Zeile abgesichert (Quaternion-Norm-Prüfung), gemischte Layouts fallen auf die Heuristik zurück.
+- **Heuristik repariert**: Liegen zusätzliche Spalten (Euler-Winkel) zwischen Position und Quaternion, ist die Position das ERSTE Zahlentripel der Zeile — nie mehr die Winkel.
+- **Mit den Original-Zeilen der Steuerhaus-Datei als Regressionstest** verankert — dieses Format kann nie wieder falsch gelesen werden.
+- Die korrekten Positionen liegen bereits im Wolken-System (SLAM-Start am Ursprung) — die Trajektorien-Registrierung aus 3.19/3.20 bestätigt das jetzt mit Zentimeter-Residuum statt es zu reparieren. Erwartung für den nächsten Lauf: Kamera-Selbstprüfung weit über 600/746, mm-Texel statt 2,5 cm, echte Ziegel statt Himmelsblau, Kanten-Fotoabgleich aktiv.
+
+### Neu in 3.20.1 — Format-Röntgenbild (durch 3.21.0 überholt)
 
 Die Hypothesen-Tabelle aus 3.20 spricht eine klare Sprache: ALLE starren Zuordnungen landen bei ~130 m Residuum, alle Skalierungs-Fits bei ~12 m — die ImgPose-„Positionen" haben eine völlig andere Größenordnung/Gestalt als der Laufweg. Das ist kein Versatz mehr, sondern ein Format-Thema (andere Spaltenbelegung oder geographische Koordinaten). Statt weiter zu raten, legt diese Version das Format offen:
 
