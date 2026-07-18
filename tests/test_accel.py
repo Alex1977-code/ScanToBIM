@@ -32,6 +32,28 @@ def test_xp_for_and_asnumpy_cpu():
     assert accel.asnumpy(a) is a
 
 
+def test_first_meaningful_line_digs_out_cupy_cause():
+    """CuPy's banner-style ImportError yields the real cause, not ''."""
+    banner = ImportError(
+        "\n================================\n"
+        "Failed to import CuPy.\n\n"
+        "Original error:\n"
+        "  ImportError: DLL load failed while importing runtime: "
+        "Das angegebene Modul wurde nicht gefunden.\n"
+        "================================\n"
+    )
+    line = accel._first_meaningful_line(banner)
+    assert line.startswith("ImportError: DLL load failed")
+
+    assert accel._first_meaningful_line(ValueError("kaputt")) == "kaputt"
+    assert accel._first_meaningful_line(ValueError("")) == ""
+
+
+def test_discovery_info_reports_dir_count():
+    info = accel._discovery_info()
+    assert "CUDA-Laufzeit-Ordner gefunden:" in info
+
+
 def test_smallest_eigvec_matches_eigh():
     """Closed-form smallest eigenvector ≡ np.linalg.eigh (up to sign)."""
     rng = np.random.default_rng(3)

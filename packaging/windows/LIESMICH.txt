@@ -5,11 +5,22 @@ Punktwolken & Fotos -> 3D-Modelle mit sauberen Kanten.
 Keine Installation noetig: scantobim.exe ist eigenstaendig
 (Python ist NICHT erforderlich).
 
-Erster Start
-------------
-Windows SmartScreen kann beim ersten Start warnen, weil die Datei
-nicht code-signiert ist:
-  "Weitere Informationen" -> "Trotzdem ausfuehren"
+Erster Start / Windows-Warnung "schaedlich"
+-------------------------------------------
+Windows SmartScreen warnt bei heruntergeladenen, nicht code-signierten
+Programmen ("Der Computer wurde durch Windows geschuetzt" o. ae.).
+Das ist normal fuer Open-Source-Software ohne (kostenpflichtiges)
+Code-Signing-Zertifikat - die Datei kommt direkt aus dem oeffentlichen
+GitHub-Build, der Quellcode ist einsehbar.
+
+So verschwindet die Warnung DAUERHAFT:
+  1. Zip-Datei ENTPACKEN (nicht aus dem Zip heraus starten!).
+  2. Rechtsklick auf scantobim.exe -> Eigenschaften -> unten bei
+     "Sicherheit" das Haekchen "Zulassen" setzen -> OK.
+     (Das entfernt die Internet-Markierung der Datei.)
+  Alternativ einmalig: "Weitere Informationen" -> "Trotzdem ausfuehren" -
+  Windows merkt sich das pro Datei. Nach jedem Update (neue Datei)
+  erscheint die Warnung einmal neu.
 
 Grafische Oberflaeche (empfohlen)
 ---------------------------------

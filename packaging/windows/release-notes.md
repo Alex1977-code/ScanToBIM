@@ -4,6 +4,13 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.8.1 — GPU-Start doppelt abgesichert
+
+- **CUDA-DLLs liegen jetzt zusätzlich im Paket-Stammverzeichnis** — dort registriert PyInstaller die DLL-Suche selbst, CuPys Module finden cudart/NVRTC damit ganz ohne Eigenlogik, unabhängig von Importreihenfolge und Prozess (auch im neuen Abbrechen-Rechenprozess).
+- **`CUDA_PATH`-Altlasten werden überschrieben**: Zeigt die Umgebungsvariable noch auf ein längst deinstalliertes CUDA-Toolkit, gewann sie bisher gegen die gebündelte Laufzeit — jetzt setzt das Programm sie hart auf das mitgelieferte Verzeichnis.
+- **Aussagekräftige GPU-Fehlzeile**: CuPys mehrzeilige Fehlermeldung wurde bisher auf ihre (leere) erste Zeile gekürzt → „(ImportError: )". Jetzt wird die eigentliche Ursache extrahiert („Original error: …") und dazu protokolliert, wie viele CUDA-Laufzeit-Ordner im Paket gefunden wurden und wo.
+- LIESMICH: Anleitung, wie die Windows-SmartScreen-Warnung („schädlich") **dauerhaft** verschwindet (Datei entpacken → Rechtsklick → Eigenschaften → „Zulassen"). Die Warnung ist bei nicht code-signierter Open-Source-Software normal.
+
 ### Neu in 3.8.0 — Abbrechen-Button + GPU-Diagnose
 
 - **⛔ Abbrechen-Button in der Oberfläche**: Eine laufende Berechnung kann jetzt jederzeit sofort abgebrochen werden. Dafür läuft jeder Auftrag in einem **eigenen Prozess** (hartes Beenden mitten in der Rechnung möglich — Python-Threads können das nicht); bereits geschriebene Ergebnisdateien bleiben erhalten, die Oberfläche ist sofort wieder frei für den nächsten Auftrag. Stürzt eine Berechnung ab (z. B. Speicher voll), meldet die Oberfläche das jetzt sauber statt ewig zu laufen.

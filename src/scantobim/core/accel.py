@@ -81,15 +81,26 @@ def _cuda_library_dirs() -> list[Path]:
     return dirs
 
 
+_dirs_registered = False
+
+
 def _register_cuda_dirs() -> None:
+    global _dirs_registered
+    if _dirs_registered:
+        return
     dirs = _cuda_library_dirs()
     if not dirs:
         return
+    _dirs_registered = True
     runtime = next(
-        (d.parent for d in dirs if d.parent.name == "cuda_runtime"),
-        dirs[0].parent,
+        (d.parent for d in dirs if d.parent.name == "cuda_runtime"), None
     )
-    os.environ.setdefault("CUDA_PATH", str(runtime))
+    if runtime is not None:
+        # Force, don't setdefault: a stale CUDA_PATH from an old/uninstalled
+        # toolkit on the user's machine must not shadow the bundled runtime.
+        os.environ["CUDA_PATH"] = str(runtime)
+    else:
+        os.environ.setdefault("CUDA_PATH", str(dirs[0].parent))
     for d in dirs:
         os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
         if hasattr(os, "add_dll_directory"):
@@ -97,6 +108,30 @@ def _register_cuda_dirs() -> None:
                 os.add_dll_directory(str(d))
             except OSError:
                 pass
+
+
+def _first_meaningful_line(exc: Exception) -> str:
+    """Compact one-line summary of an exception message.
+
+    CuPy's import failure is a multi-line banner starting with a blank line
+    and '=====' rules; the actual cause hides behind 'Original error:'.
+    """
+    lines = [ln.strip() for ln in str(exc).splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        if line.lower().startswith("original error"):
+            return lines[i + 1] if i + 1 < len(lines) else line
+    for line in lines:
+        if set(line) - {"=", "-", "*"}:
+            return line
+    return lines[0] if lines else ""
+
+
+def _discovery_info() -> str:
+    """Where the bundled CUDA runtime was (not) found — for the log."""
+    n = len(_cuda_library_dirs())
+    meipass = getattr(sys, "_MEIPASS", None)
+    root = f", Paket: {meipass}" if meipass else ""
+    return f"CUDA-Laufzeit-Ordner gefunden: {n}{root}"
 
 
 def gpu():
@@ -120,14 +155,18 @@ def gpu():
     except ImportError as exc:
         # CPU build without CuPy → nothing to report. A GPU build whose
         # CUDA DLLs fail to load raises ImportError too ("DLL load
-        # failed …") — that one must reach the log.
-        msg = str(exc).splitlines()[0] if str(exc) else ""
-        _error = None if "No module named" in msg else f"ImportError: {msg[:200]}"
+        # failed …") — that one must reach the log, with the real cause
+        # dug out of CuPy's multi-line banner.
+        msg = _first_meaningful_line(exc)
+        if "No module named" in msg:
+            _error = None
+        else:
+            _error = f"ImportError: {msg[:200]} [{_discovery_info()}]"
     except Exception as exc:
         _gpu = None
         _name = None
-        msg = str(exc).splitlines()[0] if str(exc) else ""
-        _error = f"{type(exc).__name__}: {msg[:200]}"
+        msg = _first_meaningful_line(exc)
+        _error = f"{type(exc).__name__}: {msg[:200]} [{_discovery_info()}]"
     return _gpu
 
 
@@ -270,6 +309,14 @@ def smallest_eigvec_sym33(xp, a00, a01, a02, a11, a12, a22):
 
     norm = xp.sqrt(xp.maximum((best * best).sum(axis=1), 1e-30))
     return best / norm[:, None]
+
+
+# Register the bundled CUDA directories as early as possible — even if
+# something imports CuPy before the first gpu() call, the DLLs resolve.
+try:
+    _register_cuda_dirs()
+except Exception:  # noqa: BLE001 — never break import over this
+    pass
 
 
 def pca_normals(points: np.ndarray, idx: np.ndarray, min_gpu: int = 1_000_000):
