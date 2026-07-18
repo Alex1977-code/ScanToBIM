@@ -118,6 +118,22 @@ class GuiState:
         self.counter = 0
         self.busy = False
         self.initial_files = [Path(f).resolve() for f in (initial_files or [])]
+        # GPU probe runs in the background (CuPy import takes a moment);
+        # the header badge polls /api/meta until checked.
+        self.gpu_name: str | None = None
+        self.gpu_error: str | None = None
+        self.gpu_checked = False
+        threading.Thread(target=self._probe_gpu, daemon=True).start()
+
+    def _probe_gpu(self) -> None:
+        try:
+            from scantobim.core.accel import gpu_error, gpu_name
+
+            self.gpu_name = gpu_name()
+            self.gpu_error = gpu_error()
+        except Exception:  # noqa: BLE001 — badge is informational only
+            pass
+        self.gpu_checked = True
 
     def new_job(self, mode: str) -> dict:
         with self.lock:
@@ -694,7 +710,13 @@ def _make_handler(state: GuiState):
                     for f in state.initial_files
                     if f.exists()
                 ]
-                self._json({"version": __version__, "initial_files": files})
+                self._json({
+                    "version": __version__,
+                    "initial_files": files,
+                    "gpu": state.gpu_name,
+                    "gpu_fehler": state.gpu_error,
+                    "gpu_geprueft": state.gpu_checked,
+                })
             elif route == "/api/profiles":
                 self._json({"profiles": _load_profiles()})
             elif route == "/api/status":

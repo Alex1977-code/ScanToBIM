@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.8.5 — GPU-Kette wird jetzt VOR jeder Veröffentlichung im fertigen Exe getestet
+
+- **Release-Gate**: Der Build führt die GPU-Diagnose jetzt **im fertigen Windows-Exe auf dem Build-Server aus** — schlägt `import cupy` dort fehl, wird das GPU-Zip gar nicht erst veröffentlicht. Die Diagnose des gebauten Exe wird zusätzlich als Build-Artefakt archiviert.
+- **Verschluckte Fehler behoben**: Ein `No module named …`-Fehler wurde bisher pauschal als „normale CPU-Version" gewertet — auch wenn nur ein Teilmodul von CuPy fehlte. Dann gab es weder Fehlerzeile noch `gpu_diagnose.txt`. Jetzt wird nur das komplette Fehlen von CuPy still übergangen; alles andere landet mit Ursache im Protokoll und erzeugt die Diagnose.
+- **GPU-Status immer sichtbar**: Die Oberfläche zeigt in der Kopfzeile dauerhaft „GPU: <Karte> ✓", „GPU: CPU-Modus ⚠" (mit Ursache als Tooltip) oder „CPU-Version" — geprüft direkt beim Start, kein Rechenlauf nötig.
+
 ### Neu in 3.8.4 — GPU-Fix: CuPys Pfad-Raterei entschärft
 
 - **Die per `gpu_diagnose.txt` gefundene Ursache ist behoben**: CuPy leitet den CUDA-Pfad vom Fundort der cudart-DLL ab; im entpackten Onefile-Paket hielt es `%TEMP%` für die CUDA-Installation und stürzte beim Registrieren des nicht existierenden `%TEMP%\bin` ab (`FileNotFoundError` in `_setup_win32_dll_directory`). Der Import läuft jetzt mit einem nachsichtigen `add_dll_directory` — die korrekten, gebündelten Verzeichnisse sind zu diesem Zeitpunkt längst registriert. Diagnose des betroffenen Systems: Treiber und Karte einwandfrei, alle DLLs einzeln ladbar — nur dieser Startlogik-Absturz stand der GPU im Weg.

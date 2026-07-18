@@ -32,6 +32,15 @@ def test_xp_for_and_asnumpy_cpu():
     assert accel.asnumpy(a) is a
 
 
+def test_is_cupy_missing_only_for_whole_package():
+    assert accel._is_cupy_missing("No module named 'cupy'")
+    assert accel._is_cupy_missing("No module named cupy")
+    # A missing SUBmodule is a broken GPU build — must be reported.
+    assert not accel._is_cupy_missing("No module named 'cupy._core'")
+    assert not accel._is_cupy_missing("No module named 'fastrlock'")
+    assert not accel._is_cupy_missing("DLL load failed while importing runtime")
+
+
 def test_import_cupy_restores_add_dll_directory(monkeypatch):
     """The forgiving add_dll_directory patch is always rolled back."""
     import os

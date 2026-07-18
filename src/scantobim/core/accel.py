@@ -126,6 +126,16 @@ def _first_meaningful_line(exc: Exception) -> str:
     return lines[0] if lines else ""
 
 
+def _is_cupy_missing(msg: str) -> bool:
+    """True only for 'CuPy is not installed at all' (the CPU build).
+
+    A missing SUBmodule ('No module named cupy._core') is a broken GPU
+    build and must be reported, so the match is exact.
+    """
+    m = msg.strip()
+    return m in ("No module named 'cupy'", "No module named cupy")
+
+
 def _discovery_info() -> str:
     """Where the bundled CUDA runtime was (not) found — for the log."""
     n = len(_cuda_library_dirs())
@@ -197,12 +207,11 @@ def gpu():
         else:
             _error = "kein CUDA-Gerät gefunden (NVIDIA-Treiber installiert?)"
     except ImportError as exc:
-        # CPU build without CuPy → nothing to report. A GPU build whose
-        # CUDA DLLs fail to load raises ImportError too ("DLL load
-        # failed …") — that one must reach the log, with the real cause
-        # dug out of CuPy's multi-line banner.
+        # CPU build without CuPy → nothing to report. EVERY other import
+        # failure (DLL load, missing cupy SUBmodule, …) must reach the
+        # log, with the real cause dug out of CuPy's multi-line banner.
         msg = _first_meaningful_line(exc)
-        if "No module named" in msg:
+        if _is_cupy_missing(msg):
             _error = None
         else:
             _error = f"ImportError: {msg[:200]} [{_discovery_info()}]"

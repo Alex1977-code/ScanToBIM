@@ -105,6 +105,25 @@ jobs:
           print("smoke test OK:", report["planes"], "planes,", angles)
           EOF
 
+      - name: Verify CUDA chain inside the exe (GPU-Variante)
+        if: matrix.variant == 'gpu'
+        shell: bash
+        # Führt die GPU-Diagnose IM fertigen Exe aus. Der Runner hat keine
+        # NVIDIA-Karte — aber 'import cupy: OK' muss gelingen, sonst ist
+        # das GPU-Paket kaputt und darf nicht veröffentlicht werden.
+        run: |
+          ./dist/scantobim.exe gpu -o .
+          echo "================ gpu_diagnose.txt ================"
+          cat gpu_diagnose.txt
+          echo "=================================================="
+          grep -q "import cupy: OK" gpu_diagnose.txt
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.variant == 'gpu'
+        with:
+          name: gpu-diagnose
+          path: gpu_diagnose.txt
+
       - name: Package
         shell: bash
         run: |

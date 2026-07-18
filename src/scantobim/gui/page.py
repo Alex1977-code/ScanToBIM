@@ -185,6 +185,7 @@ button.ghost:hover{border-color:var(--accent)}
 <header>
   <div class="logo"></div>
   <h1>ScanToBIM</h1><span class="ver">v__VERSION__</span>
+  <span class="ver" id="gpubadge" title="GPU-Status wird geprüft …">GPU: prüfe …</span>
   <div id="status">bereit</div>
 </header>
 <main>
@@ -658,11 +659,33 @@ function syncSourceTitle(){
 srcSel.onchange = syncSourceTitle;
 syncSourceTitle();
 
-/* preloaded files (drag & drop onto the exe) */
-fetch("/api/meta").then(r => r.json()).then(m => {
-  (m.initial_files || []).forEach(f => state.files.push(f));
-  renderFiles();
-});
+/* preloaded files (drag & drop onto the exe) + GPU badge */
+function applyMeta(m, first){
+  if (first) {
+    (m.initial_files || []).forEach(f => state.files.push(f));
+    renderFiles();
+  }
+  const badge = $("#gpubadge");
+  if (!m.gpu_geprueft) {
+    setTimeout(() => fetch("/api/meta").then(r => r.json()).then(x => applyMeta(x, false)), 2000);
+    return;
+  }
+  if (m.gpu) {
+    badge.textContent = "GPU: " + m.gpu + " ✓";
+    badge.style.color = "#7fd0a8";
+    badge.title = "CUDA-Beschleunigung aktiv";
+  } else if (m.gpu_fehler) {
+    badge.textContent = "GPU: CPU-Modus ⚠";
+    badge.style.color = "#ffd479";
+    badge.title = "CUDA nicht nutzbar: " + m.gpu_fehler +
+      " — Details in gpu_diagnose.txt (wird beim Lauf erzeugt)";
+  } else {
+    badge.textContent = "CPU-Version";
+    badge.title = "Diese Version rechnet ohne Grafikkarte. " +
+      "Für NVIDIA-Karten: scantobim-windows-x64-gpu.zip";
+  }
+}
+fetch("/api/meta").then(r => r.json()).then(m => applyMeta(m, true));
 </script>
 </body>
 </html>
