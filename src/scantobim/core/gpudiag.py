@@ -142,7 +142,7 @@ def build_gpu_diagnosis() -> str:
     except Exception:
         lines.append(traceback.format_exc())
     try:
-        import cupy
+        cupy = accel._import_cupy()
 
         lines.append(f"import cupy: OK (CuPy {cupy.__version__})")
         try:

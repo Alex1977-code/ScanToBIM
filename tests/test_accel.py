@@ -32,6 +32,33 @@ def test_xp_for_and_asnumpy_cpu():
     assert accel.asnumpy(a) is a
 
 
+def test_import_cupy_restores_add_dll_directory(monkeypatch):
+    """The forgiving add_dll_directory patch is always rolled back."""
+    import os
+
+    calls = []
+
+    def fake_add(path):
+        calls.append(path)
+        raise OSError("kein solcher Ordner")
+
+    monkeypatch.setattr(os, "add_dll_directory", fake_add, raising=False)
+    try:
+        accel._import_cupy()
+        imported = True
+    except ImportError:
+        imported = False  # CPU-Umgebung ohne CuPy — erwartet
+    assert os.add_dll_directory is fake_add  # restored
+    # Whether CuPy exists or not: the patch never leaks.
+    assert imported in (True, False)
+
+    # The dummy handle honours close() and the context protocol.
+    dummy = accel._DummyDllDirectory()
+    dummy.close()
+    with accel._DummyDllDirectory():
+        pass
+
+
 def test_first_meaningful_line_digs_out_cupy_cause():
     """CuPy's banner-style ImportError yields the real cause, not ''."""
     banner = ImportError(

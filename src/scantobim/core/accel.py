@@ -134,6 +134,50 @@ def _discovery_info() -> str:
     return f"CUDA-Laufzeit-Ordner gefunden: {n}{root}"
 
 
+class _DummyDllDirectory:
+    """Stand-in for os.add_dll_directory's handle (close/context protocol)."""
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _import_cupy():
+    """``import cupy``, robust against CuPy's CUDA-path guessing.
+
+    Newer CuPy derives the CUDA installation from where it finds cudart.
+    In the onefile exe cudart sits in the extracted bundle ROOT, so CuPy
+    takes that folder for ``bin``, its parent (%TEMP%) for the CUDA path —
+    and crashes on ``add_dll_directory('%TEMP%\\bin')`` which doesn't
+    exist. Our directories are registered already; a failing
+    add_dll_directory inside CuPy's startup must not kill the import.
+    """
+    orig = getattr(os, "add_dll_directory", None)
+    if orig is None:
+        import cupy
+
+        return cupy
+
+    def _forgiving(path):
+        try:
+            return orig(path)
+        except OSError:
+            return _DummyDllDirectory()
+
+    os.add_dll_directory = _forgiving
+    try:
+        import cupy
+
+        return cupy
+    finally:
+        os.add_dll_directory = orig
+
+
 def gpu():
     """The ``cupy`` module when a working CUDA device exists, else None."""
     global _gpu, _checked, _name, _error
@@ -142,7 +186,7 @@ def gpu():
     _checked = True
     try:
         _register_cuda_dirs()
-        import cupy
+        cupy = _import_cupy()
 
         if cupy.cuda.runtime.getDeviceCount() > 0:
             props = cupy.cuda.runtime.getDeviceProperties(0)

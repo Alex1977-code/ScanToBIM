@@ -4,6 +4,10 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.8.4 — GPU-Fix: CuPys Pfad-Raterei entschärft
+
+- **Die per `gpu_diagnose.txt` gefundene Ursache ist behoben**: CuPy leitet den CUDA-Pfad vom Fundort der cudart-DLL ab; im entpackten Onefile-Paket hielt es `%TEMP%` für die CUDA-Installation und stürzte beim Registrieren des nicht existierenden `%TEMP%\bin` ab (`FileNotFoundError` in `_setup_win32_dll_directory`). Der Import läuft jetzt mit einem nachsichtigen `add_dll_directory` — die korrekten, gebündelten Verzeichnisse sind zu diesem Zeitpunkt längst registriert. Diagnose des betroffenen Systems: Treiber und Karte einwandfrei, alle DLLs einzeln ladbar — nur dieser Startlogik-Absturz stand der GPU im Weg.
+
 ### Neu in 3.8.3 — GPU-Diagnose direkt im eigenen Ordner
 
 - Die `gpu_diagnose.txt` wird jetzt **zusätzlich in den Projekt- bzw. Scan-Ordner kopiert** — also dorthin, wo man sie sucht. (Die Oberfläche rechnet in einem versteckten Temp-Ordner; dort lag die Datei bisher nur im Download-Bereich.) Zur Erinnerung: Die Datei entsteht **nur bei einem GPU-Fehlstart** — läuft CUDA, gibt es sie absichtlich nicht.
