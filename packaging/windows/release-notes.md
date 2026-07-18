@@ -4,6 +4,12 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.8.0 — Abbrechen-Button + GPU-Diagnose
+
+- **⛔ Abbrechen-Button in der Oberfläche**: Eine laufende Berechnung kann jetzt jederzeit sofort abgebrochen werden. Dafür läuft jeder Auftrag in einem **eigenen Prozess** (hartes Beenden mitten in der Rechnung möglich — Python-Threads können das nicht); bereits geschriebene Ergebnisdateien bleiben erhalten, die Oberfläche ist sofort wieder frei für den nächsten Auftrag. Stürzt eine Berechnung ab (z. B. Speicher voll), meldet die Oberfläche das jetzt sauber statt ewig zu laufen.
+- **GPU-Treiber-Hinweis**: Meldet CUDA einen zu alten Treiber, sagt das Protokoll jetzt direkt „NVIDIA-Grafiktreiber ist zu alt für CUDA 12 — bitte aktualisieren" mit Download-Link. (Die gebündelte CUDA-12-Laufzeit der GPU-Version braucht Treiber ab Version ~525.)
+- Geprüft: Die CUDA-DLLs (cudart, NVRTC) liegen nachweislich im veröffentlichten GPU-Exe — wer die Warnung „CUDA path could not be detected" sieht, hat noch eine Version vor 3.7.0 laufen. Erste Protokollzeile checken: dort steht jetzt immer „ScanToBIM <Version>".
+
 ### Neu in 3.7.2 — Programmname mit Versionsnummer überall
 
 - **„ScanToBIM v3.7.2" steht jetzt überall**, wo das Programm sich meldet: Browser-Tab-Titel der Oberfläche, Kopfzeile des 3D-Viewers (`<name>.html`), `bericht.json` (Feld `programm`), GLB-Metadaten (`generator`), OBJ-Kopfzeile — zusätzlich zur ersten Protokollzeile und dem Versions-Badge im GUI-Kopf.

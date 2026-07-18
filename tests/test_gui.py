@@ -175,6 +175,57 @@ def test_error_handling(gui_server, tmp_path):
     assert s["error"]
 
 
+def test_cancel_running_job(gui_server, tmp_path):
+    """Abbrechen kills the job process; the server frees up afterwards."""
+    url, state = gui_server
+    src = write_point_cloud(
+        make_box_scan(density=2500, noise=0.004), tmp_path / "scan.ply"
+    )
+    _, body = _post(url + "/api/upload", src.read_bytes(), {"X-Filename": "scan.ply"})
+    uploaded = json.loads(body)
+
+    # Unknown job → 404.
+    status, _ = _post(url + "/api/cancel", json.dumps({"job": "nope"}).encode())
+    assert status == 404
+
+    _, body = _post(
+        url + "/api/run",
+        json.dumps({
+            "mode": "reconstruct",
+            "files": [uploaded["path"]],
+            "options": {"preset": "detail", "texture": False},
+        }).encode(),
+    )
+    job = json.loads(body)["job"]
+
+    status, _ = _post(url + "/api/cancel", json.dumps({"job": job}).encode())
+    assert status == 200
+
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        _, body = _get(url + f"/api/status?job={job}")
+        s = json.loads(body)
+        if s["state"] != "running":
+            break
+        time.sleep(0.2)
+    assert s["state"] == "cancelled", s.get("error")
+    assert any("abgebrochen" in line.lower() for line in s["log"])
+
+    # Cancel on a finished job → 400; busy flag released for the next run.
+    status, _ = _post(url + "/api/cancel", json.dumps({"job": job}).encode())
+    assert status == 400
+    deadline = time.time() + 10
+    while state.busy and time.time() < deadline:
+        time.sleep(0.1)
+    assert not state.busy
+
+
+def test_page_has_cancel_button(gui_server):
+    url, _ = gui_server
+    _, body = _get(url + "/")
+    assert "Abbrechen" in body.decode()
+
+
 def test_initial_files_preloaded(tmp_path):
     src = write_point_cloud(make_box_scan(density=200), tmp_path / "vorab.ply")
     server, state = create_server(port=0, initial_files=[src])

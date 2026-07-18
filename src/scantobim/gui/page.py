@@ -320,6 +320,8 @@ button.ghost:hover{border-color:var(--accent)}
     </div>
 
     <button class="primary" id="run">Modell erstellen</button>
+    <button class="ghost" id="cancel" style="display:none"
+      title="Bricht die laufende Berechnung sofort ab. Bereits geschriebene Ergebnisdateien bleiben erhalten.">⛔ Abbrechen</button>
   </div>
 
   <div class="content">
@@ -552,10 +554,21 @@ $("#run").onclick = async () => {
   if (data.error) { alert(data.error); return; }
   state.job = data.job;
   $("#run").disabled = true;
+  $("#cancel").style.display = "";
+  $("#cancel").disabled = false;
   $("#log").textContent = "";
   $("#dlcard").style.display = "none";
   setStatus("Berechnung läuft …", "run");
   state.timer = setInterval(poll, 800);
+};
+
+$("#cancel").onclick = async () => {
+  if (!state.job) return;
+  $("#cancel").disabled = true;
+  setStatus("wird abgebrochen …", "run");
+  await fetch("/api/cancel", {
+    method: "POST", body: JSON.stringify({job: state.job}),
+  });
 };
 
 async function poll(){
@@ -568,7 +581,10 @@ async function poll(){
 
   clearInterval(state.timer);
   $("#run").disabled = false;
-  if (s.state === "error") {
+  $("#cancel").style.display = "none";
+  if (s.state === "cancelled") {
+    setStatus("abgebrochen", "err");
+  } else if (s.state === "error") {
     setStatus("Fehler", "err");
   } else {
     setStatus("fertig", "ok");

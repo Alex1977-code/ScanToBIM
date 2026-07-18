@@ -18,6 +18,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import multiprocessing
+import queue as _pyqueue
 import tempfile
 import threading
 import urllib.parse
@@ -544,7 +546,92 @@ _RUNNERS = {
 }
 
 
+def _job_worker(mode: str, files: list[str], opts: dict, outdir: str, q) -> None:
+    """Child-process entry: run the job, stream log lines through ``q``.
+
+    Runs in its OWN process so the GUI's Abbrechen button can hard-kill a
+    computation mid-numpy — Python threads cannot be interrupted.
+    """
+
+    class _QueueWriter(io.TextIOBase):
+        def __init__(self):
+            self.buf = ""
+
+        def write(self, s: str) -> int:  # noqa: D102
+            self.buf += s
+            while "\n" in self.buf:
+                line, self.buf = self.buf.split("\n", 1)
+                if line.strip():
+                    q.put(("log", line.rstrip()))
+            return len(s)
+
+    writer = _QueueWriter()
+    try:
+        with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+            summary = _RUNNERS[mode]([Path(f) for f in files], opts, Path(outdir))
+        q.put(("done", summary))
+    except Exception as exc:  # noqa: BLE001 — surfaced in the GUI
+        q.put(("error", str(exc)))
+
+
 def _execute_job(state: GuiState, job: dict, files: list[Path], opts: dict) -> None:
+    try:
+        try:
+            ctx = multiprocessing.get_context()
+            q = ctx.Queue()
+            proc = ctx.Process(
+                target=_job_worker,
+                args=(job["mode"], [str(f) for f in files], opts, job["dir"], q),
+                daemon=True,
+            )
+            proc.start()
+        except Exception:  # noqa: BLE001 — no subprocess → run in-thread
+            _execute_job_inline(job, files, opts)
+            return
+        job["_proc"] = proc
+
+        final = None
+        while final is None:
+            if job.get("cancel"):
+                proc.terminate()
+                proc.join(10)
+                job["log"].append("⛔ Berechnung abgebrochen.")
+                job["error"] = "abgebrochen"
+                job["state"] = final = "cancelled"
+                break
+            try:
+                kind, payload = q.get(timeout=0.25)
+            except _pyqueue.Empty:
+                if not proc.is_alive():
+                    job["error"] = (
+                        "Berechnung unerwartet beendet (Speicher voll? "
+                        "Absturz?) — Protokoll prüfen"
+                    )
+                    job["log"].append(f"FEHLER: {job['error']}")
+                    job["state"] = final = "error"
+                continue
+            if kind == "log":
+                job["log"].append(payload)
+            elif kind == "done":
+                job["summary"] = payload
+                job["state"] = final = "done"
+            elif kind == "error":
+                job["log"].append(f"FEHLER: {payload}")
+                job["error"] = payload
+                job["state"] = final = "error"
+        # Drain any trailing log lines the worker sent before finishing.
+        with contextlib.suppress(_pyqueue.Empty):
+            while True:
+                kind, payload = q.get_nowait()
+                if kind == "log":
+                    job["log"].append(payload)
+        proc.join(5)
+    finally:
+        state.busy = False
+
+
+def _execute_job_inline(job: dict, files: list[Path], opts: dict) -> None:
+    """Fallback without subprocess (Abbrechen kills nothing here)."""
     writer = _LogWriter(job)
     try:
         with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
@@ -555,8 +642,6 @@ def _execute_job(state: GuiState, job: dict, files: list[Path], opts: dict) -> N
         job["log"].append(f"FEHLER: {exc}")
         job["error"] = str(exc)
         job["state"] = "error"
-    finally:
-        state.busy = False
 
 
 # ------------------------------------------------------------------ handler
@@ -816,6 +901,19 @@ def _make_handler(state: GuiState):
                     target=_execute_job, args=(state, job, files, opts), daemon=True
                 ).start()
                 self._json({"job": job["id"]})
+            elif route == "/api/cancel":
+                try:
+                    job = state.jobs.get(json.loads(body.decode()).get("job", ""))
+                except Exception:
+                    job = None
+                if job is None:
+                    self._json({"error": "unbekannter Job"}, 404)
+                    return
+                if job["state"] != "running":
+                    self._json({"error": "Job läuft nicht mehr"}, 400)
+                    return
+                job["cancel"] = True
+                self._json({"ok": True})
             else:
                 self._send(404, b"not found", "text/plain")
 

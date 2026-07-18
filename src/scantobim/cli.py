@@ -1169,6 +1169,11 @@ def _print_gpu_status(report_extra: dict | None = None) -> None:
         print(f"GPU: {name} — CUDA-Beschleunigung aktiv")
     elif error:
         print(f"GPU: CUDA nicht nutzbar ({error}) — CPU-Modus")
+        low = error.lower()
+        if "driver" in low or "treiber" in low:
+            print("  → Der NVIDIA-Grafiktreiber ist zu alt für CUDA 12. "
+                  "Bitte aktualisieren: https://www.nvidia.de/Download/index.aspx "
+                  "(danach Neustart) — das Programm läuft bis dahin im CPU-Modus.")
     else:
         print("GPU: nicht verfügbar — CPU-Modus "
               "(NVIDIA-Karten: GPU-Version scantobim-windows-x64-gpu.zip)")
