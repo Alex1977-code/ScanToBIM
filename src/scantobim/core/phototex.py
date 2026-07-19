@@ -700,6 +700,18 @@ def bake_photo_atlas(
         f_centers, f_normals, depth_verts, cameras, image_index,
         min_facing, max_used_cameras, signed_facing=signed_facing,
     )
+    if signed_facing and (best_cam < 0).any():
+        # Rueckseiten-Fallback: Flaechen, deren Normale verdreht ist,
+        # fanden auf der Vorzeichen-Seite KEINE Kamera — lieber die beste
+        # Rueckseiten-Kamera als gar keine Textur (beobachtete Regression:
+        # Struktur-Abdeckung fiel von 87% auf 31%).
+        miss = best_cam < 0
+        fb = _assign_cameras(
+            f_centers[miss], f_normals[miss], depth_verts, cameras,
+            image_index, min_facing, max_used_cameras,
+            signed_facing=False,
+        )
+        best_cam[miss] = fb
     # Anti-Schraffur: faces flickering between two near-equal cameras
     # sample the photos at slightly different exposure/parallax — that is
     # the per-face stripe pattern ("Schraffur") on walls and windows.
@@ -816,22 +828,27 @@ def bake_photo_atlas(
                         )
                         photo_pages[p][iy_o, ix_o] = True
 
-    # --- gutter: dilate filled colors so bilinear lookups never bleed grey
+    # Abdeckungs-Statistik VOR der Loch-Fuellung sichern (danach ist
+    # per Definition alles gefuellt).
+    n_filled = sum(int(f.sum()) for f in filled_pages)
+    n_photo = sum(int(p.sum()) for p in photo_pages)
+    # --- Loch-Fuellung: JEDES leere Texel erbt vom naechsten gefuellten.
+    # Die alte 2-Runden-Dilatation liess Chart-Innenloecher als 190-Grau
+    # stehen — im Modell die hellen Sprenkel. EDT-Fill schliesst alles
+    # in einem Pass (exakter naechster Nachbar).
+    from scipy import ndimage
+
     for atlas, filled in zip(atlas_pages, filled_pages):
-        for _ in range(_GUTTER):
-            empty = ~filled
-            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                shifted = np.roll(filled, (dy, dx), axis=(0, 1))
-                src_img = np.roll(atlas, (dy, dx), axis=(0, 1))
-                take = empty & shifted
-                atlas[take] = src_img[take]
-                filled |= take
-                empty = ~filled
+        if filled.all() or not filled.any():
+            continue
+        _, (fi, fj) = ndimage.distance_transform_edt(
+            ~filled, return_indices=True
+        )
+        atlas[:] = atlas[fi, fj]
+        filled[:] = True
 
     textured.textures = atlas_pages
     textured.texture = atlas_pages[0]
-    n_filled = sum(int(f.sum()) for f in filled_pages)
-    n_photo = sum(int(p.sum()) for p in photo_pages)
     if stats_out is not None:
         stats_out["atlas"] = [int(atlas_w), int(atlas_h)]
         stats_out["pages"] = int(n_pages)
