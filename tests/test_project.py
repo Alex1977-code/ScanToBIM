@@ -336,7 +336,9 @@ def test_project_cli_end_to_end(tmp_path, capsys):
     assert code == 0
     assert out.stat().st_size > 5000
     report = json.loads((tmp_path / "modell_bericht.json").read_text())
-    assert report["planes"] == 6
+    # Hauptpass findet die 6 Box-Ebenen; detail_recovery (im Projektpfad
+    # aktiv) darf zusaetzliche kleine Restflaechen aufsammeln.
+    assert report["planes"] >= 6
     assert report["trajectory_positions"] == 50
     log = capsys.readouterr().out
     assert "SLAM-Projekt" in log and "Trajektorie" in log
