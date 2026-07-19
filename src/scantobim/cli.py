@@ -937,6 +937,37 @@ def _cmd_project(args) -> int:
     except Exception as exc:  # noqa: BLE001 — Segmentierung ist ein Bonus
         print(f"  Objekt-/Geländeerkennung übersprungen ({exc})")
 
+    # FREIRAUM-CARVING: Geisterpunkte (SLAM-Doppelwaende, Streifschuss-
+    # Artefakte — das Baumaterial aller Fransen) werden am LiDAR-Sehstrahl
+    # durchschossen und entfernt, BEVOR irgendetwas gemesht wird.
+    if trajectory is not None:
+        try:
+            from scantobim.core.spacecarve import carve_ghost_points
+
+            keep_pts = carve_ghost_points(
+                cloud.points, trajectory, stats_out=scene_stats
+            )
+            fc = scene_stats.get("freiraum_carving", {})
+            if keep_pts is not None and fc.get("entfernt", 0) > 0:
+                cloud = cloud.select(keep_pts)
+                if (
+                    scene_labels is not None
+                    and len(scene_labels) == len(keep_pts)
+                ):
+                    scene_labels = scene_labels[keep_pts]
+                print(
+                    f"  Freiraum-Carving: {fc['entfernt']:,} Geisterpunkte "
+                    f"durchschossen und entfernt "
+                    f"({fc['anteil'] * 100:.1f}% der Wolke, "
+                    f"{fc['ansichten']} Sensor-Ansichten)"
+                )
+        except Exception as exc:  # noqa: BLE001 — Carving ist ein Bonus
+            print(f"  Freiraum-Carving übersprungen ({exc})")
+        finally:
+            from scantobim.core.accel import free_gpu_pool
+
+            free_gpu_pool()
+
     cfg = PipelineConfig.preset(
         args.preset if args.preset != "auto" else "building"
     )
@@ -1490,6 +1521,8 @@ def _cmd_project(args) -> int:
 
     if scene_stats.get("szene"):
         rep["szene"] = scene_stats["szene"]
+    if scene_stats.get("freiraum_carving"):
+        rep["freiraum_carving"] = scene_stats["freiraum_carving"]
     _print_gpu_usage(rep)
     _prog(1.0, "fertig")
     report_path = args.report or output.with_name(output.stem + "_bericht.json")
