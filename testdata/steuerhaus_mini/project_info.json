@@ -1,0 +1,36 @@
+{
+    "device_model": "SHARE SLAM S20",
+    "device_sn": "ES20250812",
+    "lidar_model": "MID-360",
+    "project_name": "steuerhaus_nur_aussen",
+    "create_time": 1773140153,
+    "work_duration": 370.5,
+    "data_size": 4405388221,
+    "left_cam_sn": "CEC05L00002915",
+    "right_cam_sn": "CEC05L00002925",
+    "left_image_count": 374,
+    "right_image_count": 374,
+    "left_shot_count": 374,
+    "right_shot_count": 374,
+    "navi_image_count": 7506,
+    "preview_image_path": "preview_image.jpg",
+    "preview_point_cloud_path": null,
+    "project_finished": true,
+    "app_ver": "2.5.0",
+    "rk_sys_ver": "0.22.1.251222110928",
+    "rk_pkg_ver": "0.28.8",
+    "rk_main_ver": "0.1.16.260128172739",
+    "rk_app_ver": "0.1.41.260206152655",
+    "rk_algo_ver": "3.0.6.260120143509",
+    "location": [
+        53.8193779883,
+        9.0390660558
+    ],
+    "valid_rtk_count": 0,
+    "app_info": {},
+    "human-readable": {
+        "create_time": "2026-03-10 18:55:53",
+        "work_duration": "0h-6m-10s",
+        "data_size": "4.1G"
+    }
+}

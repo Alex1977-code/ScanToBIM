@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<OpticalProperties version="1.0">
+    <Id>0</Id>
+    <Name>x</Name>
+    <Description />
+    <Directory />
+    <ImageDimensions>
+        <Width>3504</Width>
+        <Height>4672</Height>
+    </ImageDimensions>
+    <CameraModelType>Fisheye</CameraModelType>
+    <CameraModelBand>Visible</CameraModelBand>
+    <SensorSize>14.014</SensorSize>
+    <FocalLength>3.55156</FocalLength>
+    <FisheyeFocalMatrix>
+        <M_00>1480.03</M_00>
+        <M_01>1.07495</M_01>
+		<M_10>0</M_10>
+        <M_11>1478.24</M_11>
+    </FisheyeFocalMatrix>
+    <Exif />
+</OpticalProperties>
