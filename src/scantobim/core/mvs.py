@@ -60,8 +60,8 @@ def _stereo_partner_name(name: str) -> str | None:
     return None
 
 
-def _pick_neighbors(ci: int, cameras, centers) -> list[int]:
-    """Stereo partner first (metric baseline), then nearest other view."""
+def _pick_neighbors(ci: int, cameras, centers, k: int = 2) -> list[int]:
+    """Stereo partner first (metric baseline), then nearest other views."""
     cam = cameras[ci]
     out = []
     partner = _stereo_partner_name(cam.name)
@@ -75,10 +75,10 @@ def _pick_neighbors(ci: int, cameras, centers) -> list[int]:
     for cj in out:
         d2[cj] = np.inf
     order = np.argsort(d2)
-    for cj in order[:2]:
+    for cj in order[: max(k * 3, 6)]:
         if np.isfinite(d2[cj]) and 0.005 < d2[cj] < 4.0:
             out.append(int(cj))
-        if len(out) >= 2:
+        if len(out) >= k:
             break
     return out
 
@@ -115,6 +115,7 @@ def _depth_prior(cam, pts_world, shape, scale):
 def _view_points(
     ci, cameras, grays, rgbs, prior, scale, band, steps, patch, rng,
     max_px, dense=False, stride=3, prior_raw=None, max_dev=None,
+    priors=None, best_k=2,
 ):
     """MVS points for one reference view. Returns (world_pts, colors, ncc,
     dev) or None.
@@ -153,6 +154,7 @@ def _view_points(
     neighbors = _pick_neighbors(
         ci, cameras,
         np.array([-c.rotation.T @ c.translation for c in cameras]),
+        k=5,
     )
     neighbors = [cj for cj in neighbors if grays.get(cj) is not None]
     if not neighbors:
@@ -186,15 +188,24 @@ def _view_points(
     r_ref_t = xp.asarray(cam.rotation.T, dtype=xp.float32)
     t_ref = xp.asarray(cam.translation, dtype=xp.float32)
 
-    ncc_sum = xp.zeros((n, steps), dtype=xp.float32)
-    ncc_cnt = xp.zeros((n, steps), dtype=xp.float32)
+    layers = []
     for cj in neighbors:
         nb = cameras[cj]
         gray_n = xp.asarray(grays[cj], dtype=xp.float32)
+        hn, wn = grays[cj].shape
+        nb_scale = wn / nb.width
+        # LiDAR-Konsens-Tiefe der NACHBAR-Ansicht: Hypothesen, die klar
+        # HINTER der dort sichtbaren Oberflaeche liegen, sind fuer diesen
+        # Nachbarn verdeckt — er enthaelt sich, statt die NCC zu ruinieren
+        # (Ursache der 1-5%-Akzeptanz im Dense-Modus).
+        prior_n = None
+        if priors is not None and priors.get(cj) is not None:
+            prior_n = xp.asarray(priors[cj], dtype=xp.float32)
         r_n = xp.asarray(nb.rotation, dtype=xp.float32)
         t_n = xp.asarray(nb.translation, dtype=xp.float32)
         rel_r = r_n @ r_ref_t
         rel_t = t_n - rel_r @ t_ref
+        layer = xp.full((n, steps), -2.0, dtype=xp.float32)
         for k in range(steps):
             z = depths_x[:, k][:, None] / rz_x  # (n, P) scale along ray
             pc_ref = rays_x * z[:, :, None]
@@ -206,19 +217,40 @@ def _view_points(
                 qx, qy = _project_xp(xp, nb, flat)
             vals = _bilinear_xp(
                 xp, gray_n,
-                (qx * scale).reshape(n, p), (qy * scale).reshape(n, p),
+                (qx * nb_scale).reshape(n, p), (qy * nb_scale).reshape(n, p),
             )
-            behind = (flat[:, 2] <= 0.1).reshape(n, p)
-            vals = xp.where(behind, xp.float32(np.nan), vals)
+            invalid = (flat[:, 2] <= 0.1).reshape(n, p)
+            if prior_n is not None:
+                zn = flat[:, 2]
+                gxn = xp.clip((qx * nb_scale).astype(xp.int64), 0, wn - 1)
+                gyn = xp.clip((qy * nb_scale).astype(xp.int64), 0, hn - 1)
+                occl = zn > prior_n[gyn, gxn] + xp.maximum(
+                    xp.float32(0.08), xp.float32(0.05) * zn
+                )
+                invalid = invalid | occl.reshape(n, p)
+            vals = xp.where(invalid, xp.float32(np.nan), vals)
+            valid_frac = 1.0 - xp.isnan(vals).mean(axis=1)
             v_n = vals - xp.nanmean(vals, axis=1, keepdims=True)
             v_n = xp.where(xp.isnan(v_n), xp.float32(0.0), v_n)
             v_std = xp.sqrt((v_n**2).mean(axis=1)) + 1e-4
             ncc = (ref_n_x * v_n).mean(axis=1) / (ref_std_x * v_std)
-            good = xp.isfinite(ncc)
-            ncc_sum[:, k] += xp.where(good, ncc, 0.0)
-            ncc_cnt[:, k] += good.astype(xp.float32)
+            good = xp.isfinite(ncc) & (valid_frac >= 0.6)
+            layer[:, k] = xp.where(good, ncc, xp.float32(-2.0))
+        layers.append(layer)
 
-    ncc = ncc_sum / xp.maximum(ncc_cnt, 1.0)
+    stack = xp.stack(layers)  # (nachbarn, n, steps)
+    if len(layers) > best_k:
+        # COLMAP-Prinzip Best-K: nur die staerksten Nachbarn stuetzen —
+        # ein verdeckter/schraeger Nachbar drueckt den Konsens nicht mehr.
+        stack = xp.sort(stack, axis=0)[::-1][:best_k]
+    valid_l = stack > -1.5
+    cnt_l = valid_l.sum(axis=0)
+    ncc = xp.where(
+        cnt_l > 0,
+        xp.where(valid_l, stack, xp.float32(0.0)).sum(axis=0)
+        / xp.maximum(cnt_l, 1).astype(xp.float32),
+        xp.float32(-1.0),
+    )
     kbest = xp.argmax(ncc, axis=1)
     nb_idx = xp.arange(n)
     best = ncc[nb_idx, kbest]
@@ -350,7 +382,7 @@ def mvs_points(
     needed = set(ref_idx)
     centers = np.array([-c.rotation.T @ c.translation for c in cameras])
     for ci in list(needed):
-        for cj in _pick_neighbors(ci, cameras, centers.copy()):
+        for cj in _pick_neighbors(ci, cameras, centers.copy(), k=5):
             needed.add(cj)
 
     grays: dict[int, np.ndarray] = {}
@@ -376,25 +408,32 @@ def mvs_points(
     with ThreadPoolExecutor(max_workers=12) as pool:
         list(pool.map(_load, sorted(needed)))
 
+    # LiDAR-Prior fuer JEDE geladene Ansicht (auch Nachbarn): Referenzen
+    # brauchen ihn fuer das Suchband, Nachbarn fuer den Verdeckungstest.
+    priors_d: dict[int, np.ndarray] = {}
+    priors_raw: dict[int, np.ndarray] = {}
+    for ci in sorted(needed):
+        if ci not in grays:
+            continue
+        vs = grays[ci].shape[1] / cameras[ci].width
+        gp = _depth_prior(cameras[ci], pts_world, grays[ci].shape, vs)
+        if gp is not None:
+            priors_d[ci], priors_raw[ci] = gp
+
     rng = np.random.default_rng(1)
     all_pts, all_col, all_ncc, all_dev = [], [], [], []
     views_used = 0
     n_candidates = 0
     for ci in ref_idx:
-        if ci not in grays:
+        if ci not in grays or ci not in priors_d:
             continue
         view_scale = grays[ci].shape[1] / cameras[ci].width
-        got_prior = _depth_prior(
-            cameras[ci], pts_world, grays[ci].shape, view_scale
-        )
-        if got_prior is None:
-            continue
-        prior, prior_raw = got_prior
+        prior, prior_raw = priors_d[ci], priors_raw[ci]
         got = _view_points(
             ci, cameras, grays, rgbs, prior, view_scale,
             band, steps, patch, rng, max_px_per_view,
             dense=dense, stride=stride, prior_raw=prior_raw,
-            max_dev=max_dev,
+            max_dev=max_dev, priors=priors_d,
         )
         if got is None:
             continue

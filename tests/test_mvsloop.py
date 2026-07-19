@@ -246,6 +246,52 @@ def test_mvs_dense_covers_full_frame(tmp_path):
     assert 10.0 < dev < 35.0
 
 
+def test_mvs_occluded_neighbor_abstains(tmp_path):
+    """Ein Nachbar blickt gegen einen Verdecker (steht in der Wolke) —
+    frueher zog sein ruinierter NCC den Konsens unter das Gate, jetzt
+    enthaelt er sich (Verdeckungstest) und Best-K nutzt die freien
+    Nachbarn. Die Flaeche dahinter muss trotzdem vermessen werden."""
+    ref = _cam("left/o.jpg", (0.0, 0.0, 0.0))
+    partner = _cam("right/o.jpg", (0.2, 0.0, 0.0))   # verdeckt
+    b1 = _cam("left/p.jpg", (0.0, 0.12, 0.0))
+    b2 = _cam("right/p.jpg", (0.2, 0.12, 0.0))
+    cams = [ref, partner, b1, b2]
+    imap = {}
+    for cam in cams:
+        img = _plane_photo(cam, 2.0, 0.25)
+        if cam is partner:
+            img = img.copy()
+            img[:] = 128  # der Verdecker: texturlos, fuellt sein Bild
+        imap[cam.name] = _save(tmp_path, cam.name, img)
+
+    g = np.arange(-0.9, 0.9, 0.02)
+    xx, yy = np.meshgrid(g, g)
+    far = np.column_stack([xx.ravel(), yy.ravel(), np.full(xx.size, 2.01)])
+    # Verdecker VOR dem Partner (in der Wolke!): sein Prior kennt ihn.
+    go = np.arange(-0.6, 0.6, 0.01)
+    ox, oy = np.meshgrid(go, go)
+    occ = np.column_stack([
+        0.2 + ox.ravel() * 0.5, oy.ravel() * 0.5,
+        np.full(ox.size, 0.45),
+    ])
+    cloud = np.vstack([far, occ])
+
+    from scantobim.core.mvs import mvs_points
+
+    stats: dict = {}
+    got = mvs_points(
+        cams, tmp_path, cloud, image_map=imap, stats_out=stats,
+        scale=1.0, band=0.08, steps=33, dense=True, stride=3,
+        max_px_per_view=120_000,
+    )
+    assert got is not None
+    pts, _ = got
+    far_pts = pts[np.abs(pts[:, 2] - 2.0) < 0.05]
+    assert len(far_pts) > 5_000  # Flaeche hinter dem Verdecker vermessen
+    med_z = float(np.median(far_pts[:, 2]))
+    assert abs(med_z - 2.0) < 0.01
+
+
 def test_photorefine_pulls_spike_onto_photo_surface(tmp_path):
     from scantobim.core.mesh import Mesh
 
