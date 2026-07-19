@@ -1158,6 +1158,32 @@ def _cmd_project(args) -> int:
                 photo_cams = kept_cams
         except Exception as exc:  # noqa: BLE001 — check is best-effort
             print(f"  Kamera-Selbstprüfung übersprungen ({exc})")
+    if photo_cams is not None:
+        # Posen-Feinschliff: die SLAM-Posen sitzen auf ~5 cm — gut genug
+        # für Texturen, zu grob für die MVS-Triangulation. Jede Kamera
+        # wird photometrisch gegen die kolorierte LiDAR-Wolke nachgeführt
+        # (der Scanner hält dabei den Maßstab fest).
+        try:
+            from scantobim.photogrammetry.posefine import (
+                refine_camera_poses,
+            )
+
+            if cloud.colors is not None:
+                n_ref = refine_camera_poses(
+                    _resolve_cameras(photo_cams), project.images_dir,
+                    cloud.points, cloud.colors,
+                    image_map=image_map, stats_out=rep,
+                )
+                pf = rep.get("posen_feinschliff", {})
+                print(
+                    f"Posen-Feinschliff: {n_ref} von "
+                    f"{pf.get('kameras_geprueft', 0)} Kameras "
+                    f"photometrisch nachgeführt (Median "
+                    f"{pf.get('median_korrektur_mm', 0.0)} mm / "
+                    f"{pf.get('median_korrektur_grad', 0.0)}°)"
+                )
+        except Exception as exc:  # noqa: BLE001 — refinement is a bonus
+            print(f"  Posen-Feinschliff übersprungen ({exc})")
     depth_sample = None
     if photo_cams is not None:
         # Dense scene depth for the visibility test on the coarse structure
@@ -1284,6 +1310,7 @@ def _cmd_project(args) -> int:
         _detail_future = _detail_pool.submit(
             _build_detail_mesh, cloud, result,
             getattr(args, "detail_raster", 0.02),
+            photo_cams, image_map, project.images_dir,
         )
     _prog(0.78, "Foto-Textur-Atlas ∥ Detail-Mesh")
     # Photo-realistic texture ATLAS on the complete mesh: full photo
@@ -1650,7 +1677,10 @@ def _fallback_photo_atlas(project, args, cloud, full_viewer, report, output):
     )
 
 
-def _build_detail_mesh(cloud, result, raster: float):
+def _build_detail_mesh(
+    cloud, result, raster: float,
+    photo_cams=None, image_map=None, images_dir=None,
+):
     """High-detail mesh of the BUILDING region (1–2 cm raster).
 
     The overview mesh covers the whole 100-m-class scene at a coarse
@@ -1755,6 +1785,46 @@ def _build_detail_mesh(cloud, result, raster: float):
                 "Strukturebene projiziert (Wände/Dächer plan)"
             )
 
+        # FOTO-GEOMETRIE (MVS): photo-triangulated points in the edge
+        # band, LiDAR-gated — fused into the detail cloud BEFORE meshing
+        # so edges, profiles and hole rims come from the photos where
+        # they out-resolve the LiDAR.
+        if photo_cams is not None:
+            try:
+                from scantobim.core.mvs import mvs_points
+                from scantobim.core.texture import _resolve_cameras
+
+                mvs_stats: dict = {}
+                got = mvs_points(
+                    _resolve_cameras(photo_cams), images_dir, sub.points,
+                    image_map=image_map, stats_out=mvs_stats,
+                )
+                if got is not None:
+                    m_pts, m_col = got
+                    from scantobim.core.cloud import PointCloud as _PC
+
+                    if sub.colors is not None:
+                        col = np.vstack([sub.colors, m_col])
+                    else:
+                        col = None
+                    sub = _PC(
+                        points=np.vstack([sub.points, m_pts]),
+                        colors=col,
+                    )
+                    ms = mvs_stats.get("mvs", {})
+                    print(
+                        f"  Foto-Geometrie (MVS): {ms.get('punkte', 0):,} "
+                        f"Punkte aus {ms.get('ansichten', 0)} Ansichten "
+                        f"triangulieren die Kanten (NCC "
+                        f"{ms.get('ncc_median', 0)}, Abweichung zu LiDAR "
+                        f"{ms.get('abweichung_zu_lidar_mm_median', 0)} mm)"
+                    )
+            except Exception as exc:  # noqa: BLE001 — MVS is a bonus layer
+                print(f"  Foto-Geometrie (MVS) übersprungen ({exc})")
+                mvs_stats = {}
+        else:
+            mvs_stats = {}
+
         detail = freeform_mesh_from_points(
             sub, voxel=float(raster), max_faces=12_000_000
         )
@@ -1773,6 +1843,8 @@ def _build_detail_mesh(cloud, result, raster: float):
         sharpen_mesh_with_planes(
             detail, result.surfaces, detail.freeform_stats["voxel"]
         )
+        if mvs_stats.get("mvs"):
+            detail.freeform_stats["mvs"] = mvs_stats["mvs"]
         detail, boxes = _strip_detail_clutter(detail)
         # Bauteil-Nachbau: every stripped region is re-meshed ON ITS OWN
         # with a finer raster (thin members like railings connect at 1 cm
@@ -1937,12 +2009,18 @@ def _rebuild_elements(sub_cloud, boxes, raster: float):
         if n_in < 2_000:
             continue
         region = sub_cloud.select(inside)
-        try:
-            m = freeform_mesh_from_points(
-                region, voxel=fine, max_faces=1_200_000
-            )
-        except Exception:  # noqa: BLE001 — one bad region must not kill all
-            m = None
+        m = None
+        # Fine first (thin members connect), original raster as fallback
+        # when the local point spacing cannot support the fine voxel.
+        for vox in (fine, float(raster)):
+            try:
+                m = freeform_mesh_from_points(
+                    region, voxel=vox, max_faces=1_200_000
+                )
+            except Exception:  # noqa: BLE001 — bad region must not kill all
+                m = None
+            if m is not None and len(m.faces) >= 150:
+                break
         if m is None or len(m.faces) < 150:
             continue
         m = _drop_speckles(m, min_faces=150)
@@ -2085,6 +2163,209 @@ def _merge_plain(meshes):
     return merged
 
 
+def _close_planar_holes(detail, result, max_diam: float = 1.0) -> int:
+    """Close small mesh holes lying ON a roof plane with a centroid fan.
+
+    Occlusion shadows and thin point coverage punch small holes into the
+    roof skin. Only ROOF surfaces are repaired and only small boundary
+    loops — window openings live in walls and stay untouched (they got
+    glass panes instead)."""
+    roofs = [
+        s for s in result.surfaces
+        if getattr(s, "surface_class", "") == "roof"
+    ]
+    if not roofs:
+        return 0
+    f = detail.faces
+    ea = np.concatenate([f[:, 0], f[:, 1], f[:, 2]])
+    eb = np.concatenate([f[:, 1], f[:, 2], f[:, 0]])
+    n_v = len(detail.vertices)
+    code = np.minimum(ea, eb) * np.int64(n_v) + np.maximum(ea, eb)
+    order = np.argsort(code, kind="stable")
+    cs = code[order]
+    uniq, first = np.unique(cs, return_index=True)
+    counts = np.diff(np.append(first, len(cs)))
+    single = uniq[counts == 1]
+    if not len(single):
+        return 0
+    b_a = (single // n_v).astype(np.int64)
+    b_b = (single % n_v).astype(np.int64)
+    # Walk boundary loops (each boundary vertex has exactly 2 boundary
+    # edges in a clean hole).
+    from collections import defaultdict
+
+    nbr = defaultdict(list)
+    for a, b in zip(b_a, b_b):
+        nbr[int(a)].append(int(b))
+        nbr[int(b)].append(int(a))
+    visited = set()
+    verts = detail.vertices
+    new_v, new_f, new_c = [], [], []
+    base_idx = n_v
+    closed = 0
+    for start in nbr:
+        if start in visited or len(nbr[start]) != 2:
+            continue
+        loop = [start]
+        visited.add(start)
+        cur, prev = nbr[start][0], start
+        broken = False
+        while cur != start:
+            if cur in visited or len(nbr[cur]) != 2 or len(loop) > 300:
+                broken = True
+                break
+            loop.append(cur)
+            visited.add(cur)
+            nxt = nbr[cur][0] if nbr[cur][0] != prev else nbr[cur][1]
+            prev, cur = cur, nxt
+        if broken or len(loop) < 4:
+            continue
+        pts = verts[loop]
+        diam = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        if diam > max_diam:
+            continue
+        on_roof = None
+        for s in roofs:
+            nrm = np.asarray(s.normal, dtype=np.float64)
+            d = np.abs((pts - s.outer[0]) @ nrm)
+            lo_s = s.outer.min(axis=0) - 0.3
+            hi_s = s.outer.max(axis=0) + 0.3
+            inside = np.all((pts >= lo_s) & (pts <= hi_s), axis=1)
+            if (d < 0.06).mean() >= 0.8 and inside.mean() >= 0.8:
+                on_roof = s
+                break
+        if on_roof is None:
+            continue
+        centroid = pts.mean(axis=0)
+        nrm = np.asarray(on_roof.normal, dtype=np.float64)
+        centroid = centroid - float((centroid - on_roof.outer[0]) @ nrm) * nrm
+        ci = base_idx + len(new_v)
+        new_v.append(centroid)
+        if detail.vertex_colors is not None:
+            new_c.append(
+                detail.vertex_colors[loop].mean(axis=0).astype(np.uint8)
+            )
+        k = len(loop)
+        for i in range(k):
+            new_f.append([ci, loop[i], loop[(i + 1) % k]])
+        closed += 1
+    if not closed:
+        return 0
+    detail.vertices = np.vstack([verts, np.array(new_v)])
+    detail.faces = np.vstack([f, np.array(new_f, dtype=f.dtype)])
+    if detail.vertex_colors is not None and new_c:
+        detail.vertex_colors = np.vstack(
+            [detail.vertex_colors, np.array(new_c, dtype=np.uint8)]
+        )
+    stats = getattr(detail, "freeform_stats", None)
+    if stats is not None:
+        stats["triangles"] = int(len(detail.faces))
+        stats["vertices"] = int(len(detail.vertices))
+    return closed
+
+
+def _strip_floaters(detail, max_dist: float = 0.8, max_faces: int = 400):
+    """Remove small components floating in the air far from the model.
+
+    Only TINY components (< ``max_faces`` faces) farther than
+    ``max_dist`` from the main component are dropped — rebuilt elements
+    (railings, masts) are much larger or much closer and stay."""
+    try:
+        from scipy import sparse
+        from scipy.sparse.csgraph import connected_components
+        from scipy.spatial import cKDTree
+
+        faces = detail.faces
+        n_v = len(detail.vertices)
+        rows = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+        cols = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
+        graph = sparse.coo_matrix(
+            (np.ones(len(rows), dtype=np.int8), (rows, cols)),
+            shape=(n_v, n_v),
+        )
+        n_comp, labels = connected_components(graph, directed=False)
+        if n_comp <= 1:
+            return detail, 0
+        face_label = labels[faces[:, 0]]
+        counts = np.bincount(face_label, minlength=n_comp)
+        main = int(np.argmax(counts))
+        main_pts = detail.vertices[labels == main]
+        if len(main_pts) > 200_000:
+            rng = np.random.default_rng(0)
+            main_pts = main_pts[
+                rng.choice(len(main_pts), 200_000, replace=False)
+            ]
+        tree = cKDTree(main_pts)
+        drop_comp = np.zeros(n_comp, dtype=bool)
+        for ci in range(n_comp):
+            if ci == main or counts[ci] == 0 or counts[ci] >= max_faces:
+                continue
+            cv = detail.vertices[labels == ci]
+            d, _ = tree.query(cv, k=1, workers=-1)
+            if float(d.min()) > max_dist:
+                drop_comp[ci] = True
+        if not drop_comp.any():
+            return detail, 0
+        keep_faces = ~drop_comp[face_label]
+        new_faces = faces[keep_faces]
+        used = np.zeros(n_v, dtype=bool)
+        used[new_faces] = True
+        remap = np.cumsum(used) - 1
+        from scantobim.core.mesh import Mesh as _M
+
+        out = _M(
+            vertices=detail.vertices[used],
+            faces=remap[new_faces],
+            vertex_colors=(
+                detail.vertex_colors[used]
+                if detail.vertex_colors is not None else None
+            ),
+        )
+        stats = dict(getattr(detail, "freeform_stats", {}) or {})
+        stats["triangles"] = int(len(out.faces))
+        stats["vertices"] = int(len(out.vertices))
+        out.freeform_stats = stats
+        return out, int(drop_comp.sum())
+    except Exception:  # noqa: BLE001 — cleanup is best-effort
+        return detail, 0
+
+
+def _replace_regions(detail, boxes, sub_cloud, voxel: float):
+    """Cut the faces inside each region out of the mesh and re-mesh the
+    region from the (MVS-augmented) points at half raster.
+
+    The point selection box is the SAME box the faces were cut with, so
+    the rebuilt skin overlaps the cut border by construction — no cracks,
+    the shared photo atlas hides the seam."""
+    cent = detail.vertices[detail.faces].mean(axis=1)
+    kill = np.zeros(len(detail.faces), dtype=bool)
+    for lo, hi in boxes:
+        kill |= np.all((cent >= lo) & (cent <= hi), axis=1)
+    if not kill.any():
+        return detail, 0
+    rebuilt = _rebuild_elements(sub_cloud, boxes, raster=float(voxel))
+    if not rebuilt:
+        return detail, 0
+    keep = detail.faces[~kill]
+    n_v = len(detail.vertices)
+    used = np.zeros(n_v, dtype=bool)
+    used[keep] = True
+    remap = np.cumsum(used) - 1
+    from scantobim.core.mesh import Mesh as _M
+
+    base = _M(
+        vertices=detail.vertices[used],
+        faces=remap[keep],
+        vertex_colors=(
+            detail.vertex_colors[used]
+            if detail.vertex_colors is not None else None
+        ),
+    )
+    base.freeform_stats = dict(getattr(detail, "freeform_stats", {}) or {})
+    merged = _merge_plain([base] + rebuilt)
+    return merged, len(rebuilt)
+
+
 def _write_detail_mesh(
     detail, sub_cloud, photo_cams, images_dir, transform, rep: dict,
     output: Path, result=None, image_map=None,
@@ -2127,6 +2408,57 @@ def _write_detail_mesh(
                     st = {**st, "kanten_fotoabgleich": er_stats}
             except Exception as exc:  # noqa: BLE001 — refinement optional
                 print(f"  Kanten-Fotoabgleich übersprungen ({exc})")
+            # Photokonsistentes Feintuning (RefineMesh-Prinzip): Kanten-
+            # Vertices wandern auf die Fläche, auf der sich die Fotos
+            # einig sind — gekachelt, ±2 cm, nur Krümmungs-Vertices.
+            try:
+                from scantobim.core.photorefine import (
+                    refine_mesh_photoconsistent,
+                )
+
+                pr_stats: dict = {}
+                n_pr = refine_mesh_photoconsistent(
+                    detail, photo_cams, images_dir,
+                    image_map=image_map, stats_out=pr_stats,
+                )
+                if n_pr:
+                    pf = pr_stats.get("photo_feintuning", {})
+                    print(
+                        f"  Photokonsistenz-Feintuning: {n_pr:,} Kanten-"
+                        f"Vertices auf die Foto-Einigung geschoben "
+                        f"(Median "
+                        f"{pf.get('median_verschiebung_mm', 0.0)} mm)"
+                    )
+                    st = {**st, **pr_stats}
+            except Exception as exc:  # noqa: BLE001 — refinement optional
+                print(f"  Photokonsistenz-Feintuning übersprungen ({exc})")
+        if result is not None and result.surfaces:
+            # Dachflächen: kleine Mesh-Löcher (Abschattung, dünne
+            # Punktdichte) werden planar geschlossen — Fenster bleiben
+            # unangetastet (nur Dach-Klassen, nur kleine Ränder).
+            try:
+                n_holes = _close_planar_holes(detail, result)
+                if n_holes:
+                    print(
+                        f"  Dach-Reparatur: {n_holes} kleine Löcher "
+                        "planar geschlossen"
+                    )
+                    st = {**st, "dach_loecher_geschlossen": int(n_holes)}
+            except Exception as exc:  # noqa: BLE001 — repair optional
+                print(f"  Dach-Reparatur übersprungen ({exc})")
+        try:
+            detail, n_float = _strip_floaters(detail)
+            if n_float:
+                print(
+                    f"  Luftraum bereinigt: {n_float} abgelöste "
+                    "Einzelfetzen entfernt"
+                )
+                st = {**detail.freeform_stats,
+                      **{k: v for k, v in st.items()
+                         if k not in detail.freeform_stats},
+                      "luftraum_fetzen_entfernt": int(n_float)}
+        except Exception:  # noqa: BLE001 — cleanup optional
+            pass
         if photo_cams is not None and images_dir is not None:
             try:
                 print("Foto-Textur: Atlas wird auf das Detail-Mesh projiziert …")
@@ -2155,7 +2487,92 @@ def _write_detail_mesh(
                           "Vertex-Farben")
             except Exception as exc:  # noqa: BLE001 — atlas is best-effort
                 print(f"  Detail-Foto-Textur übersprungen ({exc})")
+
+        # RENDER-REGELKREIS: das texturierte Modell wird aus den
+        # Kameraposen gerendert und Kachel für Kachel gegen die
+        # Original-Fotos geprüft (SSIM + Gradienten). Auffällige Regionen
+        # werden automatisch herausgelöst, fein nachgebaut (aus der
+        # MVS-verstärkten Punktwolke) und koordinatengleich wieder
+        # eingesetzt — danach neuer Atlas und Nach-Prüfung.
+        if (
+            photo_cams is not None and images_dir is not None
+            and out_mesh.texture is not None and sub_cloud is not None
+        ):
+            try:
+                from scantobim.core.renderloop import (
+                    hot_face_boxes,
+                    render_feedback,
+                )
+                from scantobim.core.texture import _resolve_cameras as _rc
+
+                rl_cams = _rc(photo_cams)
+                rl_before: dict = {}
+                fb = render_feedback(
+                    out_mesh, rl_cams, images_dir, image_map=image_map,
+                    stats_out=rl_before,
+                )
+                rl_stats = {"vorher": rl_before}
+                if fb is not None:
+                    heat, _scores = fb
+                    print(
+                        f"  Render-Prüfung: {rl_before.get('ansichten', 0)} "
+                        f"Ansichten gerendert — SSIM Median "
+                        f"{rl_before.get('ssim_median', 0)}, p10 "
+                        f"{rl_before.get('ssim_p10', 0)}"
+                    )
+                    raw_boxes = hot_face_boxes(out_mesh, heat)
+                    boxes = _merge_regions(raw_boxes, dilate=0.3, cap=24)
+                    rl_stats["regionen_auffaellig"] = len(boxes)
+                    if boxes:
+                        detail2, n_rep = _replace_regions(
+                            detail, boxes, sub_cloud,
+                            float(st.get("voxel", 0.02)),
+                        )
+                        if n_rep:
+                            print(
+                                f"  Regelkreis: {n_rep} auffällige "
+                                f"Regionen fein nachgebaut und "
+                                "koordinatengleich eingesetzt — "
+                                "Atlas wird neu gebacken …"
+                            )
+                            dx2: dict = {}
+                            textured2 = bake_photo_atlas(
+                                detail2, photo_cams, images_dir,
+                                transform=transform, stats_out=dx2,
+                                max_atlas=8192, max_pages=4,
+                                image_map=image_map,
+                            )
+                            if (
+                                textured2 is not None
+                                and dx2.get("photo_fraction", 0.0) >= 0.15
+                            ):
+                                detail = detail2
+                                out_mesh = textured2
+                                st = {**st, "foto_textur": dx2}
+                            else:
+                                n_rep = 0  # keep the proven textured model
+                            rl_after: dict = {}
+                            fb2 = render_feedback(
+                                out_mesh, rl_cams, images_dir,
+                                image_map=image_map, stats_out=rl_after,
+                                max_views=100,
+                            )
+                            if fb2 is not None:
+                                rl_stats["nachher"] = rl_after
+                                print(
+                                    f"  Render-Nachprüfung: SSIM Median "
+                                    f"{rl_after.get('ssim_median', 0)} "
+                                    f"(vorher "
+                                    f"{rl_before.get('ssim_median', 0)})"
+                                )
+                            rl_stats["regionen_nachgebaut"] = int(n_rep)
+                    st = {**st, "render_regelkreis": rl_stats}
+            except Exception as exc:  # noqa: BLE001 — loop is a bonus
+                print(f"  Render-Regelkreis übersprungen ({exc})")
+
         detail_glb = output.with_name(output.stem + "_detail.glb")
+        st["triangles"] = int(len(detail.faces))
+        st["vertices"] = int(len(detail.vertices))
         write_mesh(out_mesh, detail_glb)
         print(
             f"  Detail-Mesh: {st['triangles']:,} Dreiecke "

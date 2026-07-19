@@ -18,12 +18,12 @@ from pathlib import Path
 
 import numpy as np
 
-_MAX_SHIFT = 0.025  # m — never move an edge further than this
-_SEARCH_PX = 8      # gradient search half-window in pixels
+_MAX_SHIFT = 0.035  # m — never move an edge further than this
+_SEARCH_PX = 12     # gradient search half-window in pixels
 _GRAD_MIN = 10.0    # minimum gradient magnitude (gray levels) to accept
 
 
-def _candidate_edges(surfaces, min_angle_deg: float = 25.0):
+def _candidate_edges(surfaces, min_angle_deg: float = 18.0):
     """Edge segments from pairs of adjacent non-terrain surfaces."""
     edges = []
     usable = [
@@ -62,7 +62,7 @@ def _candidate_edges(surfaces, min_angle_deg: float = 25.0):
                 lateral = np.linalg.norm(
                     rel - np.outer(t, direction), axis=1
                 )
-                near = lateral < 0.4
+                near = lateral < 0.5
                 if int(near.sum()) < 2:
                     near_ok = False
                     break
@@ -71,7 +71,7 @@ def _candidate_edges(surfaces, min_angle_deg: float = 25.0):
                 continue
             t0 = max(ext[0][0], ext[1][0])
             t1 = min(ext[0][1], ext[1][1])
-            if t1 - t0 < 0.4:
+            if t1 - t0 < 0.25:
                 continue
             edges.append({
                 "point": point, "direction": direction,
@@ -158,9 +158,11 @@ def _edge_offset_for_camera(edge, samples, cam, gray) -> np.ndarray | None:
     g0 = g[np.arange(len(km)), km - 1]
     g1 = g[np.arange(len(km)), km]
     g2 = g[np.arange(len(km)), km + 1]
-    denom = np.maximum(g0 - 2 * g1 + g2, 1e-6)
-    sub = 0.5 * (g0 - g2) / denom
-    sub = np.clip(sub, -1.0, 1.0)
+    # Peak parabola: at a maximum the curvature g0-2g1+g2 is NEGATIVE —
+    # clamp on the negative side (a positive clamp flips the direction).
+    den = g0 - 2 * g1 + g2
+    den = np.where(den > -1e-6, -1e-6, den)
+    sub = np.clip(0.5 * (g0 - g2) / den, -1.0, 1.0)
     s_px = (km.astype(np.float64) + 1 + sub) - _SEARCH_PX  # offset in px
     shift_m = np.median(s_px * scale[accept])
     if abs(shift_m) > _MAX_SHIFT:
@@ -175,7 +177,7 @@ def refine_detail_edges(
     images_dir,
     image_map: dict | None = None,
     stats_out: dict | None = None,
-    max_photos: int = 24,
+    max_photos: int = 40,
 ) -> int:
     """Refine detail-mesh edges against the photos; returns edges moved."""
     try:
@@ -219,7 +221,7 @@ def refine_detail_edges(
         samples = edge["point"] + ts[:, None] * edge["direction"]
         mid = samples[len(samples) // 2]
         d2 = np.einsum("ij,ij->i", centers - mid, centers - mid)
-        order = np.argsort(d2)[:6]
+        order = np.argsort(d2)[:10]
         offsets = []
         for ci in order:
             gray = _gray_for(int(ci))

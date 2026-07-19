@@ -124,3 +124,72 @@ def test_merge_plain_concatenates_and_fills_colors():
     assert np.all(merged.vertex_colors[: len(v1)] == 90)
     assert np.all(merged.vertex_colors[len(v1):] == 180)
     assert merged.freeform_stats["triangles"] == len(merged.faces)
+
+
+def test_close_planar_holes_on_roof():
+    n = 15
+    v, f = _grid(n, 1.0)
+    center = (n // 2) * n + n // 2
+    keep = ~np.any(f == center, axis=1)
+    mesh = Mesh(vertices=v, faces=f[keep])
+    mesh.freeform_stats = {"voxel": 0.02}
+    roof = SimpleNamespace(
+        surface_class="roof",
+        normal=np.array([0.0, 0.0, 1.0]),
+        outer=np.array(
+            [[-1.2, -1.2, 0.0], [1.2, -1.2, 0.0],
+             [1.2, 1.2, 0.0], [-1.2, 1.2, 0.0]]
+        ),
+        holes=[],
+    )
+    from scantobim.cli import _close_planar_holes
+
+    before = len(mesh.faces)
+    closed = _close_planar_holes(
+        mesh, SimpleNamespace(surfaces=[roof])
+    )
+    assert closed == 1
+    assert len(mesh.faces) > before  # fan filled the hole
+
+
+def test_strip_floaters_removes_far_fragments():
+    v1, f1 = _grid(21, 1.0)  # main: 800 faces
+    far = np.array([[5.0, 5.0, 5.0], [5.1, 5.0, 5.0], [5.0, 5.1, 5.0]])
+    near = np.array([[1.2, 0.0, 0.0], [1.3, 0.0, 0.0], [1.2, 0.1, 0.0]])
+    tri = np.array([[0, 1, 2]], dtype=np.int64)
+    mesh = Mesh(
+        vertices=np.vstack([v1, far, near]),
+        faces=np.vstack([f1, tri + len(v1), tri + len(v1) + 3]),
+    )
+    mesh.freeform_stats = {"voxel": 0.02}
+    from scantobim.cli import _strip_floaters
+
+    out, n_removed = _strip_floaters(mesh)
+    assert n_removed == 1  # far fragment gone, near one keeps its place
+    assert len(out.faces) == len(f1) + 1
+
+
+def test_replace_regions_rebuilds_corrupt_patch():
+    v, f = _grid(31, 1.0)
+    corrupt = (np.abs(v[:, 0]) < 0.4) & (np.abs(v[:, 1]) < 0.4)
+    v = v.copy()
+    v[corrupt, 2] = 0.3  # frayed zone bulges 30 cm out of the plane
+    mesh = Mesh(vertices=v, faces=f)
+    mesh.freeform_stats = {"voxel": 0.02}
+    rng = np.random.default_rng(0)
+    g = np.linspace(-0.5, 0.5, 71)
+    xx, yy = np.meshgrid(g, g)
+    sub = PointCloud(points=np.column_stack(
+        [xx.ravel(), yy.ravel(), rng.normal(0.0, 0.002, xx.size)]
+    ))
+    boxes = [(np.array([-0.5, -0.5, -0.3]), np.array([0.5, 0.5, 0.4]))]
+    from scantobim.cli import _replace_regions
+
+    merged, n_rep = _replace_regions(mesh, boxes, sub, 0.02)
+    assert n_rep == 1
+    cent = merged.vertices[merged.faces].mean(axis=1)
+    inside = np.all(
+        (cent >= boxes[0][0]) & (cent <= boxes[0][1]), axis=1
+    )
+    assert inside.any()
+    assert float(np.abs(cent[inside][:, 2]).max()) < 0.1  # bulge replaced

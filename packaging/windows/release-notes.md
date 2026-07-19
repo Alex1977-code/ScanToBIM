@@ -4,6 +4,17 @@
 
 > SmartScreen-Hinweis beim ersten Start (Datei ist nicht code-signiert): *Weitere Informationen → Trotzdem ausführen*.
 
+### Neu in 3.23.0 — Foto-Geometrie (MVS), Posen-Feinschliff und Render-Regelkreis
+
+Die neue Stufe: Aus den Fotos wird jetzt GEOMETRIE berechnet, mit dem LiDAR fusioniert, und das fertige Modell prüft sich selbst aus allen Kameraperspektiven.
+
+- **Posen-Feinschliff**: 5,1 cm Posen-Residuum reicht für Texturen, nicht für Triangulation. Jede Kamera wird photometrisch gegen die kolorierte LiDAR-Wolke nachgeführt (SE(3)-Optimierung, robuste Verlustfunktion, Skala bleibt vom Scanner verankert). Im Bericht: `posen_feinschliff` mit Korrektur-Medianen und Residuum vorher/nachher.
+- **Foto-Geometrie (MVS)**: PatchMatch-artige Tiefensuche, nativ in CUDA (CuPy, CPU-Fallback) statt externem COLMAP/OpenMVS — die LiDAR-Oberfläche liefert den metrischen Tiefen-Prior, gesucht wird nur im ±12-cm-Band (schneller UND robuster als blindes PatchMatch), Stereo-Partner links/rechts zuerst. Direkt auf den Fisheye-Bildern über die exakte Strahl-Rückprojektion — kein verlustbehaftetes Pinhole-Resampling nötig. **LiDAR-Abgleich**: > 5 cm neben der LiDAR-Fläche wird verworfen, AUSSER die Foto-Konsistenz ist stark (NCC ≥ 0,75) — das Kantenband, wo die Fotos das LiDAR echt überbieten. Die MVS-Punkte fließen VOR dem Meshing in die Detail-Wolke ein (`mvs` im Bericht).
+- **Photokonsistentes Feintuning** (RefineMesh-Prinzip, gekachelt): Krümmungs-Vertices (Kanten, Profile) wandern entlang ihrer Normale auf die Position, an der kleine Flächen-Patches in allen beobachtenden Fotos übereinstimmen (±2 cm, Verschiebungsfeld über die Nachbarschaft geglättet — keine Spikes). Flache, ebnen-projizierte Wände bleiben unangetastet.
+- **Render-Regelkreis**: Das texturierte Modell wird aus bis zu 240 Kameraposen gerendert und Kachel für Kachel gegen die Original-Fotos geprüft (SSIM + Gradienten-Abstand). Auffällige Regionen (zerfranste Unterseite, ungenaue Zonen) werden automatisch herausgeschnitten, aus der MVS-verstärkten Wolke fein nachgebaut, koordinatengleich eingesetzt, der Atlas neu gebacken und nachgeprüft. SSIM-Verteilung vorher/nachher steht in `render_regelkreis` im Bericht.
+- **Bekannte Problemzonen**: Dachflächen — kleine Mesh-Löcher werden planar geschlossen (nur Dach-Klassen, Fenster bleiben Öffnungen mit Glasscheiben); abgelöste Einzelfetzen im Luftraum werden entfernt; die zerfranste Auskragung fängt der Regelkreis.
+- **Kantenabgleich ausgeweitet** (stand bei 15 Kandidaten / 4 nachjustiert): Winkel ab 18° statt 25°, kürzere Kanten ab 25 cm, größeres Suchfenster (±12 px), mehr Kameras pro Kante, Verschiebung bis 3,5 cm. Dazu ein echter Fix: die Subpixel-Parabel hatte ein geklemmtes Vorzeichen und konnte in die falsche Richtung springen — behoben (gilt auch fürs MVS und das Feintuning).
+
 ### Neu in 3.22.0 — Bauteil-Nachbau: verworfene Elemente einzeln fein nachvernetzt, Fensterscheiben, Schraffur-Glättung
 
 Der 3.21-Lauf hat die Fototextur bestätigt — jetzt geht es an die gemeldeten Restpunkte: raue Fenster mit Schraffur und die aus der Detailansicht verworfenen Kleinelemente (Geländer, Masten, Anbauten).

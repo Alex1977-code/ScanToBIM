@@ -105,6 +105,50 @@ class CameraPose:
             xn, yn = xn * factor, yn * factor
         return self.fx * xn + self.cx, self.fy * yn + self.cy
 
+    def unproject(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
+        """Unit view rays (camera frame) for pixel coordinates.
+
+        Exact inverse of :meth:`project` — for POLYFISHEYE the polynomial
+        ``r(θ)`` is inverted via a monotone lookup table. This makes MVS
+        possible directly on the fisheye images, without the lossy detour
+        of resampling them into virtual pinhole views.
+        """
+        px = np.asarray(px, dtype=np.float64)
+        py = np.asarray(py, dtype=np.float64)
+        if self.model == "POLYFISHEYE" and self.poly:
+            my = (py - self.cy) / self.fy
+            mx = (px - self.cx - self.a12 * my) / self.fx
+            r = np.sqrt(mx * mx + my * my)
+            theta_t = np.linspace(
+                0.0, np.deg2rad(self.max_theta_deg), 512
+            )
+            r_t = theta_t.copy()
+            tp = theta_t.copy()
+            for k in self.poly:
+                tp = tp * theta_t
+                r_t = r_t + k * tp
+            # r(θ) must be monotone on the table for interp to be exact.
+            cut = np.flatnonzero(np.diff(r_t) <= 0)
+            if len(cut):
+                theta_t, r_t = theta_t[: cut[0] + 1], r_t[: cut[0] + 1]
+            theta = np.interp(r, r_t, theta_t)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ux = np.where(r > 1e-12, mx / r, 0.0)
+                uy = np.where(r > 1e-12, my / r, 0.0)
+            st = np.sin(theta)
+            rays = np.column_stack([st * ux, st * uy, np.cos(theta)])
+            return rays
+        xn = (px - self.cx) / self.fx
+        yn = (py - self.cy) / self.fy
+        if self.k1 != 0.0:
+            for _ in range(3):  # fixed-point undistortion (k1 is small)
+                r2 = xn * xn + yn * yn
+                f = 1.0 + self.k1 * r2
+                xn = (px - self.cx) / self.fx / np.maximum(f, 1e-9)
+                yn = (py - self.cy) / self.fy / np.maximum(f, 1e-9)
+        rays = np.column_stack([xn, yn, np.ones_like(xn)])
+        return rays / np.linalg.norm(rays, axis=1, keepdims=True)
+
 
 def read_colmap_model(model_dir: str | Path) -> list[CameraPose]:
     """Read a COLMAP model — text or binary, direct or in a known subfolder.
