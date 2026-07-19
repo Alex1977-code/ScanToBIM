@@ -217,6 +217,7 @@ def _assign_cameras(
     image_index,
     min_facing: float,
     max_used_cameras: int,
+    signed_facing: bool = False,
 ):
     """Best photo per face: facing/d² score + z-buffer visibility.
 
@@ -235,19 +236,19 @@ def _assign_cameras(
         try:
             return _assign_cameras_xp(
                 cp, centers, normals, verts, cameras, image_index,
-                min_facing, max_used_cameras,
+                min_facing, max_used_cameras, signed_facing,
             )
         except Exception:  # noqa: BLE001 — any GPU hiccup → CPU fallback
             pass
     return _assign_cameras_xp(
         np, centers, normals, verts, cameras, image_index,
-        min_facing, max_used_cameras,
+        min_facing, max_used_cameras, signed_facing,
     )
 
 
 def _assign_cameras_xp(
     xp, centers, normals, verts, cameras, image_index,
-    min_facing, max_used_cameras,
+    min_facing, max_used_cameras, signed_facing=False,
 ):
     from pathlib import Path
 
@@ -289,9 +290,14 @@ def _assign_cameras_xp(
         cam_center = -cam.rotation.T @ cam.translation
         view = xp.asarray(cam_center, dtype=dtype)[None, :] - centers
         d2 = (view * view).sum(axis=1)
-        facing = xp.abs((normals * view).sum(axis=1)) / xp.sqrt(
+        facing = (normals * view).sum(axis=1) / xp.sqrt(
             xp.maximum(d2, 1e-12)
         )
+        if not signed_facing:
+            # Geschlossene Meshes: beide Seiten zulassen, Z-Buffer regelt.
+            # Dickenlose Strukturflaechen brauchen das VORZEICHEN, sonst
+            # texturiert eine Kamera von hinten durch die Wand.
+            facing = xp.abs(facing)
         ok = (
             in_front
             & (px >= 0) & (px <= cam.width - 1)
@@ -541,6 +547,7 @@ def bake_photo_atlas(
     depth_points: np.ndarray | None = None,
     max_pages: int = 1,
     image_map: dict | None = None,
+    signed_facing: bool = False,
 ) -> Mesh | None:
     """Bake a full-resolution photo texture atlas onto ``mesh``.
 
@@ -691,7 +698,7 @@ def bake_photo_atlas(
         depth_verts = np.vstack([v_scan, dp_scan])
     best_cam = _assign_cameras(
         f_centers, f_normals, depth_verts, cameras, image_index,
-        min_facing, max_used_cameras,
+        min_facing, max_used_cameras, signed_facing=signed_facing,
     )
     # Anti-Schraffur: faces flickering between two near-equal cameras
     # sample the photos at slightly different exposure/parallax — that is

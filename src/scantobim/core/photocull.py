@@ -206,6 +206,7 @@ def cull_ghost_faces(
 
     refutes = np.zeros(len(faces), dtype=np.int16)
     confirms = np.zeros(len(faces), dtype=np.int16)
+    no_support = np.zeros(len(faces), dtype=np.int16)
     offs = np.arange(-patch, patch + 1)
     dgx, dgy = np.meshgrid(offs, offs)
     dgx, dgy = dgx.ravel(), dgy.ravel()
@@ -330,10 +331,23 @@ def cull_ghost_faces(
             & (best - at_face >= _MARGIN_GAIN)
         )
         confirm = (at_face >= _NCC_CONFIRM) | (dev <= _DEV_CONFIRM)
+        # Kein Foto-Konsens NIRGENDS auf dem Sehstrahl: die Signatur der
+        # Himmels-Fransen — hinter ihnen liegt keine Flaeche, die die
+        # Fotos "stattdessen" sehen koennten, also kann der Widerlegungs-
+        # Pfad sie nie treffen.
+        nosup = best < 0.35
         refutes[sel[refute]] += 1
         confirms[sel[confirm & ~refute]] += 1
+        no_support[sel[nosup & ~confirm & ~refute]] += 1
 
     kill = (refutes >= min_refutes) & (confirms == 0)
+    # Zweiter Pfad: EXTREM chaotische Dreiecke (Konfetti, mittleres
+    # Nachbar-|dot| < 0.35 — echte Waende/Daecher sind glatt und nie in
+    # dieser Klasse) ohne jede Foto-Unterstuetzung in >= 3 Ansichten.
+    extreme = chaos_prio[np.arange(len(faces))] < 0.35 if len(
+        chaos_prio
+    ) == len(faces) else np.zeros(len(faces), dtype=bool)
+    kill |= extreme & (no_support >= 3) & (confirms == 0)
     keep = ~kill
     keep = _drop_small_components(faces, keep)
     n_removed = int((~keep).sum())

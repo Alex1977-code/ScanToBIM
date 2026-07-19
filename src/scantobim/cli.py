@@ -946,6 +946,10 @@ def _cmd_project(args) -> int:
     # Real structures carry round members (pipes, columns, arches) — detect
     # them by default so curved parts become regular geometry, not blobs.
     cfg.cylinder_detection = True
+    # Mehr Flächen im Strukturmodell: der feine Zweitpass findet
+    # Fensterlaibungen, Gesimse und Nischen, die der Hauptpass wegen
+    # seiner Größenschwelle überspringt.
+    cfg.detail_recovery = True
     if source != "slam" and project.trajectory is not None:
         print(
             f"  ACHTUNG: Quelle '{source}' bei einem SLAM-Projekt — empfohlen "
@@ -1268,10 +1272,15 @@ def _cmd_project(args) -> int:
                 _, nn = cKDTree(pts_model).query(base.vertices, k=1, workers=-1)
                 base.vertex_colors = cloud.colors[idx][nn]
             st_stats: dict = {}
+            # signed_facing: Strukturflaechen sind dickenlos — ohne
+            # Vorzeichen texturiert eine Innenhof-Kamera die Aussenwand
+            # durch die Wand hindurch (falsch zugeordnete Texturen).
+            # 2 Atlas-Seiten: feineres Texel fuer die grossen Flaechen.
             textured = bake_photo_atlas(
                 base, photo_cams, project.images_dir,
                 transform=transform, stats_out=st_stats,
                 depth_points=depth_sample, image_map=image_map,
+                signed_facing=True, max_pages=2,
             )
             frac = (
                 st_stats.get("photo_fraction", 0.0)
