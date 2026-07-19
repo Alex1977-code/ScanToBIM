@@ -222,6 +222,48 @@ def test_photorefine_pulls_spike_onto_photo_surface(tmp_path):
     assert abs(float(mesh.vertices[spike, 2])) < 0.004
 
 
+def test_bilateral_smooth_flattens_noise_keeps_edges():
+    from scantobim.core.mesh import Mesh
+    from scantobim.core.photorefine import bilateral_smooth_mesh
+
+    rng = np.random.default_rng(1)
+    n = 61
+    g = np.linspace(0.0, 3.0, n)
+    xx, yy = np.meshgrid(g, g)
+    # L-profile: horizontal plane, bent up 90 degrees at y = 1.5.
+    y = yy.copy()
+    z = np.zeros_like(yy)
+    bend = yy > 1.5
+    y[bend] = 1.5
+    z[bend] = yy[bend] - 1.5
+    verts = np.column_stack([xx.ravel(), y.ravel(), z.ravel()])
+    noise = rng.normal(0.0, 0.004, len(verts))
+    flat_part = ~bend.ravel()
+    verts[flat_part, 2] += noise[flat_part]  # ripple only on the flat part
+    idx = lambda i, j: i * n + j  # noqa: E731
+    faces = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            faces.append([idx(i, j), idx(i + 1, j), idx(i + 1, j + 1)])
+            faces.append([idx(i, j), idx(i + 1, j + 1), idx(i, j + 1)])
+    mesh = Mesh(vertices=verts, faces=np.asarray(faces, dtype=np.int64))
+
+    interior = flat_part & (verts[:, 1] > 0.2) & (verts[:, 1] < 1.2)
+    std_before = float(verts[interior, 2].std())
+    crease = np.isclose(y.ravel(), 1.5) & np.isclose(z.ravel(), 0.0, atol=1e-9)
+    crease_before = verts[crease].copy()
+    stats: dict = {}
+    bilateral_smooth_mesh(mesh, stats_out=stats)
+    std_after = float(mesh.vertices[interior, 2].std())
+    assert std_after < std_before * 0.5  # ripple halved at least
+    # The 90-degree crease must not round off.
+    crease_move = np.linalg.norm(
+        mesh.vertices[crease] - crease_before, axis=1
+    )
+    assert float(crease_move.max()) < 0.004
+    assert stats["glaettung"]["mittlere_bewegung_mm"] > 0
+
+
 def test_render_feedback_flags_wrong_region(tmp_path):
     from scantobim.core.mesh import Mesh
     from scantobim.core.renderloop import hot_face_boxes, render_feedback

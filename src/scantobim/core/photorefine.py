@@ -6,11 +6,15 @@ reproject CONSISTENTLY into all observing photos (pairwise NCC).
 Where the LiDAR smears an edge or a profile by a centimeter, the photos
 agree only at the true surface — the vertex slides there.
 
-Only high-curvature vertices are refined (edges, profiles, rims — flat
-walls are already plane-projected and must not pick up photo noise),
-the search is capped at ±2 cm, and the shift field is smoothed over the
-mesh neighborhood so no vertex spikes out of its surroundings.
-Processing is tiled to bound memory on large meshes.
+By default EVERY vertex with photo coverage is refined — the NCC gates
+(absolute consistency + improvement over the current position) mean
+textureless or badly observed patches simply do not move, so flat
+plane-projected walls pick up no photo noise while brick relief,
+terrain and roof surfaces slide off the voxel ripple onto the real
+surface. The search is capped at ±2 cm, the shift field is smoothed
+over the mesh neighborhood, and processing is tiled to bound memory.
+``bilateral_smooth_mesh`` afterwards removes the remaining voxel noise
+edge-preservingly (normal-filter + vertex fit — corners stay sharp).
 """
 
 from __future__ import annotations
@@ -66,14 +70,16 @@ def refine_mesh_photoconsistent(
     images_dir,
     image_map: dict | None = None,
     stats_out: dict | None = None,
-    max_vertices: int = 200_000,
+    max_vertices: int = 1_500_000,
     scale: float = 0.3,
     tile_size: int = 30_000,
     max_photos: int = 48,
+    all_vertices: bool = True,
 ) -> int:
-    """Move edge vertices onto the photo-consistent surface (in place).
+    """Move vertices onto the photo-consistent surface (in place).
 
-    Returns the number of vertices adjusted.
+    Returns the number of vertices adjusted. ``all_vertices=False``
+    restores the old edges-only behavior (curvature > 0.05).
     """
     try:
         from PIL import Image
@@ -87,10 +93,15 @@ def refine_mesh_photoconsistent(
     index = dict(image_map) if image_map else _index_images(Path(images_dir))
     v = mesh.vertices
     normals, curvature = _vertex_normals_and_curvature(mesh)
-    cand = np.flatnonzero(curvature > 0.05)
+    cand = (
+        np.arange(len(v))
+        if all_vertices
+        else np.flatnonzero(curvature > 0.05)
+    )
     if not len(cand):
         return 0
     if len(cand) > max_vertices:
+        # Edges and profiles first when the budget forces a choice.
         order = np.argsort(curvature[cand])[::-1]
         cand = cand[order[:max_vertices]]
     cand = np.sort(cand)
@@ -235,7 +246,10 @@ def refine_mesh_photoconsistent(
         np.add.at(nb_sum, ea, shift[eb])
         np.add.at(nb_cnt, ea, 1.0)
         nb_mean = nb_sum / np.maximum(nb_cnt, 1.0)
-        shift = np.where(adjusted, 0.7 * shift + 0.3 * nb_mean,
+        # Since every vertex is measured, a neighbor's ~0 shift is REAL
+        # information, not a gap to diffuse into — the own measurement
+        # keeps the upper hand (0.85), diffusion only rounds outliers.
+        shift = np.where(adjusted, 0.85 * shift + 0.15 * nb_mean,
                          0.5 * nb_mean)
     v += normals * shift[:, None]
     if stats_out is not None:
@@ -245,3 +259,74 @@ def refine_mesh_photoconsistent(
             "median_verschiebung_mm": round(float(np.median(moved_mm)), 1),
         }
     return n_adj
+
+
+def bilateral_smooth_mesh(
+    mesh,
+    iterations: int = 8,
+    sigma: float = 0.25,
+    stats_out: dict | None = None,
+) -> float:
+    """Edge-preserving mesh smoothing (bilateral normal filter, in place).
+
+    Voxel meshing leaves a ripple at voxel scale even on surfaces that
+    are physically smooth. Laplacian smoothing would kill it but rounds
+    every corner. Here the FACE NORMALS are filtered bilaterally first
+    (a neighbor only contributes when its normal is similar — across a
+    real edge the weight vanishes, so corners stay), then every vertex
+    moves toward the planes its filtered faces define. Returns the mean
+    vertex displacement in meters (diagnostic).
+    """
+    v, f = mesh.vertices, mesh.faces
+    if len(f) == 0:
+        return 0.0
+    # Face adjacency over shared edges (built once).
+    n_v = int(f.max()) + 1
+    ea = np.concatenate([f[:, 0], f[:, 1], f[:, 2]])
+    eb = np.concatenate([f[:, 1], f[:, 2], f[:, 0]])
+    codes = np.minimum(ea, eb) * n_v + np.maximum(ea, eb)
+    face_of = np.tile(np.arange(len(f), dtype=np.int64), 3)
+    order = np.argsort(codes, kind="stable")
+    codes_s, face_s = codes[order], face_of[order]
+    same = codes_s[1:] == codes_s[:-1]
+    fa, fb = face_s[:-1][same], face_s[1:][same]
+    total_move = 0.0
+    for _ in range(max(1, int(iterations))):
+        fn = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+        fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+        # Bilateral normal filter: similar neighbors pull, edges do not.
+        dot = np.einsum("ij,ij->i", fn[fa], fn[fb])
+        w = np.exp(-((1.0 - dot) ** 2) / (2.0 * sigma**2))
+        acc = fn.copy()
+        np.add.at(acc, fa, fn[fb] * w[:, None])
+        np.add.at(acc, fb, fn[fa] * w[:, None])
+        acc /= np.maximum(np.linalg.norm(acc, axis=1, keepdims=True), 1e-12)
+        # Vertex fit: move each vertex toward its faces' filtered planes.
+        # Crease vertices (adjacent normals disagree) are damped — their
+        # neighbors' noisy planes must not drag the corner around.
+        cent = v[f].mean(axis=1)
+        upd = np.zeros_like(v)
+        cnt = np.zeros(len(v))
+        n_acc = np.zeros_like(v)
+        for k in range(3):
+            d = np.einsum(
+                "ij,ij->i", acc, cent - v[f[:, k]]
+            )
+            np.add.at(upd, f[:, k], acc * d[:, None])
+            np.add.at(cnt, f[:, k], 1.0)
+            np.add.at(n_acc, f[:, k], acc)
+        crease = 1.0 - (
+            np.linalg.norm(n_acc, axis=1) / np.maximum(cnt, 1.0)
+        )
+        damp = np.clip(1.0 - 5.0 * crease, 0.05, 1.0)
+        step = (
+            upd / np.maximum(cnt, 1.0)[:, None] * 0.7 * damp[:, None]
+        )
+        total_move += float(np.linalg.norm(step, axis=1).mean())
+        v += step
+    if stats_out is not None:
+        stats_out["glaettung"] = {
+            "iterationen": int(iterations),
+            "mittlere_bewegung_mm": round(total_move * 1000.0, 2),
+        }
+    return total_move

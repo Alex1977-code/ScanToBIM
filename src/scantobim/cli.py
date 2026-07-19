@@ -2497,6 +2497,24 @@ def _write_detail_mesh(
                 from scantobim.core.accel import free_gpu_pool
 
                 free_gpu_pool()
+        # Kantenerhaltende Glättung: entfernt die Voxel-Welligkeit auf
+        # physisch glatten Flächen, ohne Ecken/Profile abzurunden
+        # (bilateraler Normalenfilter + Vertex-Fit).
+        try:
+            from scantobim.core.photorefine import bilateral_smooth_mesh
+
+            sm_stats: dict = {}
+            bilateral_smooth_mesh(detail, stats_out=sm_stats)
+            mm_mov = sm_stats.get("glaettung", {}).get(
+                "mittlere_bewegung_mm", 0
+            )
+            print(
+                f"  Kantenerhaltende Glättung: mittlere Vertex-Bewegung "
+                f"{mm_mov} mm"
+            )
+            st = {**st, **sm_stats}
+        except Exception as exc:  # noqa: BLE001 — smoothing optional
+            print(f"  Glättung übersprungen ({exc})")
         if result is not None and result.surfaces:
             # Dachflächen: kleine Mesh-Löcher (Abschattung, dünne
             # Punktdichte) werden planar geschlossen — Fenster bleiben
