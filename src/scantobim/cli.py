@@ -1897,6 +1897,7 @@ def _build_detail_mesh(
                     image_map=image_map, stats_out=mvs_stats,
                     dense=True, scale=0.45, stride=2,
                     max_px_per_view=90_000, max_points=6_000_000,
+                    max_dev=0.035,
                 )
                 if got is not None:
                     m_pts, m_col = got
@@ -2498,6 +2499,32 @@ def _write_detail_mesh(
             and result is not None
             and result.surfaces
         ):
+            # FOTO-VERIFIKATION: Geister-Dreiecke (Fransen an Dachraendern,
+            # Haube, Unterseiten) werden am Sehstrahl widerlegt — sagen
+            # >= 2 Kameras uebereinstimmend, die fotokonsistente Flaeche
+            # liege deutlich woanders, fliegt das Dreieck raus.
+            try:
+                from scantobim.core.photocull import cull_ghost_faces
+
+                pv_stats: dict = {}
+                n_cull = cull_ghost_faces(
+                    detail, photo_cams, images_dir,
+                    image_map=image_map, stats_out=pv_stats,
+                )
+                if n_cull:
+                    print(
+                        f"  Foto-Verifikation: {n_cull:,} widerlegte "
+                        "Fransen-Dreiecke entfernt "
+                        f"({pv_stats['foto_verifikation']['kandidaten']:,} "
+                        "Rand-Kandidaten geprüft)"
+                    )
+                    st = {**st, **pv_stats}
+            except Exception as exc:  # noqa: BLE001 — culling optional
+                print(f"  Foto-Verifikation übersprungen ({exc})")
+            finally:
+                from scantobim.core.accel import free_gpu_pool
+
+                free_gpu_pool()
             # Kanten-Fotoabgleich: die Fotos lösen 3-5 mm auf — Kanten des
             # Detail-Mesh werden an den Bild-Gradienten nachjustiert,
             # BEVOR der Atlas gebacken wird. Die vermessenen Ebenen

@@ -114,7 +114,7 @@ def _depth_prior(cam, pts_world, shape, scale):
 
 def _view_points(
     ci, cameras, grays, rgbs, prior, scale, band, steps, patch, rng,
-    max_px, dense=False, stride=3, prior_raw=None,
+    max_px, dense=False, stride=3, prior_raw=None, max_dev=None,
 ):
     """MVS points for one reference view. Returns (world_pts, colors, ncc,
     dev) or None.
@@ -244,6 +244,12 @@ def _view_points(
     accept = (best >= _NCC_MIN) & (
         (dev <= _LIDAR_GATE) | (best >= _NCC_STRONG)
     )
+    if max_dev is not None:
+        # FUSION gate: without an occlusion test, a strong NCC far from
+        # the LiDAR is more often an occluded mismatch than real detail —
+        # those floating points bloat the voxel surface and coarsen the
+        # raster. Only surface-CONFIRMING points may fuse.
+        accept &= dev <= max_dev
     if not accept.any():
         return None
     # Statistics against the RAW (un-dilated) prior where one exists —
@@ -309,6 +315,7 @@ def mvs_points(
     max_points: int = 3_000_000,
     dense: bool = False,
     stride: int = 3,
+    max_dev: float | None = None,
 ):
     """Photo-triangulated 3D points, LiDAR-gated.
 
@@ -387,6 +394,7 @@ def mvs_points(
             ci, cameras, grays, rgbs, prior, view_scale,
             band, steps, patch, rng, max_px_per_view,
             dense=dense, stride=stride, prior_raw=prior_raw,
+            max_dev=max_dev,
         )
         if got is None:
             continue
