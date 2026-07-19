@@ -35,17 +35,22 @@ _MARGIN_GAIN = 0.15   # Best-NCC muss die Ist-Position klar schlagen
 
 
 def _candidate_faces(
-    mesh, rings: int = 3, chaos_dot: float = 0.80
-) -> np.ndarray:
+    mesh, rings: int = 1, chaos_dot: float = 0.55, cap: int = 900_000
+):
     """Fransen-Kandidaten: offene Raender UND Normalen-Chaos-Zonen.
 
     Voxel-Meshes sind fast geschlossen — der Konfetti-Franz besteht aus
     DUENNEN GESCHLOSSENEN Schlaeuchen ohne offene Kanten (beobachtet:
     nur 793 Rand-Kandidaten auf einem 4-Mio-Dreiecke-Mesh). Sein
     verlaessliches Kennzeichen ist das Normalen-Chaos: benachbarte
-    Dreiecke zeigen in wild verschiedene Richtungen, waehrend Waende,
-    Daecher und selbst Ziegelrelief lokal einig sind. Kandidat ist, wer
-    zu einem Rand ODER einer Chaos-Zone gehoert (plus ``rings`` Ringe).
+    Dreiecke zeigen in wild verschiedene Richtungen. ACHTUNG Kalibrierung:
+    Marching-Cubes-Nachbarn sind auch auf sauberen Flaechen maessig
+    uneinig — mit lockerer Schwelle (0.8) war praktisch das GANZE Mesh
+    Kandidat und das Pro-Ansicht-Budget verduennte die Pruefung wirkungslos
+    (beobachtet: 6.65 Mio Kandidaten, 24 Widerlegungen). Deshalb: nur
+    ECHTES Chaos (mittleres |dot| < 0.55), kaum Ring-Aufblaehung, und ein
+    globales Budget, das die chaotischsten Dreiecke zuerst nimmt.
+    Rueckgabe: (kandidaten, prioritaet) — Prioritaet klein = chaotisch.
     """
     faces = mesh.faces
     n_v = int(faces.max()) + 1
@@ -84,7 +89,11 @@ def _candidate_faces(
     for _ in range(max(1, rings)):
         mark |= seed_v[faces].any(axis=1)
         seed_v[faces[mark]] = True
-    return np.flatnonzero(mark)
+    cand = np.flatnonzero(mark)
+    if len(cand) > cap:
+        order = np.argsort(mean_dot[cand])
+        cand = cand[order[:cap]]
+    return np.sort(cand), mean_dot
 
 
 def _drop_small_components(faces: np.ndarray, keep: np.ndarray,
@@ -154,7 +163,7 @@ def cull_ghost_faces(
     index = dict(image_map) if image_map else _index_images(Path(images_dir))
 
     faces = mesh.faces
-    cand = _candidate_faces(mesh, rings=rings)
+    cand, chaos_prio = _candidate_faces(mesh, rings=rings)
     if not len(cand):
         return 0
     tri = mesh.vertices[faces]
@@ -242,7 +251,10 @@ def cull_ghost_faces(
         if len(sel) < 20:
             continue
         if len(sel) > 45_000:
-            sel = sel[np.linspace(0, len(sel) - 1, 45_000).astype(np.int64)]
+            # Die chaotischsten Dreiecke zuerst — ein Zufallsschnitt
+            # verduennt die Pruefung unter die 2-Widerlegungen-Schwelle.
+            order = np.argsort(chaos_prio[sel])
+            sel = np.sort(sel[order[:45_000]])
 
         neighbors = [
             cj for cj in _pick_neighbors(ci, cameras, cam_centers.copy())
