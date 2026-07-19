@@ -187,6 +187,65 @@ def test_mvs_recovers_true_depth_against_offset_prior(tmp_path):
     assert stats["mvs"]["punkte"] == len(pts)
 
 
+def _soft_photo(cam, plane_z):
+    """Photo of a SOFTLY textured plane: rich enough for NCC patches,
+    but every gradient stays below the edge-band threshold — the sparse
+    mode sees nothing here, only the dense mode measures the surface
+    (asphalt/plaster situation)."""
+    xs, ys = np.meshgrid(
+        np.arange(cam.width, dtype=np.float64),
+        np.arange(cam.height, dtype=np.float64),
+    )
+    rays = cam.unproject(xs.ravel(), ys.ravel())
+    c = -cam.rotation.T @ cam.translation
+    dirs = rays @ cam.rotation
+    tt = (plane_z - c[2]) / dirs[:, 2]
+    wx = c[0] + tt * dirs[:, 0]
+    wy = c[1] + tt * dirs[:, 1]
+    img = (
+        128.0
+        + 45.0 * np.sin(2 * np.pi * wx / 0.35)
+        * np.sin(2 * np.pi * wy / 0.35)
+    )
+    return img.reshape(cam.height, cam.width).astype(np.uint8)
+
+
+def test_mvs_dense_covers_full_frame(tmp_path):
+    left = _cam("left/d.jpg", (0.0, 0.0, 0.0))
+    right = _cam("right/d.jpg", (0.2, 0.0, 0.0))
+    p_l = _save(tmp_path, "left/d.jpg", _soft_photo(left, 2.0))
+    p_r = _save(tmp_path, "right/d.jpg", _soft_photo(right, 2.0))
+    g = np.arange(-0.9, 0.9, 0.02)
+    xx, yy = np.meshgrid(g, g)
+    cloud = np.column_stack(
+        [xx.ravel(), yy.ravel(), np.full(xx.size, 2.02)]
+    )
+    from scantobim.core.mvs import mvs_points
+
+    imap = {"left/d.jpg": p_l, "right/d.jpg": p_r}
+    sparse = mvs_points(
+        [left, right], tmp_path, cloud, image_map=imap,
+        scale=1.0, band=0.08, steps=33,
+    )
+    stats: dict = {}
+    dense = mvs_points(
+        [left, right], tmp_path, cloud, image_map=imap,
+        scale=1.0, band=0.08, steps=33, dense=True, stride=3,
+        max_px_per_view=120_000, stats_out=stats,
+    )
+    assert dense is not None
+    n_sparse = len(sparse[0]) if sparse is not None else 0
+    # The edge band finds (nearly) nothing on soft texture, the dense
+    # mode measures the whole visible plane.
+    assert len(dense[0]) > max(n_sparse * 3, 10_000)
+    med_z = float(np.median(dense[0][:, 2]))
+    assert abs(med_z - 2.0) < 0.008
+    # Honest deviation stat: measured against the raw prior (2 cm off),
+    # not inflated by min-filter dilation at depth edges.
+    dev = stats["mvs"]["abweichung_zu_lidar_mm_median"]
+    assert 10.0 < dev < 35.0
+
+
 def test_photorefine_pulls_spike_onto_photo_surface(tmp_path):
     from scantobim.core.mesh import Mesh
 

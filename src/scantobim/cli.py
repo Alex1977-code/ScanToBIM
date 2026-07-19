@@ -1413,6 +1413,43 @@ def _cmd_project(args) -> int:
 
                 gel = terrain_mesh(cloud.points, scene_labels, cloud.colors)
                 if gel is not None:
+                    # Fototextur aufs Gelände — die Straße wird durch die
+                    # Bildschärfe realistisch, nicht durch mm-Geometrie.
+                    # Die volle Szenenwolke dient als Tiefenpuffer, damit
+                    # Fassadenfotos nicht auf verdeckten Boden schmieren.
+                    if photo_cams is not None and project.images_dir is not None:
+                        try:
+                            from scantobim.core.phototex import (
+                                bake_photo_atlas,
+                            )
+
+                            rng_g = np.random.default_rng(0)
+                            dp = cloud.points
+                            if len(dp) > 400_000:
+                                dp = dp[rng_g.choice(
+                                    len(dp), 400_000, replace=False
+                                )]
+                            g_stats: dict = {}
+                            g_tex = bake_photo_atlas(
+                                gel, photo_cams, project.images_dir,
+                                transform=transform, stats_out=g_stats,
+                                max_atlas=8192, max_pages=2,
+                                image_map=image_map, depth_points=dp,
+                            )
+                            if (
+                                g_tex is not None
+                                and g_stats.get("photo_fraction", 0) >= 0.3
+                            ):
+                                gel = g_tex
+                                print(
+                                    f"  Gelände-Fototextur: "
+                                    f"{g_stats.get('texel_cm')} cm/Texel, "
+                                    f"{g_stats.get('photo_fraction', 0) * 100:.0f}% "
+                                    "Foto-Anteil"
+                                )
+                                rep["gelaende_textur"] = g_stats
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"  Gelände-Textur übersprungen ({exc})")
                     g_glb = output.with_name(output.stem + "_gelaende.glb")
                     write_mesh(gel, g_glb)
                     print(
@@ -1853,6 +1890,8 @@ def _build_detail_mesh(
                 got = mvs_points(
                     _resolve_cameras(photo_cams), images_dir, sub.points,
                     image_map=image_map, stats_out=mvs_stats,
+                    dense=True, max_px_per_view=60_000,
+                    max_points=6_000_000,
                 )
                 if got is not None:
                     m_pts, m_col = got
@@ -1866,6 +1905,14 @@ def _build_detail_mesh(
                         points=np.vstack([sub.points, m_pts]),
                         colors=col,
                     )
+                    # Dense photo geometry carries finer meshing than the
+                    # LiDAR alone: refine the raster when it delivered.
+                    if len(m_pts) > 1_200_000 and float(raster) > 0.015:
+                        raster = 0.015
+                        print(
+                            "  Detail-Raster auf 1.5 cm verfeinert "
+                            "(dichte Foto-Geometrie trägt)"
+                        )
                     ms = mvs_stats.get("mvs", {})
                     print(
                         f"  Foto-Geometrie (MVS): {ms.get('punkte', 0):,} "

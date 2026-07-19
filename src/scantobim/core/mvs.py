@@ -101,18 +101,30 @@ def _depth_prior(cam, pts_world, shape, scale):
     prior = np.full(h * w, np.inf, dtype=np.float32)
     np.minimum.at(prior, gy[ok] * w + gx[ok], pc[front][ok][:, 2])
     prior = prior.reshape(h, w)
+    raw = np.where(np.isfinite(prior), prior, np.nan)
     # Dilate priors into small gaps (roof holes, frayed rims): the search
     # band around the NEIGHBORING surface depth is exactly what closes
-    # them with real photo measurements.
-    return minimum_filter(prior, size=9, mode="nearest")
+    # them with real photo measurements. The RAW prior is returned too:
+    # deviation statistics against the dilated prior are dominated by
+    # depth edges (background pixels inherit the foreground depth) and
+    # made the reported "Abweichung zu LiDAR" look 10x worse than the
+    # actual surface agreement.
+    return minimum_filter(prior, size=9, mode="nearest"), raw
 
 
 def _view_points(
     ci, cameras, grays, rgbs, prior, scale, band, steps, patch, rng,
-    max_px,
+    max_px, dense=False, stride=3, prior_raw=None,
 ):
     """MVS points for one reference view. Returns (world_pts, colors, ncc,
-    dev) or None."""
+    dev) or None.
+
+    ``dense=False``: edge-band pixels only (gradient > _GRAD_MIN) — the
+    classic detail booster. ``dense=True``: EVERY ``stride``-th pixel with
+    a prior becomes a depth estimate — the photos become a surface source
+    over the whole frame (RealityScan principle); low-texture pixels fail
+    the NCC gate by themselves and cost only compute.
+    """
     from scantobim.core import accel
 
     cam = cameras[ci]
@@ -121,7 +133,13 @@ def _view_points(
     gy_img, gx_img = np.gradient(gray)
     gradmag = np.abs(gx_img) + np.abs(gy_img)
     m = patch + 2
-    sel = gradmag > _GRAD_MIN
+    if dense:
+        sel = np.zeros_like(gray, dtype=bool)
+        sel[::stride, ::stride] = True
+        # Edge pixels always participate at full density.
+        sel |= gradmag > _GRAD_MIN
+    else:
+        sel = gradmag > _GRAD_MIN
     sel[:m, :] = sel[-m:, :] = False
     sel[:, :m] = sel[:, -m:] = False
     sel &= np.isfinite(prior)
@@ -228,6 +246,11 @@ def _view_points(
     )
     if not accept.any():
         return None
+    # Statistics against the RAW (un-dilated) prior where one exists —
+    # the dilated prior mis-measures every depth edge by construction.
+    if prior_raw is not None:
+        raw_d = prior_raw[iy, ix].astype(np.float64)
+        dev = np.where(np.isfinite(raw_d), np.abs(d_best - raw_d), dev)
     center_ray = cam.unproject(ix[accept] / scale, iy[accept] / scale)
     z = d_best[accept] / np.maximum(center_ray[:, 2], 1e-6)
     pc = center_ray * z[:, None]
@@ -284,13 +307,17 @@ def mvs_points(
     patch: int = 2,
     max_px_per_view: int = 20_000,
     max_points: int = 3_000_000,
+    dense: bool = False,
+    stride: int = 3,
 ):
-    """Photo-triangulated 3D points in the edge band, LiDAR-gated.
+    """Photo-triangulated 3D points, LiDAR-gated.
 
     Returns ``(points (N,3), colors (N,3) uint8)`` or ``None``. The
-    points are meant to be FUSED into the detail cloud before meshing —
-    they carry photographic detail exactly where the LiDAR smears
-    (edges, thin profiles, hole rims).
+    points are meant to be FUSED into the detail cloud before meshing.
+    ``dense=False``: edge band only (profiles, bars, hole rims).
+    ``dense=True``: full-frame surface points every ``stride`` pixels —
+    the photos carry the geometry wherever they are sharp enough, which
+    is what lifts brick relief and terrain off the LiDAR voxel floor.
     """
     try:
         from PIL import Image
@@ -349,14 +376,16 @@ def mvs_points(
         if ci not in grays:
             continue
         view_scale = grays[ci].shape[1] / cameras[ci].width
-        prior = _depth_prior(
+        got_prior = _depth_prior(
             cameras[ci], pts_world, grays[ci].shape, view_scale
         )
-        if prior is None:
+        if got_prior is None:
             continue
+        prior, prior_raw = got_prior
         got = _view_points(
             ci, cameras, grays, rgbs, prior, view_scale,
             band, steps, patch, rng, max_px_per_view,
+            dense=dense, stride=stride, prior_raw=prior_raw,
         )
         if got is None:
             continue
