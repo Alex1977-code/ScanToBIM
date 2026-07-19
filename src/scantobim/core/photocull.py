@@ -34,24 +34,52 @@ _DEV_CONFIRM = 0.030  # m — Best-Tiefe nahe der Ist-Position = bestaetigt
 _MARGIN_GAIN = 0.15   # Best-NCC muss die Ist-Position klar schlagen
 
 
-def _boundary_ring_faces(faces: np.ndarray, rings: int = 3) -> np.ndarray:
-    """Faces within ``rings`` vertex-rings of an open (boundary) edge."""
+def _candidate_faces(
+    mesh, rings: int = 3, chaos_dot: float = 0.80
+) -> np.ndarray:
+    """Fransen-Kandidaten: offene Raender UND Normalen-Chaos-Zonen.
+
+    Voxel-Meshes sind fast geschlossen — der Konfetti-Franz besteht aus
+    DUENNEN GESCHLOSSENEN Schlaeuchen ohne offene Kanten (beobachtet:
+    nur 793 Rand-Kandidaten auf einem 4-Mio-Dreiecke-Mesh). Sein
+    verlaessliches Kennzeichen ist das Normalen-Chaos: benachbarte
+    Dreiecke zeigen in wild verschiedene Richtungen, waehrend Waende,
+    Daecher und selbst Ziegelrelief lokal einig sind. Kandidat ist, wer
+    zu einem Rand ODER einer Chaos-Zone gehoert (plus ``rings`` Ringe).
+    """
+    faces = mesh.faces
     n_v = int(faces.max()) + 1
     ea = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
     eb = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
     codes = np.minimum(ea, eb) * n_v + np.maximum(ea, eb)
+    face_of = np.tile(np.arange(len(faces), dtype=np.int64), 3)
     order = np.argsort(codes, kind="stable")
-    cs = codes[order]
+    cs, fo = codes[order], face_of[order]
     first = np.concatenate([[True], cs[1:] != cs[:-1]])
     starts = np.flatnonzero(first)
     counts = np.diff(np.concatenate([starts, [len(cs)]]))
-    boundary_codes = cs[starts[counts == 1]]
-    if not len(boundary_codes):
-        return np.zeros(0, dtype=np.int64)
-    b_set = np.isin(codes, boundary_codes)
     seed_v = np.zeros(n_v, dtype=bool)
-    seed_v[ea[b_set]] = True
-    seed_v[eb[b_set]] = True
+    boundary_codes = cs[starts[counts == 1]]
+    if len(boundary_codes):
+        b_set = np.isin(codes, boundary_codes)
+        seed_v[ea[b_set]] = True
+        seed_v[eb[b_set]] = True
+    # Normalen-Chaos ueber Kanten-Nachbarn.
+    same = cs[1:] == cs[:-1]
+    fa, fb = fo[:-1][same], fo[1:][same]
+    tri = mesh.vertices[faces]
+    fn = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+    dot = np.abs(np.einsum("ij,ij->i", fn[fa], fn[fb]))
+    acc = np.zeros(len(faces))
+    cnt = np.zeros(len(faces))
+    np.add.at(acc, fa, dot)
+    np.add.at(acc, fb, dot)
+    np.add.at(cnt, fa, 1.0)
+    np.add.at(cnt, fb, 1.0)
+    mean_dot = acc / np.maximum(cnt, 1.0)
+    chaotic = mean_dot < chaos_dot
+    seed_v[faces[chaotic].ravel()] = True
     mark = np.zeros(len(faces), dtype=bool)
     for _ in range(max(1, rings)):
         mark |= seed_v[faces].any(axis=1)
@@ -126,7 +154,7 @@ def cull_ghost_faces(
     index = dict(image_map) if image_map else _index_images(Path(images_dir))
 
     faces = mesh.faces
-    cand = _boundary_ring_faces(faces, rings=rings)
+    cand = _candidate_faces(mesh, rings=rings)
     if not len(cand):
         return 0
     tri = mesh.vertices[faces]
