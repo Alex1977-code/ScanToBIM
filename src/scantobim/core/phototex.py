@@ -447,6 +447,86 @@ def _bilinear(photo: np.ndarray, px: np.ndarray, py: np.ndarray) -> np.ndarray:
     return (c00 * (1 - fx) + c10 * fx) * (1 - fy) + (c01 * (1 - fx) + c11 * fx) * fy
 
 
+def _camera_gain_raw(
+    photo, cam, tri_scan, col_f, fsel, sx, sy, max_samples=1200
+):
+    """Median per-channel ratio LiDAR-color / photo-color for one camera.
+
+    ``sx``/``sy`` map full-resolution pixel coordinates to the (possibly
+    draft-decoded) ``photo``. Returns None with too few valid samples.
+    """
+    take = fsel
+    if len(take) > max_samples:
+        take = take[
+            np.linspace(0, len(take) - 1, max_samples).astype(np.int64)
+        ]
+    cent = tri_scan[take].mean(axis=1)
+    pc = cent @ cam.rotation.T + cam.translation
+    ok = pc[:, 2] > 0.05
+    px, py = cam.project(pc)
+    ok &= (
+        (px >= 0) & (px <= cam.width - 1)
+        & (py >= 0) & (py <= cam.height - 1)
+    )
+    if int(ok.sum()) < 40:
+        return None
+    sampled = _bilinear(photo, px[ok] * sx, py[ok] * sy)
+    ref = col_f[take][ok].mean(axis=1)
+    ratio = (
+        (ref.astype(np.float64) + 8.0) / (sampled.astype(np.float64) + 8.0)
+    )
+    return np.median(ratio, axis=0)
+
+
+def _solve_camera_gains(cameras, image_index, tri_scan, col_f, cam_groups):
+    """RELATIVE per-camera color gains against the camera-median.
+
+    Every photo carries its own auto-exposure and white balance — sampled
+    side by side they produce the per-chart stripe pattern ("streifige"
+    Textur). The colorized scan is ONE globally consistent reference, so
+    the raw LiDAR/photo ratio captures each camera's exposure — but the
+    LiDAR colors must not dictate the ABSOLUTE look (they are softer and
+    darker than the photos). Dividing every raw gain by the median gain
+    over all cameras cancels the reference out: inter-camera exposure
+    jumps vanish, the photos' own color level stays. Photos are decoded
+    at 1/8 draft resolution — plenty for a median color ratio.
+    """
+    from pathlib import Path
+
+    from PIL import Image
+
+    raw = {}
+    for ci, fsel in cam_groups:
+        if ci < 0 or not len(fsel):
+            continue
+        cam = cameras[ci]
+        path = (
+            image_index.get(cam.name)
+            or image_index.get(Path(cam.name).name)
+        )
+        if path is None or not path.exists():
+            continue
+        try:
+            im = Image.open(path)
+            im.draft("RGB", (max(8, cam.width // 8), max(8, cam.height // 8)))
+            photo = np.asarray(im.convert("RGB"))
+        except Exception:  # noqa: BLE001 — one bad file must not kill the bake
+            continue
+        sy = photo.shape[0] / max(cam.height, 1)
+        sx = photo.shape[1] / max(cam.width, 1)
+        g = _camera_gain_raw(photo, cam, tri_scan, col_f, fsel, sx, sy)
+        if g is not None:
+            raw[ci] = g
+    if len(raw) < 2:  # nothing to harmonize against
+        return {}
+    ref = np.median(np.array(list(raw.values())), axis=0)
+    ref = np.maximum(ref, 1e-6)
+    return {
+        ci: np.clip(g / ref, 0.6, 1.6).astype(np.float32)
+        for ci, g in raw.items()
+    }
+
+
 # ------------------------------------------------------------------- main
 
 def bake_photo_atlas(
@@ -507,9 +587,10 @@ def bake_photo_atlas(
     # --- duplicated-vertex mesh + chart-local UVs (meters) ---------------
     faces = mesh.faces
     order = np.argsort(chart_of_face, kind="stable")
+    has_color_ref = mesh.vertex_colors is not None
     src_colors = (
         mesh.vertex_colors
-        if mesh.vertex_colors is not None
+        if has_color_ref
         else np.full((len(mesh.vertices), 3), 150, dtype=np.uint8)
     )
 
@@ -656,6 +737,13 @@ def bake_photo_atlas(
 
     from concurrent.futures import ThreadPoolExecutor
 
+    # Relative color harmonization: thumbnail pre-pass over all used
+    # cameras, gains normalized to their median (see _solve_camera_gains).
+    gains = (
+        _solve_camera_gains(cameras, image_index, tri_scan, col_f, cam_groups)
+        if has_color_ref
+        else {}
+    )
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {}
         photo_cis = [ci for ci, _ in cam_groups if ci >= 0]
@@ -672,6 +760,7 @@ def bake_photo_atlas(
                     futures[nc] = pool.submit(_load_photo, nc)
                     next_i += 1
             cam = cameras[ci] if ci >= 0 else None
+            gain = gains.get(ci)
 
             # Split into batches of ≤4M raster texels.
             cum = np.cumsum(face_texels[fsel])
@@ -698,7 +787,10 @@ def bake_photo_atlas(
                         & (py >= 0) & (py <= cam.height - 1)
                     )
                     if ok.any():
-                        color[ok] = _bilinear(photo, px[ok], py[ok])
+                        sampled = _bilinear(photo, px[ok], py[ok])
+                        if gain is not None:
+                            sampled = sampled * gain[None, :]
+                        color[ok] = sampled
                 color8 = np.clip(color, 0, 255).astype(np.uint8)
                 pg = face_page_arr[g]
                 for p in np.unique(pg):
@@ -747,5 +839,13 @@ def bake_photo_atlas(
             float((best_cam >= 0).mean()), 3
         )
         stats_out["kamera_glaettung"] = int(n_smoothed)
+        if gains:
+            g_lum = np.array(list(gains.values())).mean(axis=1)
+            stats_out["farbabgleich"] = {
+                "kameras": int(len(g_lum)),
+                "gain_median": round(float(np.median(g_lum)), 3),
+                "gain_p5": round(float(np.percentile(g_lum, 5)), 3),
+                "gain_p95": round(float(np.percentile(g_lum, 95)), 3),
+            }
         stats_out.update(gsd_diag)
     return textured

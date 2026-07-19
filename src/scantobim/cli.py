@@ -2490,7 +2490,8 @@ def _write_detail_mesh(
 
         # RENDER-REGELKREIS: das texturierte Modell wird aus den
         # Kameraposen gerendert und Kachel für Kachel gegen die
-        # Original-Fotos geprüft (SSIM + Gradienten). Auffällige Regionen
+        # Original-Fotos geprüft (maskierte Korrelation + Ton-Differenz,
+        # belichtungs-invariant). Auffällige Regionen
         # werden automatisch herausgelöst, fein nachgebaut (aus der
         # MVS-verstärkten Punktwolke) und koordinatengleich wieder
         # eingesetzt — danach neuer Atlas und Nach-Prüfung.
@@ -2516,9 +2517,9 @@ def _write_detail_mesh(
                     heat, _scores = fb
                     print(
                         f"  Render-Prüfung: {rl_before.get('ansichten', 0)} "
-                        f"Ansichten gerendert — SSIM Median "
-                        f"{rl_before.get('ssim_median', 0)}, p10 "
-                        f"{rl_before.get('ssim_p10', 0)}"
+                        f"Ansichten gerendert — Score Median "
+                        f"{rl_before.get('score_median', 0)}, p10 "
+                        f"{rl_before.get('score_p10', 0)}"
                     )
                     raw_boxes = hot_face_boxes(out_mesh, heat)
                     boxes = _merge_regions(raw_boxes, dilate=0.3, cap=24)
@@ -2560,10 +2561,10 @@ def _write_detail_mesh(
                             if fb2 is not None:
                                 rl_stats["nachher"] = rl_after
                                 print(
-                                    f"  Render-Nachprüfung: SSIM Median "
-                                    f"{rl_after.get('ssim_median', 0)} "
+                                    f"  Render-Nachprüfung: Score Median "
+                                    f"{rl_after.get('score_median', 0)} "
                                     f"(vorher "
-                                    f"{rl_before.get('ssim_median', 0)})"
+                                    f"{rl_before.get('score_median', 0)})"
                                 )
                             rl_stats["regionen_nachgebaut"] = int(n_rep)
                     st = {**st, "render_regelkreis": rl_stats}

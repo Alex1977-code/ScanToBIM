@@ -1,16 +1,20 @@
 """Render feedback loop (Render-Regelkreis).
 
 The finished textured model is rendered from the validated camera poses
-and compared against the original photos — SSIM plus gradient distance,
-tile by tile. Tiles where the render disagrees with the photo mark
-frayed or inaccurate geometry; the discrepancy is accumulated per face
-into a heatmap the pipeline uses to re-reconstruct exactly those
-regions. The loop closes automatically: rebuild, re-render, report the
-SSIM distribution before/after.
+and compared against the original photos, tile by tile. Tiles where the
+render disagrees with the photo mark frayed or inaccurate geometry; the
+discrepancy is accumulated per face into a heatmap the pipeline uses to
+re-reconstruct exactly those regions. The loop closes automatically:
+rebuild, re-render, report the score distribution before/after.
 
 The render is a z-buffered face-centroid splat at photo-thumbnail
-resolution — at ~7 faces per pixel that is a faithful preview and fast
-enough for hundreds of views (GPU via CuPy when available).
+resolution. A splat leaves un-hit pixels black — pixelwise SSIM against
+the photo is therefore structurally decorrelated no matter how good the
+model is (observed: median 0.05 on a visually correct model). The score
+instead compares ONLY splatted pixels, per tile: masked Pearson
+correlation (structure) plus a tone difference that is median-centered
+across the view's tiles — a global exposure offset between photo and
+texture cancels out, a locally wrong region does not.
 """
 
 from __future__ import annotations
@@ -19,8 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-_C1 = (0.01 * 255.0) ** 2
-_C2 = (0.03 * 255.0) ** 2
+_TONE_NORM = 96.0  # gray-level difference that counts as fully wrong
 
 
 def _gray(img: np.ndarray) -> np.ndarray:
@@ -94,29 +97,52 @@ def render_view_splat(centroids_world, face_colors, cam, scale):
     )
 
 
-def _ssim_map(a: np.ndarray, b: np.ndarray, win: int = 7) -> np.ndarray:
-    from scipy.ndimage import uniform_filter
-
-    mu_a = uniform_filter(a, win)
-    mu_b = uniform_filter(b, win)
-    s_aa = uniform_filter(a * a, win) - mu_a * mu_a
-    s_bb = uniform_filter(b * b, win) - mu_b * mu_b
-    s_ab = uniform_filter(a * b, win) - mu_a * mu_b
-    return ((2 * mu_a * mu_b + _C1) * (2 * s_ab + _C2)) / np.maximum(
-        (mu_a**2 + mu_b**2 + _C1) * (s_aa + s_bb + _C2), 1e-9
-    )
-
-
-def _tile_reduce(img: np.ndarray, tile: int) -> np.ndarray:
+def _tile_sum(img: np.ndarray, tile: int) -> np.ndarray:
     h, w = img.shape
-    th, tw = h // tile, w // tile
-    if th == 0 or tw == 0:
-        return img.mean()[None, None]
+    th, tw = max(h // tile, 1), max(w // tile, 1)
     return (
         img[: th * tile, : tw * tile]
-        .reshape(th, tile, tw, tile)
-        .mean(axis=(1, 3))
+        .reshape(th, min(tile, h), tw, min(tile, w))
+        .sum(axis=(1, 3))
     )
+
+
+def _tile_discrepancy(g_r, g_p, mask, tile, min_fill=0.35):
+    """Per-tile discrepancy of render vs photo on SPLATTED pixels only.
+
+    Structure: masked Pearson correlation. Tone: |mean difference|,
+    median-centered over the view's tiles so a global exposure offset
+    between texture and photo does not count as error. Returns
+    ``(disc, valid)`` tile grids; disc in [0, 1], higher = worse.
+    """
+    m = mask.astype(np.float64)
+    n = _tile_sum(m, tile)
+    sr = _tile_sum(g_r * m, tile)
+    sp = _tile_sum(g_p * m, tile)
+    srr = _tile_sum(g_r * g_r * m, tile)
+    spp = _tile_sum(g_p * g_p * m, tile)
+    srp = _tile_sum(g_r * g_p * m, tile)
+    valid = n >= min_fill * tile * tile
+    ns = np.maximum(n, 1.0)
+    var_r = srr / ns - (sr / ns) ** 2
+    var_p = spp / ns - (sp / ns) ** 2
+    cov = srp / ns - (sr / ns) * (sp / ns)
+    has_struct = valid & (var_r > 9.0) & (var_p > 9.0)
+    corr = np.zeros_like(n)
+    denom = np.sqrt(np.maximum(var_r * var_p, 1e-12))
+    corr[has_struct] = np.clip(cov[has_struct] / denom[has_struct], -1, 1)
+    d_tone = sr / ns - sp / ns
+    if valid.any():
+        d_tone = d_tone - np.median(d_tone[valid])
+    tone = np.clip(np.abs(d_tone) / _TONE_NORM, 0.0, 1.0)
+    w_s = np.where(has_struct, 0.55, 0.0)
+    struct = 0.5 * (1.0 - corr)  # 0 = perfectly correlated, 1 = inverted
+    disc = np.where(
+        w_s > 0,
+        w_s * struct + (1.0 - w_s) * tone,
+        tone,
+    )
+    return np.clip(disc, 0.0, 1.0), valid
 
 
 def render_feedback(
@@ -128,13 +154,15 @@ def render_feedback(
     max_views: int = 240,
     scale: float = 0.12,
     tile: int = 32,
-    min_coverage: float = 0.6,
+    min_coverage: float = 0.35,
     max_faces: int = 2_000_000,
 ):
     """Render the textured mesh from the camera poses and score it.
 
     Returns ``(face_heat, view_scores)``: per-face discrepancy in [0, 1]
-    (NaN where unobserved) and the per-view mean SSIM list.
+    (NaN where unobserved) and the per-view score list (1 = render
+    matches photo). ``min_coverage`` is the splatted-pixel fill a tile
+    needs before it is compared.
     """
     try:
         from PIL import Image
@@ -182,22 +210,12 @@ def render_feedback(
             continue
         g_r = _gray(rgb)
         g_p = _gray(photo)
-        ssim = _ssim_map(g_r, g_p)
-        gy_r, gx_r = np.gradient(g_r)
-        gy_p, gx_p = np.gradient(g_p)
-        gdiff = np.abs(np.abs(gx_r) + np.abs(gy_r)
-                       - np.abs(gx_p) - np.abs(gy_p)) / 255.0
-        cover_t = _tile_reduce(mask.astype(np.float32), tile)
-        ssim_t = _tile_reduce(ssim, tile)
-        gdiff_t = _tile_reduce(gdiff, tile)
-        valid_t = cover_t >= min_coverage
+        disc_t, valid_t = _tile_discrepancy(
+            g_r, g_p, pix_face >= 0, tile, min_fill=min_coverage
+        )
         if not valid_t.any():
             continue
-        disc_t = np.clip(
-            0.7 * (1.0 - ssim_t) + 0.3 * np.clip(gdiff_t * 4.0, 0, 1),
-            0.0, 1.0,
-        )
-        view_scores.append(float(ssim_t[valid_t].mean()))
+        view_scores.append(float(1.0 - disc_t[valid_t].mean()))
         # Accumulate tile discrepancy onto the faces that won pixels.
         th, tw = disc_t.shape
         py_t = np.minimum(
@@ -223,9 +241,9 @@ def render_feedback(
         vs = np.array(view_scores)
         stats_out.update({
             "ansichten": int(len(view_scores)),
-            "ssim_median": round(float(np.median(vs)), 3),
-            "ssim_p10": round(float(np.percentile(vs, 10)), 3),
-            "ssim_min": round(float(vs.min()), 3),
+            "score_median": round(float(np.median(vs)), 3),
+            "score_p10": round(float(np.percentile(vs, 10)), 3),
+            "score_min": round(float(vs.min()), 3),
         })
     return heat, view_scores
 

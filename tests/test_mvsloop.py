@@ -259,7 +259,7 @@ def test_render_feedback_flags_wrong_region(tmp_path):
     )
     assert fb is not None
     heat, scores = fb
-    assert "ssim_median" in stats
+    assert "score_median" in stats
     cent_x = mesh.vertices[mesh.faces].mean(axis=1)[:, 0]
     left_heat = np.nanmean(heat[cent_x < -0.1])
     right_heat = np.nanmean(heat[cent_x > 0.1])
