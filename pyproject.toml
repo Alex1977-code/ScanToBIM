@@ -1,4 +1,4 @@
-﻿[build-system]
+[build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
@@ -34,9 +34,9 @@ laz = ["lazrs>=0.5"]          # compressed .laz support for laspy
 e57 = ["pye57>=0.4"]          # ASTM E57 scanner exchange format
 photos = ["Pillow>=10"]       # photo projection texturing (reads the images)
 viz = ["open3d>=0.18"]        # optional: Poisson fallback + interactive viewer
-gpu = [                       # NVIDIA-CUDA-Beschleunigung (optional) â€”
+gpu = [                       # NVIDIA-CUDA-Beschleunigung (optional) —
     "cupy-cuda12x>=13",       # die nvidia-Wheels liefern cudart+NVRTC mit,
-    "nvidia-cuda-runtime-cu12",  # sodass nur der Grafiktreiber nÃ¶tig ist
+    "nvidia-cuda-runtime-cu12",  # sodass nur der Grafiktreiber nötig ist
     "nvidia-cuda-nvrtc-cu12",
 ]
 dev = ["pytest>=7", "lazrs>=0.5", "Pillow>=10", "pye57>=0.4"]
