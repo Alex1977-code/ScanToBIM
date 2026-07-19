@@ -261,7 +261,7 @@ def _view_points(
         if rgb is not None
         else np.full((int(accept.sum()), 3), 170, dtype=np.uint8)
     )
-    return world, colors, best[accept], dev[accept]
+    return world, colors, best[accept], dev[accept], len(ix)
 
 
 def _project_xp(xp, cam, pts):
@@ -372,6 +372,7 @@ def mvs_points(
     rng = np.random.default_rng(1)
     all_pts, all_col, all_ncc, all_dev = [], [], [], []
     views_used = 0
+    n_candidates = 0
     for ci in ref_idx:
         if ci not in grays:
             continue
@@ -389,7 +390,8 @@ def mvs_points(
         )
         if got is None:
             continue
-        w_pts, w_col, w_ncc, w_dev = got
+        w_pts, w_col, w_ncc, w_dev, w_cand = got
+        n_candidates += w_cand
         all_pts.append(w_pts)
         all_col.append(w_col)
         all_ncc.append(w_ncc)
@@ -410,6 +412,10 @@ def mvs_points(
         stats_out["mvs"] = {
             "ansichten": int(views_used),
             "punkte": int(len(pts)),
+            "kandidaten": int(n_candidates),
+            "akzeptanz": round(
+                float(len(pts)) / max(n_candidates, 1), 3
+            ),
             "ncc_median": round(float(np.median(ncc)), 3),
             "abweichung_zu_lidar_mm_median": round(
                 float(np.median(dev)) * 1000.0, 1

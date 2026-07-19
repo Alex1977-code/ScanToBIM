@@ -1887,11 +1887,16 @@ def _build_detail_mesh(
                 from scantobim.core.texture import _resolve_cameras
 
                 mvs_stats: dict = {}
+                # Dense braucht Bildschärfe: bei scale 0.3 ist Ziegel-/
+                # Asphalt-Textur weggemittelt und die NCC-Patches fallen
+                # durchs Gate (beobachtet: nur 491k von erwarteten
+                # Millionen Punkten). scale 0.45 + stride 2 = ~15 mm
+                # Oberflächenabstand der Messpunkte.
                 got = mvs_points(
                     _resolve_cameras(photo_cams), images_dir, sub.points,
                     image_map=image_map, stats_out=mvs_stats,
-                    dense=True, max_px_per_view=60_000,
-                    max_points=6_000_000,
+                    dense=True, scale=0.45, stride=2,
+                    max_px_per_view=90_000, max_points=6_000_000,
                 )
                 if got is not None:
                     m_pts, m_col = got
