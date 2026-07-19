@@ -271,6 +271,25 @@ def asnumpy(a):
     return a
 
 
+def free_gpu_pool() -> None:
+    """Return CuPy's pooled VRAM to the driver.
+
+    CuPy pools every allocation and never gives VRAM back on its own.
+    After a heavy stage (MVS depth sweeps, photo refinement) the pool can
+    hold most of the 8 GB card — the NEXT GPU stage then dies with a
+    hard native crash instead of falling back to CPU. Heavy stages call
+    this on exit.
+    """
+    cp = gpu()
+    if cp is None:
+        return
+    try:
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:  # noqa: BLE001 — freeing must never crash a run
+        pass
+
+
 def unique_i64(
     keys: np.ndarray,
     return_index: bool = False,

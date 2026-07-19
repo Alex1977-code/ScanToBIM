@@ -898,6 +898,45 @@ def _cmd_project(args) -> int:
             print(f"  Trajektorie: {len(trajectory)} Positionen "
               "(Normalen werden zum Scanner orientiert)")
 
+    # ---- Objekt- und Geländeerkennung (Szenen-Segmentierung) ---------------
+    # Läuft VOR den parallelen Stufen: Fahrzeuge (temporäre Objekte) fliegen
+    # aus der Wolke, Gelände/Vegetation/Stabwerk werden gelabelt — das
+    # Gelände bekommt später ein geschlossenes DTM-Mesh statt der löchrigen
+    # Voxel-Fläche.
+    scene_labels = None
+    scene_stats: dict = {}
+    try:
+        from scantobim.core.scenesplit import (
+            FAHRZEUG,
+            classify_scene,
+        )
+
+        _prog(0.11, "Objekt- und Geländeerkennung")
+        scene_labels = classify_scene(
+            cloud.points, cloud.colors, stats_out=scene_stats
+        )
+        if scene_labels is not None:
+            pk = scene_stats.get("szene", {}).get("punkte", {})
+            print(
+                "  Szenen-Klassen: "
+                + ", ".join(f"{k} {v:,}" for k, v in pk.items())
+            )
+            n_veh_pts = int((scene_labels == FAHRZEUG).sum())
+            if n_veh_pts:
+                keep = scene_labels != FAHRZEUG
+                cloud = cloud.select(keep)
+                scene_labels = scene_labels[keep]
+                n_cl = scene_stats.get("szene", {}).get(
+                    "cluster", {}
+                ).get("fahrzeuge", 0)
+                print(
+                    f"  {n_cl} Fahrzeug(e)/temporäre Objekte entfernt "
+                    f"({n_veh_pts:,} Punkte) — im Bericht gelistet, "
+                    "nicht im Modell"
+                )
+    except Exception as exc:  # noqa: BLE001 — Segmentierung ist ein Bonus
+        print(f"  Objekt-/Geländeerkennung übersprungen ({exc})")
+
     cfg = PipelineConfig.preset(
         args.preset if args.preset != "auto" else "building"
     )
@@ -1368,6 +1407,20 @@ def _cmd_project(args) -> int:
             glb = output.with_name(output.stem + "_komplett.glb")
             write_mesh(full_mesh, glb)
             print(f"wrote {glb} (Komplett-Mesh, volle Auflösung)")
+        if scene_labels is not None:
+            try:
+                from scantobim.core.scenesplit import terrain_mesh
+
+                gel = terrain_mesh(cloud.points, scene_labels, cloud.colors)
+                if gel is not None:
+                    g_glb = output.with_name(output.stem + "_gelaende.glb")
+                    write_mesh(gel, g_glb)
+                    print(
+                        f"wrote {g_glb} (geschlossenes DTM-Gelände, "
+                        f"{len(gel.faces):,} Dreiecke)"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  Gelände-Mesh übersprungen ({exc})")
         elif ext in (".html", ".htm") and len(result.residual):
             print(
                 f"  Viewer: {min(len(result.residual), 800_000):,} Scan-Restpunkte "
@@ -1389,6 +1442,8 @@ def _cmd_project(args) -> int:
         )
         print(f"wrote {out} (druckfertiger Prüfbericht)")
 
+    if scene_stats.get("szene"):
+        rep["szene"] = scene_stats["szene"]
     _print_gpu_usage(rep)
     _prog(1.0, "fertig")
     report_path = args.report or output.with_name(output.stem + "_bericht.json")
@@ -1822,6 +1877,12 @@ def _build_detail_mesh(
             except Exception as exc:  # noqa: BLE001 — MVS is a bonus layer
                 print(f"  Foto-Geometrie (MVS) übersprungen ({exc})")
                 mvs_stats = {}
+            finally:
+                # MVS-Tiefenkarten füllen den CuPy-Pool — freigeben, sonst
+                # stirbt der nächste GPU-Sweep (Atlas-Bake) nativ am VRAM.
+                from scantobim.core.accel import free_gpu_pool
+
+                free_gpu_pool()
         else:
             mvs_stats = {}
 
@@ -2432,6 +2493,10 @@ def _write_detail_mesh(
                     st = {**st, **pr_stats}
             except Exception as exc:  # noqa: BLE001 — refinement optional
                 print(f"  Photokonsistenz-Feintuning übersprungen ({exc})")
+            finally:
+                from scantobim.core.accel import free_gpu_pool
+
+                free_gpu_pool()
         if result is not None and result.surfaces:
             # Dachflächen: kleine Mesh-Löcher (Abschattung, dünne
             # Punktdichte) werden planar geschlossen — Fenster bleiben
