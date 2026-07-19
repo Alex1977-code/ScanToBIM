@@ -645,26 +645,48 @@ def _classify_openings(geometries, floor_z: float) -> list[dict]:
     return details
 
 
-def _recover_detail_planes(work, unassigned, dist_thresh, cfg):
-    """Finer plane pass on the residual; returns ``(planes, new_unassigned)``."""
+def _recover_detail_planes(work, unassigned, dist_thresh, cfg,
+                           max_residual: int = 1_200_000):
+    """Finer plane pass on the residual; returns ``(planes, new_unassigned)``.
+
+    Das Residuum eines Aussen-Scans traegt Millionen Punkte — ein
+    ungedeckelter zweiter RANSAC-Pass mahlte single-threaded 20+ Minuten.
+    Ein gleichmaessiges Subsample haelt jede fuer ``detail_min_inliers``
+    relevante Flaeche detektierbar und begrenzt den Pass auf Sekunden;
+    die Inlier werden danach auf dem VOLLEN Residuum neu eingesammelt.
+    """
     idx = np.flatnonzero(unassigned)
     if len(idx) < 3 * cfg.detail_min_inliers:
         return [], unassigned
-    detail, sub_unassigned = detect_planes(
-        work.points[idx],
-        work.normals[idx],
+    sub = idx
+    if len(sub) > max_residual:
+        rng = np.random.default_rng((cfg.seed or 0) + 7)
+        sub = np.sort(rng.choice(idx, max_residual, replace=False))
+    scale = len(idx) / len(sub)
+    min_inl = max(12, int(cfg.detail_min_inliers / scale))
+    detail, _ = detect_planes(
+        work.points[sub],
+        work.normals[sub],
         distance_threshold=0.8 * dist_thresh,
         normal_threshold_deg=cfg.normal_threshold_deg,
-        min_inliers=cfg.detail_min_inliers,
+        min_inliers=min_inl,
         max_planes=cfg.max_detail_planes,
         ransac_iterations=cfg.ransac_iterations,
-        seed=cfg.seed + 1,
+        seed=(cfg.seed or 0) + 1,
     )
+    # Inlier auf dem vollen Residuum neu einsammeln (Ebene steht fest).
+    new_unassigned = unassigned.copy()
+    pts_res = work.points[idx]
+    kept = []
     for p in detail:
-        p.inliers = idx[p.inliers]
-    new_unassigned = np.zeros(len(work.points), dtype=bool)
-    new_unassigned[idx[sub_unassigned]] = True
-    return detail, new_unassigned
+        d = np.abs(pts_res @ p.normal + p.d)
+        near = d < 0.8 * dist_thresh
+        if int(near.sum()) < cfg.detail_min_inliers:
+            continue
+        p.inliers = idx[near]
+        new_unassigned[p.inliers] = False
+        kept.append(p)
+    return kept, new_unassigned
 
 
 def _detect_residual_cylinders(work, unassigned, dist_thresh, cfg):
