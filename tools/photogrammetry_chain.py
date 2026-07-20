@@ -260,17 +260,28 @@ def main():
         "-w", MVS, "-o", MVS / "scene_mesh.mvs",
     ], done_marker=MVS / "scene_mesh.mvs")
 
+    # ReconstructMesh liefert das Mesh als PLY — Folgestufen nehmen die
+    # SZENE (scene.mvs) plus --mesh-file (beobachteter Absturz: die als
+    # -o benannte scene_mesh.mvs existiert gar nicht).
+    run("texture", [
+        OPENMVS / "TextureMesh.exe", MVS / "scene.mvs",
+        "--mesh-file", MVS / "scene_mesh.ply",
+        "-w", MVS, "-o", MVS / "scene_textured.mvs",
+        "--export-type", "obj",
+    ], done_marker=MVS / "scene_textured.obj")
+
     run("refine", [
-        OPENMVS / "RefineMesh.exe", MVS / "scene_mesh.mvs",
+        OPENMVS / "RefineMesh.exe", MVS / "scene.mvs",
+        "--mesh-file", MVS / "scene_mesh.ply",
         "-w", MVS, "-o", MVS / "scene_refined.mvs",
         "--resolution-level", "2", "--max-face-area", "16",
     ], done_marker=MVS / "scene_refined.mvs")
 
-    run("texture", [
+    run("texture (verfeinert)", [
         OPENMVS / "TextureMesh.exe", MVS / "scene_refined.mvs",
-        "-w", MVS, "-o", MVS / "scene_textured.mvs",
+        "-w", MVS, "-o", MVS / "scene_textured_fein.mvs",
         "--export-type", "obj",
-    ], done_marker=MVS / "scene_textured.obj")
+    ], done_marker=MVS / "scene_textured_fein.obj")
 
     print("FERTIG:", MVS / "scene_textured.obj")
 
