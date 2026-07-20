@@ -140,6 +140,37 @@ def rewrite_model_41():
           "(Kamera/Rig/Frame je Bild, DB-deckungsgleich)")
 
 
+def write_ref_positions():
+    """Kamerazentren (metrisch, LiDAR-registriert) als Referenzdatei:
+    NAME X Y Z — Zentrum = -R^T t aus den Posen der sparse_known."""
+    import numpy as np
+
+    out = []
+    for line in (SPARSE_KNOWN / "images.txt").read_text(
+        encoding="utf-8"
+    ).splitlines():
+        if not line or line.startswith("#"):
+            continue
+        p = line.split()
+        if len(p) < 10 or not p[9].endswith(".jpg"):
+            continue
+        qw, qx, qy, qz = (float(v) for v in p[1:5])
+        t = np.array([float(v) for v in p[5:8]])
+        R = np.array([
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw),
+             2 * (qx * qz + qy * qw)],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz),
+             2 * (qy * qz - qx * qw)],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw),
+             1 - 2 * (qx * qx + qy * qy)],
+        ])
+        c = -R.T @ t
+        out.append(f"{p[9]} {c[0]:.6f} {c[1]:.6f} {c[2]:.6f}")
+    (WS / "ref_positions.txt").write_text("\n".join(out) + "\n",
+                                          encoding="utf-8")
+    print(f"[referenz] {len(out)} Kamerazentren geschrieben")
+
+
 def main():
     assert COLMAP is not None, "colmap.exe nicht unter C:\\Users\\alexanderm\\Tools gefunden"
     assert OPENMVS is not None, "OpenMVS nicht gefunden"
@@ -164,16 +195,38 @@ def main():
     ], done_marker=matched)
     matched.touch()
 
-    if not (SPARSE_TRI / "images.bin").exists():
-        rewrite_model_41()
-        SPARSE_TRI.mkdir(exist_ok=True)
-        run("triangulation", [
-            COLMAP, "point_triangulator",
+    # FREIES SfM statt fixierter Posen: Unsere SLAM-Posen (5 cm / ~10 px
+    # Restfehler) wuergten die Triangulation ab (11k Punkte, Spurlaenge
+    # 2.2, geometrischer Filter verwarf ~alles). COLMAP schaetzt die
+    # Posen selbst photogrammetrisch praezise; die Metrik kommt danach
+    # per robuster Aehnlichkeitstransformation auf die LiDAR-
+    # Kamerazentren zurueck (Massstab bleibt exakt).
+    sparse_free = WS / "sparse_free"
+    if not (sparse_free / "0" / "images.bin").exists():
+        sparse_free.mkdir(exist_ok=True)
+        run("mapper (freies SfM)", [
+            COLMAP, "mapper",
             "--database_path", DB, "--image_path", WS / "images",
-            "--input_path", SPARSE_KNOWN, "--output_path", SPARSE_TRI,
+            "--output_path", sparse_free,
+            "--Mapper.ba_refine_principal_point", "0",
         ])
     else:
-        print("[triangulation] übersprungen")
+        print("[mapper] übersprungen")
+
+    if not (SPARSE_TRI / "images.bin").exists():
+        write_ref_positions()
+        SPARSE_TRI.mkdir(exist_ok=True)
+        run("metrische Ausrichtung", [
+            COLMAP, "model_aligner",
+            "--input_path", sparse_free / "0",
+            "--output_path", SPARSE_TRI,
+            "--ref_images_path", WS / "ref_positions.txt",
+            "--ref_is_gps", "0",
+            "--alignment_type", "custom",
+            "--alignment_max_error", "0.25",
+        ])
+    else:
+        print("[ausrichtung] übersprungen")
 
     run("undistort", [
         COLMAP, "image_undistorter",
